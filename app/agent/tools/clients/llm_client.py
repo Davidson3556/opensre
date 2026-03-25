@@ -326,9 +326,11 @@ def get_llm() -> LLMClient | OpenAILLMClient:
     if _llm is None:
         provider = os.getenv("LLM_PROVIDER", "anthropic").lower()
         if provider == "openai":
+            from app.config import DEFAULT_MAX_TOKENS, DEFAULT_OPENAI_MODEL
+
             _llm = OpenAILLMClient(
-                model="gpt-5.2",
-                max_tokens=4096,
+                model=os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+                max_tokens=DEFAULT_MAX_TOKENS,
             )
         else:
             from app.config import DEFAULT_MAX_TOKENS, DEFAULT_MODEL

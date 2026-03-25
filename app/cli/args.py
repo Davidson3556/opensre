@@ -1,4 +1,4 @@
-"""CLI utilities for the incident resolution agent."""
+"""CLI argument helpers for the incident resolution agent."""
 
 import argparse
 import json
@@ -9,10 +9,10 @@ from typing import Any
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments."""
-    p = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         description="Run an RCA investigation against a user-provided alert payload."
     )
-    input_group = p.add_mutually_exclusive_group()
+    input_group = parser.add_mutually_exclusive_group()
     input_group.add_argument(
         "--input",
         "-i",
@@ -35,23 +35,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help="Print a starter alert JSON template and exit.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--alert-name",
         default=None,
         help="Optional alert name override.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--pipeline-name",
         default=None,
         help="Optional pipeline or service name override.",
     )
-    p.add_argument(
+    parser.add_argument(
         "--severity",
         default=None,
         help="Optional severity override.",
     )
-    p.add_argument("--output", "-o", default=None, help="Output JSON file (default: stdout)")
-    return p.parse_args(argv)
+    parser.add_argument("--output", "-o", default=None, help="Output JSON file (default: stdout)")
+    return parser.parse_args(argv)
 
 
 def write_json(data: Any, path: str | None) -> None:

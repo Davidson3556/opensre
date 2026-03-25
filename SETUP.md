@@ -200,6 +200,16 @@ If you also want to post a Slack test message through your incoming webhook:
 make verify-integrations SERVICE=slack SLACK_TEST=1
 ```
 
+If you want help configuring only the local LLM provider, you can also run:
+
+```bash
+opensre onboard
+```
+
+The onboarding flow writes your provider choice and default model to `~/.opensre/opensre.json`, then syncs the active local settings into `.env`.
+
+Because this repo is installed in editable mode via `make install`, `opensre onboard` targets your local checkout while you are coding. If you change `pyproject.toml` entrypoints later, rerun `make install` once to refresh the launcher.
+
 ### Run the LangGraph dev UI
 
 Start the LangGraph dev server:
