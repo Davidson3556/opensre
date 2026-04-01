@@ -217,29 +217,6 @@ Thanks goes to these amazing people:
             <sub><b>arnetracer</b></sub>
         </a>
     </td>
-            <td align="center">
-        <a href="https://github.com/apps/github-actions">
-            <img src="https://avatars.githubusercontent.com/in/15368?v=4" width="100;" alt="github-actions[bot]"/>
-            <br />
-            <sub><b>github-actions[bot]</b></sub>
-        </a>
-    </td>
-		</tr>
-		<tr>
-            <td align="center">
-        <a href="https://github.com/apps/copilot-swe-agent">
-            <img src="https://avatars.githubusercontent.com/in/1143301?v=4" width="100;" alt="Copilot"/>
-            <br />
-            <sub><b>Copilot</b></sub>
-        </a>
-    </td>
-            <td align="center">
-        <a href="https://github.com/apps/dependabot">
-            <img src="https://avatars.githubusercontent.com/in/29110?v=4" width="100;" alt="dependabot[bot]"/>
-            <br />
-            <sub><b>dependabot[bot]</b></sub>
-        </a>
-    </td>
 		</tr>
 	</tbody>
 </table>
