@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 from pydantic import field_validator
@@ -96,8 +97,8 @@ class PrefectClient:
 
     @property
     def is_configured(self) -> bool:
-        """Return True when at minimum an API URL is set."""
-        return bool(self.config.api_url)
+        """Return True when an API key is set or a non-default API URL has been supplied."""
+        return bool(self.config.api_key) or self.config.api_url != _PREFECT_CLOUD_BASE
 
     # ------------------------------------------------------------------
     # Flow runs
@@ -246,7 +247,7 @@ class PrefectClient:
         body: dict[str, Any] = {"limit": min(limit, 200)}
         try:
             resp = self._get_client().post(
-                f"/work_pools/{work_pool_name}/workers/filter", json=body
+                f"/work_pools/{quote(work_pool_name, safe='')}/workers/filter", json=body
             )
             resp.raise_for_status()
             raw: list[dict[str, Any]] = resp.json()

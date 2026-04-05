@@ -11,12 +11,6 @@ import requests
 
 from app.auth.jwt_auth import extract_org_id_from_jwt
 from app.config import get_tracer_base_url
-from app.integrations.clients.coralogix import CoralogixClient
-from app.integrations.clients.datadog.client import DatadogClient, DatadogConfig
-from app.integrations.clients.honeycomb import HoneycombClient
-from app.integrations.clients.opsgenie import OpsGenieClient, OpsGenieConfig
-from app.integrations.clients.tracer_client.client import TracerClient
-from app.integrations.clients.vercel.client import VercelClient, VercelConfig
 from app.integrations.github_mcp import build_github_mcp_config, validate_github_mcp_config
 from app.integrations.models import (
     AWSIntegrationConfig,
@@ -29,6 +23,7 @@ from app.integrations.models import (
     SlackWebhookConfig,
     TracerIntegrationConfig,
 )
+from app.integrations.mongodb import build_mongodb_config, validate_mongodb_config
 from app.integrations.sentry import build_sentry_config, validate_sentry_config
 from app.integrations.store import load_integrations
 from app.nodes.resolve_integrations.node import (
@@ -36,6 +31,12 @@ from app.nodes.resolve_integrations.node import (
     _load_env_integrations,
     _merge_local_integrations,
 )
+from app.services.coralogix import CoralogixClient
+from app.services.datadog.client import DatadogClient, DatadogConfig
+from app.services.honeycomb import HoneycombClient
+from app.services.opsgenie import OpsGenieClient, OpsGenieConfig
+from app.services.tracer_client.client import TracerClient
+from app.services.vercel.client import VercelClient, VercelConfig
 
 SUPPORTED_VERIFY_SERVICES = (
     "grafana",
@@ -47,6 +48,7 @@ SUPPORTED_VERIFY_SERVICES = (
     "tracer",
     "github",
     "sentry",
+    "mongodb",
     "google_docs",
     "vercel",
     "opsgenie",
@@ -190,6 +192,31 @@ def resolve_effective_integrations() -> dict[str, dict[str, Any]]:
                 "project_slug": str(sentry_integration.get("project_slug", "")).strip(),
             },
         }
+
+    mongodb_integration = classified_integrations.get("mongodb")
+    if isinstance(mongodb_integration, dict):
+        effective["mongodb"] = {
+            "source": source_by_service.get("mongodb", "local env"),
+            "config": {
+                "connection_string": str(mongodb_integration.get("connection_string", "")).strip(),
+                "database": str(mongodb_integration.get("database", "")).strip(),
+                "auth_source": str(mongodb_integration.get("auth_source", "admin")).strip(),
+                "tls": mongodb_integration.get("tls", True),
+            },
+        }
+    else:
+        # Check env vars
+        mongodb_conn = os.getenv("MONGODB_CONNECTION_STRING", "").strip()
+        if mongodb_conn:
+            effective["mongodb"] = {
+                "source": "local env",
+                "config": {
+                    "connection_string": mongodb_conn,
+                    "database": os.getenv("MONGODB_DATABASE", "").strip(),
+                    "auth_source": os.getenv("MONGODB_AUTH_SOURCE", "admin").strip() or "admin",
+                    "tls": os.getenv("MONGODB_TLS", "true").strip().lower() in ("true", "1", "yes"),
+                },
+            }
 
     google_docs_integration = classified_integrations.get("google_docs")
     if isinstance(google_docs_integration, dict):
@@ -534,9 +561,20 @@ def _verify_sentry(source: str, config: dict[str, Any]) -> dict[str, str]:
     )
 
 
+def _verify_mongodb(source: str, config: dict[str, Any]) -> dict[str, str]:
+    mongodb_config = build_mongodb_config(config)
+    result = validate_mongodb_config(mongodb_config)
+    return _result(
+        "mongodb",
+        source,
+        "passed" if result.ok else "failed",
+        result.detail,
+    )
+
+
 def _verify_google_docs(source: str, config: dict[str, Any]) -> dict[str, str]:
     """Validate Google Docs credentials and folder access."""
-    from app.integrations.clients.google_docs import GoogleDocsClient
+    from app.services.google_docs import GoogleDocsClient
 
     try:
         google_docs_config = GoogleDocsIntegrationConfig.model_validate(config)
@@ -679,6 +717,8 @@ def verify_integrations(
             results.append(_verify_github(source, config))
         elif current_service == "sentry":
             results.append(_verify_sentry(source, config))
+        elif current_service == "mongodb":
+            results.append(_verify_mongodb(source, config))
         elif current_service == "google_docs":
             results.append(_verify_google_docs(source, config))
         elif current_service == "vercel":

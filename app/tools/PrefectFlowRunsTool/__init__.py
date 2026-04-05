@@ -167,6 +167,7 @@ class PrefectFlowRunsTool(BaseTool):
             logs: list[dict[str, Any]] = []
             error_log_lines: list[dict[str, Any]] = []
 
+            logs_error: str | None = None
             if fetch_logs_for_run_id:
                 logs_result = client.get_flow_run_logs(
                     flow_run_id=fetch_logs_for_run_id, limit=log_limit
@@ -177,8 +178,12 @@ class PrefectFlowRunsTool(BaseTool):
                         line for line in logs
                         if any(kw in line.get("message", "").lower() for kw in _ERROR_KEYWORDS)
                     ]
+                else:
+                    logs_error = logs_result.get(
+                        "error", "Unknown error fetching logs."
+                    )
 
-        return {
+        result: dict[str, Any] = {
             "source": "prefect",
             "available": True,
             "flow_runs": flow_runs,
@@ -189,6 +194,9 @@ class PrefectFlowRunsTool(BaseTool):
             "error_log_lines": error_log_lines,
             "fetched_logs_for_run_id": fetch_logs_for_run_id or None,
         }
+        if logs_error is not None:
+            result["logs_error"] = logs_error
+        return result
 
 
 prefect_flow_runs = PrefectFlowRunsTool()

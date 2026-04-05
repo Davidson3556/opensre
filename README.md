@@ -6,7 +6,7 @@
 
 <h1>OpenSRE: Build Your Own AI SRE Agents</h1>
 
-<p>The open-source framework for AI SRE agents, and the training and evaluation environment they need to improve. Connect the tools you already run, define your own workflows, and investigate incidents on your own infrastructure.</p>
+<p>The open-source framework for AI SRE agents, and the training and evaluation environment they need to improve. Connect the 40+ tools you already run, define your own workflows, and investigate incidents on your own infrastructure.</p>
 
 <p>
   <a href="https://github.com/Tracer-Cloud/opensre/stargazers"><img src="https://img.shields.io/github/stars/Tracer-Cloud/opensre?style=flat-square&color=FF6B00" alt="Stars"></a>
@@ -26,7 +26,7 @@
 </p>
 
 <p>
-  <a href="https://join.slack.com/t/tracer-cloud/shared_invite/zt-2xj0w3i3p-~EH0GFbZodFCXWkR7j3~w">
+  <a href="https://join.slack.com/share/enQtMTA4NTIyNjEwOTczNDgtODMzN2QyMGZhMjljZDJhMzAwNDg1YTc4ZTA0MjBkY2U5YTFhNTJjZmIyM2ViNGY1Y2I5MGMyMDRmOGFhMjM2Nw">
     <img src="https://img.shields.io/badge/➜_Click_To_Join_Our_Slack-white?style=for-the-badge&logo=slack&logoColor=4A154B" alt="Join Slack">
   </a>
 </p>
@@ -122,6 +122,19 @@ When an alert fires, Tracer automatically:
 
 ---
 
+## Benchmark
+
+Generate the benchmark report:
+
+```shell
+make benchmark
+```
+
+Output:
+- docs/benchmarks/results.md
+
+---
+
 ## Capabilities
 
 |                                          |                                                           |
@@ -145,6 +158,7 @@ Tracer integrates with the systems that power modern cloud platforms.
 | **Infrastructure** | <img src="docs/assets/icons/kubernetes.png" width="16"> Kubernetes · <img src="docs/assets/icons/aws.png" width="16"> AWS · <img src="docs/assets/icons/gcp.jpg" width="16"> GCP · <img src="docs/assets/icons/azure.png" width="16"> Azure                                            |
 | **Dev Tools**      | <img src="docs/assets/icons/github.webp" width="16"> GitHub                                                                                                                                                                                                                            |
 | **Communication**  | <img src="docs/assets/icons/slack.png" width="16"> Slack · <img src="docs/assets/icons/pagerduty.png" width="16"> PagerDuty · Google Docs                                                                                                                                              |
+| **Deployment**     | <img src="docs/assets/icons/aws.png" width="16"> AWS Bedrock · <img src="docs/assets/icons/aws.png" width="16"> AWS EC2 · LangSmith · Vercel                                                                                                                                          |
 
 ---
 
@@ -153,7 +167,7 @@ Tracer integrates with the systems that power modern cloud platforms.
 Tracer is community-built. Every integration, improvement, and bug fix makes it better for thousands of engineers. We actively review PRs and welcome contributors of all experience levels.
 
 <p>
-  <a href="https://join.slack.com/t/tracer-cloud/shared_invite/zt-3ifakcs2e-igoUEH8ygMlfxgJGLxsqeA">
+  <a href="https://join.slack.com/share/enQtMTA4NTIyNjEwOTczNDgtODMzN2QyMGZhMjljZDJhMzAwNDg1YTc4ZTA0MjBkY2U5YTFhNTJjZmIyM2ViNGY1Y2I5MGMyMDRmOGFhMjM2Nw">
     <img src="https://img.shields.io/badge/Join%20our%20Community%20Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white" alt="Join our Community Slack" />
   </a>
 </p>
@@ -333,6 +347,36 @@ Thanks goes to these amazing people:
             <sub><b>KindaJayant</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/Yashkapure06">
+            <img src="https://avatars.githubusercontent.com/u/61585443?v=4" width="100;" alt="Yashkapure06"/>
+            <br />
+            <sub><b>Yashkapure06</b></sub>
+        </a>
+    </td>
+            <td align="center">
+        <a href="https://github.com/Davda-James">
+            <img src="https://avatars.githubusercontent.com/u/151067328?v=4" width="100;" alt="Davda-James"/>
+            <br />
+            <sub><b>Davda-James</b></sub>
+        </a>
+    </td>
+		</tr>
+		<tr>
+            <td align="center">
+        <a href="https://github.com/Abhinnavverma">
+            <img src="https://avatars.githubusercontent.com/u/138097198?v=4" width="100;" alt="Abhinnavverma"/>
+            <br />
+            <sub><b>Abhinnavverma</b></sub>
+        </a>
+    </td>
+            <td align="center">
+        <a href="https://github.com/devankitjuneja">
+            <img src="https://avatars.githubusercontent.com/u/55021449?v=4" width="100;" alt="devankitjuneja"/>
+            <br />
+            <sub><b>devankitjuneja</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
@@ -342,7 +386,7 @@ Thanks goes to these amazing people:
 
 ## Security
 
-Tracer is designed with production environments in mind:
+OpenSRE is designed with production environments in mind:
 
 - No storing of raw log data beyond the investigation session
 - All LLM calls use structured, auditable prompts

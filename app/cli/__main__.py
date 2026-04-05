@@ -42,12 +42,14 @@ _SETUP_SERVICES = [
     "datadog",
     "grafana",
     "honeycomb",
+    "mongodb",
     "opensearch",
     "rds",
     "slack",
     "tracer",
 ]
-_VERIFY_SERVICES = ["aws", "coralogix", "datadog", "grafana", "honeycomb", "opsgenie", "slack", "tracer", "vercel"]
+
+_VERIFY_SERVICES = ["aws", "coralogix", "datadog", "grafana", "honeycomb",  "mongodb", "opsgenie", "slack", "tracer", "vercel"]
 
 
 _ASCII_HEADER = """\
@@ -72,6 +74,7 @@ def _render_help() -> None:
         ("investigate",   "Run an RCA investigation against an alert payload."),
         ("tests",         "Browse and run inventoried tests from the terminal."),
         ("integrations",  "Manage local integration credentials."),
+        ("health",        "Check integration and agent setup status."),
         ("update",        "Check for a newer version and update if one is available."),
     ]:
         console.print(Text.assemble(("    ", ""), (f"{name:<16}", "bold cyan"), desc))
@@ -104,6 +107,7 @@ def _render_landing() -> None:
         ("opensre investigate -i alert.json", "Run RCA against an alert payload"),
         ("opensre tests",                     "Browse and run inventoried tests"),
         ("opensre integrations list",         "Show configured integrations"),
+        ("opensre health",                    "Check integration and agent setup status"),
         ("opensre update",                    "Update to the latest version"),
     ]:
         console.print(Text.assemble(("    ", ""), (f"{cmd:<42}", "bold cyan"), desc))
@@ -159,9 +163,12 @@ def update(check_only: bool, yes: bool) -> None:
     raise SystemExit(rc)
 
 
-@cli.command()
-def onboard() -> None:
+@cli.group(invoke_without_command=True)
+@click.pass_context
+def onboard(ctx: click.Context) -> None:
     """Run the interactive onboarding wizard."""
+    if ctx.invoked_subcommand is not None:
+        return
     from app.cli.wizard import run_wizard
     from app.cli.wizard.store import get_store_path, load_local_config
 
@@ -177,6 +184,27 @@ def onboard() -> None:
     else:
         capture_onboard_failed()
     raise SystemExit(exit_code)
+
+
+@onboard.command("local_llm")
+def onboard_local_llm() -> None:
+    """Zero-config local LLM setup via Ollama. No API key required."""
+    from app.cli.local_llm.command import run_local_llm_setup
+
+    capture_onboard_started()
+    try:
+        rc = run_local_llm_setup()
+    except Exception:
+        capture_onboard_failed()
+        raise
+    if rc == 0:
+        from app.cli.wizard.store import get_store_path, load_local_config
+
+        cfg = load_local_config(get_store_path())
+        capture_onboard_completed(cfg)
+    else:
+        capture_onboard_failed()
+    raise SystemExit(rc)
 
 
 @cli.command()
@@ -258,14 +286,14 @@ def integrations() -> None:
 
 
 @integrations.command()
-@click.argument("service", type=click.Choice(_SETUP_SERVICES))
-def setup(service: str) -> None:
+@click.argument("service", required=False, default=None, type=click.Choice(_SETUP_SERVICES))
+def setup(service: str | None) -> None:
     """Set up credentials for a service."""
     from app.integrations.cli import cmd_setup
 
-    capture_integration_setup_started(service)
+    capture_integration_setup_started(service or "prompt")
     cmd_setup(service)
-    capture_integration_setup_completed(service)
+    capture_integration_setup_completed(service or "prompt")
 
 
 @integrations.command(name="list")
