@@ -431,6 +431,35 @@ class DiscordBotConfig(StrictConfigModel):
         return v
 
 
+class AlertmanagerIntegrationConfig(StrictConfigModel):
+    """Normalized Alertmanager credentials used by resolution and verification flows."""
+
+    base_url: str
+    bearer_token: str = ""
+    username: str = ""
+    password: str = ""
+    integration_id: str = ""
+
+    @field_validator("base_url", mode="before")
+    @classmethod
+    def _normalize_base_url(cls, value: object) -> str:
+        return str(value or "").strip().rstrip("/")
+
+    @field_validator("bearer_token", "username", "password", mode="before")
+    @classmethod
+    def _normalize_str(cls, value: object) -> str:
+        return str(value or "").strip()
+
+    @model_validator(mode="after")
+    def _no_dual_auth(self) -> AlertmanagerIntegrationConfig:
+        if self.bearer_token and self.username:
+            raise ValueError(
+                "Alertmanager config has both bearer_token and username set; "
+                "use one auth method only."
+            )
+        return self
+
+
 class EffectiveIntegrationEntry(StrictConfigModel):
     """Resolved integration entry with source metadata."""
 
@@ -470,3 +499,4 @@ class EffectiveIntegrations(StrictConfigModel):
     discord: EffectiveIntegrationEntry | None = None
     openclaw: EffectiveIntegrationEntry | None = None
     mysql: EffectiveIntegrationEntry | None = None
+    alertmanager: EffectiveIntegrationEntry | None = None
