@@ -22,13 +22,14 @@ import pytest
 # ---------------------------------------------------------------------------
 
 _MODULE_PATH = (
-    Path(__file__).parent.parent.parent
-    / "app/integrations/opensre/grafana_wire_format.py"
+    Path(__file__).parent.parent.parent / "app/integrations/opensre/grafana_wire_format.py"
 )
-_spec = importlib.util.spec_from_file_location("grafana_wire_format", _MODULE_PATH)
+_spec = importlib.util.spec_from_file_location(
+    "app.integrations.opensre.grafana_wire_format", _MODULE_PATH
+)
 assert _spec is not None and _spec.loader is not None
 _gwf = importlib.util.module_from_spec(_spec)
-sys.modules["grafana_wire_format"] = _gwf
+sys.modules["app.integrations.opensre.grafana_wire_format"] = _gwf
 _spec.loader.exec_module(_gwf)  # type: ignore[union-attr]
 
 _dimension_labels = _gwf._dimension_labels
@@ -192,7 +193,9 @@ class TestFormatMimirQueryRange:
         return {
             "metric_name": metric_name,
             "stat": stat,
-            "dimensions": [{"Name": "DBInstanceIdentifier", "Value": "db-1"}] if dimensions is None else dimensions,
+            "dimensions": [{"Name": "DBInstanceIdentifier", "Value": "db-1"}]
+            if dimensions is None
+            else dimensions,
             "timestamps": ["2026-01-01T00:00:00Z"] if timestamps is None else timestamps,
             "values": [42.0] if values is None else values,
         }
@@ -328,9 +331,7 @@ class TestFormatLokiQueryRange:
         assert line == "hello"
 
     def test_nanosecond_timestamp_matches_iso_conversion(self) -> None:
-        result = format_loki_query_range(
-            {"events": [self._event(date="2026-01-01T00:00:00Z")]}
-        )
+        result = format_loki_query_range({"events": [self._event(date="2026-01-01T00:00:00Z")]})
         ns_ts = result["data"]["result"][0]["values"][0][0]
         expected_unix = datetime(2026, 1, 1, tzinfo=UTC).timestamp()
         expected_ns = str(int(expected_unix * 1_000_000_000))
@@ -385,7 +386,9 @@ class TestFormatRulerRules:
                 "alertname": alert_name,
                 "pipeline_name": pipeline_name,
             },
-            "commonAnnotations": annotations or {"summary": "CPU exceeded threshold"},
+            "commonAnnotations": {"summary": "CPU exceeded threshold"}
+            if annotations is None
+            else annotations,
         }
 
     def test_top_level_has_groups_key(self) -> None:
@@ -436,7 +439,9 @@ class TestFormatRulerRules:
         assert result["groups"][0]["rules"][0]["name"] == "FallbackTitle"
 
     def test_alert_name_defaults_to_unknown_when_neither_present(self) -> None:
-        result = format_ruler_rules({"state": "alerting", "commonLabels": {}, "commonAnnotations": {}})
+        result = format_ruler_rules(
+            {"state": "alerting", "commonLabels": {}, "commonAnnotations": {}}
+        )
         assert result["groups"][0]["rules"][0]["name"] == "UnknownAlert"
 
     def test_group_name_from_pipeline_name_label(self) -> None:
