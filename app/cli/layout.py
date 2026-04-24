@@ -22,6 +22,7 @@ _HELP_COMMANDS: tuple[tuple[str, str], ...] = (
     ("remote", "Connect to remote agents and hosted service ops."),
     ("tests", "Browse and run inventoried tests from the terminal."),
     ("integrations", "Manage local integration credentials."),
+    ("guardrails", "Manage sensitive information guardrail rules."),
     ("health", "Check integration and agent setup status."),
     ("doctor", "Run a full environment diagnostic."),
     ("update", "Check for a newer version and update if one is available."),
