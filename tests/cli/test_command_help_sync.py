@@ -12,6 +12,10 @@ from app.cli.layout import _HELP_COMMANDS
 
 def test_registered_commands_match_help_table() -> None:
     registered = {cmd.name for cmd in _COMMANDS}
+    assert None not in registered, (
+        "A command in _COMMANDS has no name set. "
+        "Ensure every click.Command is decorated with an explicit name."
+    )
     documented = {name for name, _ in _HELP_COMMANDS}
 
     missing_from_help = registered - documented
