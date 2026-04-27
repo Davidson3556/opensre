@@ -879,6 +879,13 @@ Thanks goes to these amazing people:
             <sub><b>turancannb02</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/ShivaniNR">
+            <img src="https://avatars.githubusercontent.com/u/47320667?v=4" width="100" alt="ShivaniNR"/>
+            <br />
+            <sub><b>ShivaniNR</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
