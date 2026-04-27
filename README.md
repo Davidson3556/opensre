@@ -886,6 +886,13 @@ Thanks goes to these amazing people:
             <sub><b>ShivaniNR</b></sub>
         </a>
     </td>
+            <td align="center">
+        <a href="https://github.com/0xDevNinja">
+            <img src="https://avatars.githubusercontent.com/u/102245100?v=4" width="100" alt="0xDevNinja"/>
+            <br />
+            <sub><b>0xDevNinja</b></sub>
+        </a>
+    </td>
 		</tr>
 	</tbody>
 </table>
