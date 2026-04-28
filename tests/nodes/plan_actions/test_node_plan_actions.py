@@ -29,6 +29,13 @@ def test_node_plan_actions_emits_retrieval_controls(monkeypatch: Any) -> None:
     class _InputStub:
         tool_budget = 10
 
+        def model_copy(self, *, update: dict | None = None, **_kwargs: object) -> "_InputStub":
+            stub = _InputStub()
+            if update:
+                for k, v in update.items():
+                    setattr(stub, k, v)
+            return stub
+
     monkeypatch.setattr(node_module.InvestigateInput, "from_state", lambda _state: _InputStub())
     monkeypatch.setattr(
         node_module,
