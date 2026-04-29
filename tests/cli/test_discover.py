@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import unittest.mock
-from pathlib import Path
 
 from app.cli.tests.discover import discover_make_targets, load_test_catalog
 
