@@ -49,6 +49,7 @@ def run_catalog_items(
     worst = 0
     for item in items:
         if not item.is_runnable:
+            print(f"Skipping '{item.id}' — no runnable command defined.")
             continue
         code = run_catalog_item(item, dry_run=dry_run, working_directory=working_directory)
         worst = max(worst, code)
