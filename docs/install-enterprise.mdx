@@ -1,0 +1,44 @@
+---
+title: "Enterprise setup (Tracer Cloud)"
+description: "Set up OpenSRE for your organization in app.tracer.cloud"
+---
+
+This guide is for teams that manage OpenSRE from the hosted web app.
+
+## 1) Create your organization account
+
+Sign up at [app.tracer.cloud/sign-up](https://app.tracer.cloud/sign-up), then create or join your organization
+workspace.
+
+## 2) Complete workspace onboarding
+
+In [app.tracer.cloud](https://app.tracer.cloud), follow onboarding to:
+
+- define your workspace context
+- connect your first integrations
+- verify access and permissions
+
+## 3) Configure integrations for your org
+
+Enterprise integrations are configured in the web app and shared across your organization.
+
+Open the integration catalog from:
+
+- [Integrations overview](/integrations-overview)
+
+Each integration page documents required credentials, scopes, and verification guidance.
+
+## 4) Run investigations with shared context
+
+After integrations are connected, OpenSRE investigations can use the same organization-level connectors and
+policies.
+
+## Local CLI users in enterprise teams
+
+If your engineers also run local investigations, use:
+
+```bash
+opensre onboard
+```
+
+This configures local CLI access while keeping integrations documented in the same catalog under `Integrations`.
