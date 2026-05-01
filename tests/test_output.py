@@ -24,10 +24,13 @@ def _strip_ansi(text: str) -> str:
 
 
 @pytest.fixture(autouse=True)
-def _clear_output_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep output-format env vars deterministic across tests."""
+def _isolate_output_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give every test a clean slate for output-format env and the tracker singleton."""
     for name in ("TRACER_OUTPUT_FORMAT", "NO_COLOR", "SLACK_WEBHOOK_URL", "TRACER_VERBOSE"):
         monkeypatch.delenv(name, raising=False)
+    # The module-level ``_tracker`` is a session-scoped singleton; without resetting it
+    # a tracker created in an earlier test would leak its ``_rich`` flag into later ones.
+    monkeypatch.setattr(output, "_tracker", None)
 
 
 @pytest.fixture
@@ -196,8 +199,9 @@ def test_tracker_complete_emits_dot_label_and_timing(
 ) -> None:
     tracker = ProgressTracker()
 
-    # ``_finish`` calls ``time.monotonic`` twice (once eagerly as the default for
-    # ``dict.pop``), so we yield a sentinel and then a constant tail value.
+    # ``_finish`` calls ``time.monotonic`` twice: once for the elapsed delta, and
+    # once via ``dict.pop(node, time.monotonic())`` whose default is always evaluated
+    # before ``pop`` runs — even when ``node`` is present. So we yield three values.
     clock = iter([100.0, 100.5, 100.5])
     monkeypatch.setattr(output.time, "monotonic", lambda: next(clock))
 
