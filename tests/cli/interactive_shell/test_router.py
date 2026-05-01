@@ -146,3 +146,22 @@ class TestClassifyInput:
         session.last_state = {"root_cause": "disk full"}
         assert classify_input("thanks", session) == "cli_agent"
         assert classify_input("ok cool", session) == "cli_agent"
+
+    def test_documentation_style_questions_route_to_cli_help(self) -> None:
+        """Docs-style how-to questions must route to the documentation-aware
+        cli_help handler (#1166), not be mistaken for incidents or chat."""
+        session = ReplSession()
+        # Configuration / setup questions for an integration.
+        assert classify_input("How do I configure Datadog?", session) == "cli_help"
+        assert classify_input("how do i set up grafana", session) == "cli_help"
+        assert classify_input("how to integrate with slack", session) == "cli_help"
+        # Deployment questions.
+        assert classify_input("how do I deploy this?", session) == "cli_help"
+        assert classify_input("How to deploy OpenSRE on Railway?", session) == "cli_help"
+        # Generic docs / feature inventory questions.
+        assert (
+            classify_input("what does the documentation say about masking?", session) == "cli_help"
+        )
+        assert classify_input("does opensre support honeycomb?", session) == "cli_help"
+        assert classify_input("can opensre integrate with bitbucket?", session) == "cli_help"
+        assert classify_input("what are the supported integrations?", session) == "cli_help"

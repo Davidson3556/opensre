@@ -98,27 +98,46 @@ _CLI_HELP_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^\s*how\s+do\s+i\s+investigate\b", re.IGNORECASE),
     re.compile(
         r"^\s*how\s+do\s+i\s+(use|start|call|get|add|install|configure|invoke|check|list|"
-        r"show|paste|submit|send|onboard|launch|open|set\s+up)\b",
+        r"show|paste|submit|send|onboard|launch|open|deploy|integrate|connect|"
+        r"set\s+up)\b",
         re.IGNORECASE,
     ),
     re.compile(
-        r"^\s*how\s+to\s+(run|use|start|install|onboard|investigate|call|invoke)\b",
+        r"^\s*how\s+to\s+(run|use|start|install|onboard|investigate|call|invoke|"
+        r"configure|deploy|integrate|connect|set\s+up)\b",
         re.IGNORECASE,
     ),
     re.compile(r"\bwhat\s+command\b", re.IGNORECASE),
     re.compile(r"\bwhich\s+command\b", re.IGNORECASE),
     re.compile(
-        r"^\s*where\s+do\s+i\s+(run|find|get|start)\b",
+        r"^\s*where\s+do\s+i\s+(run|find|get|start|configure)\b",
         re.IGNORECASE,
     ),
     re.compile(r"\bwalk\s+me\s+through\b", re.IGNORECASE),
     re.compile(
-        r"\bshow\s+me\s+how\s+to\s+(run|use|start|install|onboard)\b",
+        r"\bshow\s+me\s+how\s+to\s+(run|use|start|install|onboard|configure|deploy|integrate)\b",
         re.IGNORECASE,
     ),
     re.compile(r"\bwhat\s+does\s+opensre\b", re.IGNORECASE),
     re.compile(r"\b(list|available)\s+(of\s+)?commands\b", re.IGNORECASE),
     re.compile(r"\bsubcommand\b", re.IGNORECASE),
+    # Documentation-style questions about features, integrations, and concepts.
+    # These should ground in docs/ rather than relying on model memory (#1166).
+    re.compile(r"\b(docs|documentation)\b", re.IGNORECASE),
+    re.compile(
+        r"^\s*what\s+(is|are)\s+(\w+\s+){0,3}?(opensre|tracer|docs|documentation|"
+        r"integrations?|features?|guardrails?|deployment|installation)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*does\s+opensre\s+(support|have|integrate|work)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^\s*can\s+(opensre|i)\s+(support|use|connect|integrate|configure|"
+        r"deploy|install|run)\b",
+        re.IGNORECASE,
+    ),
 )
 
 
