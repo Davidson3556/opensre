@@ -135,8 +135,19 @@ _CLI_HELP_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(what|where|which)\s+(do|does|are|is)\s+(the\s+)?(docs|documentation)\b",
         re.IGNORECASE,
     ),
+    # "according to the docs" / "per the docs" are citation phrasings — almost
+    # exclusively used in docs questions, so no question-shape requirement.
     re.compile(
-        r"\b(in|according\s+to|per)\s+(the\s+)?(docs|documentation)\b",
+        r"\b(according\s+to|per)\s+(the\s+)?(docs|documentation)\b",
+        re.IGNORECASE,
+    ),
+    # Bare "in (the) docs" is too broad on its own — incident text like
+    # "the API errors are happening in docs" would otherwise short-circuit
+    # the investigation pipeline. Only count it when the surrounding clause
+    # is question-shaped (a `?` reachable without crossing a sentence
+    # boundary).
+    re.compile(
+        r"\bin\s+(the\s+)?(docs|documentation)\b[^.!\n]*\?",
         re.IGNORECASE,
     ),
     re.compile(

@@ -179,3 +179,22 @@ class TestClassifyInput:
             "for 25% of requests"
         )
         assert classify_input(text, session) == "new_alert"
+
+    def test_short_incident_with_in_docs_phrase_routes_to_new_alert(self) -> None:
+        """'in (the) docs' on its own is too broad to be a help signal — an
+        incident description that mentions errors happening "in docs" must
+        still reach the investigation pipeline (#1166 review feedback).
+
+        Only counts as a docs question when the surrounding clause is
+        question-shaped (covered by ``test_in_the_docs_question_routes_to_cli_help``).
+        """
+        session = ReplSession()
+        text = "the API errors are happening in docs"
+        assert classify_input(text, session) == "new_alert"
+
+    def test_in_the_docs_question_routes_to_cli_help(self) -> None:
+        """The "in (the) docs" phrasing IS a docs signal when the surrounding
+        clause is question-shaped — verifies the targeted pattern still
+        catches legitimate docs questions (#1166)."""
+        session = ReplSession()
+        assert classify_input("in the docs, where is the OAuth flow?", session) == "cli_help"
