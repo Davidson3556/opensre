@@ -123,7 +123,22 @@ _CLI_HELP_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bsubcommand\b", re.IGNORECASE),
     # Documentation-style questions about features, integrations, and concepts.
     # These should ground in docs/ rather than relying on model memory (#1166).
-    re.compile(r"\b(docs|documentation)\b", re.IGNORECASE),
+    # The docs/documentation token is only a help signal when it appears with
+    # question phrasing — bare mentions inside an incident description must
+    # still route to the investigation pipeline.
+    re.compile(
+        r"\b(check|read|see|find|search|show|reference|consult|look\s+at)\s+"
+        r"(the\s+)?(docs|documentation)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(what|where|which)\s+(do|does|are|is)\s+(the\s+)?(docs|documentation)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(in|according\s+to|per)\s+(the\s+)?(docs|documentation)\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"^\s*what\s+(is|are)\s+(\w+\s+){0,3}?(opensre|tracer|docs|documentation|"
         r"integrations?|features?|guardrails?|deployment|installation)\b",

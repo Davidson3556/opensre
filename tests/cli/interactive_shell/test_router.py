@@ -165,3 +165,17 @@ class TestClassifyInput:
         assert classify_input("does opensre support honeycomb?", session) == "cli_help"
         assert classify_input("can opensre integrate with bitbucket?", session) == "cli_help"
         assert classify_input("what are the supported integrations?", session) == "cli_help"
+        # Explicit references to the docs route to docs-grounded help.
+        assert classify_input("check the docs for datadog setup", session) == "cli_help"
+        assert classify_input("according to the docs, what env do I need?", session) == "cli_help"
+
+    def test_incident_text_mentioning_docs_still_routes_to_new_alert(self) -> None:
+        """The bare word 'docs' inside an incident description must NOT be
+        mistaken for a documentation question (#1166). An incident narrative
+        about a service named 'docs' should still run LangGraph investigation."""
+        session = ReplSession()
+        text = (
+            "the database docs service started returning 502 errors at 14:00 UTC "
+            "for 25% of requests"
+        )
+        assert classify_input(text, session) == "new_alert"
