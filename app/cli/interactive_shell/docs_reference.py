@@ -15,10 +15,14 @@ plus subdirectories like ``tutorials/`` and ``use-cases/``.
 
 How docs stay fresh
 -------------------
-Pages are read at runtime from disk (no build step, no cache file), so any
-edit to ``docs/*.mdx`` is reflected the next time the user asks a docs
-question. There is nothing to regenerate. To extend coverage, drop a new
-``.mdx`` file under ``docs/`` and it will be discovered automatically.
+Pages are parsed lazily on first use and memoized for the lifetime of the
+process via an :func:`functools.lru_cache` on :func:`_discover_docs_cached`.
+That means there is no build step and no on-disk cache file: a fresh
+``opensre`` invocation always reads the current ``docs/`` tree. Edits made
+to ``docs/*.mdx`` while a long-running shell is open are NOT picked up
+until the next process restart. To extend coverage, drop a new ``.mdx``
+file under ``docs/`` and it will be discovered automatically the next time
+the shell starts.
 
 When docs are missing
 ---------------------
@@ -261,20 +265,24 @@ def _score(query_tokens: set[str], page: DocPage) -> int:
     heading_tokens = _tokenize(headings_text)
     body_tokens = _tokenize(page.body)
 
-    score = 0
-    score += 8 * len(query_tokens & slug_tokens)
-    score += 5 * len(query_tokens & title_tokens)
-    score += 2 * len(query_tokens & heading_tokens)
-    score += len(query_tokens & body_tokens)
+    match_score = 0
+    match_score += 8 * len(query_tokens & slug_tokens)
+    match_score += 5 * len(query_tokens & title_tokens)
+    match_score += 2 * len(query_tokens & heading_tokens)
+    match_score += len(query_tokens & body_tokens)
     # Exact slug match (e.g. slug "datadog" for query token "datadog") signals
     # this is the canonical page for the topic.
     if page.slug.lower() in query_tokens:
-        score += 12
+        match_score += 12
+    if match_score == 0:
+        return 0
     # Slight penalty for nested subdirectories so root-level integration / setup
-    # pages outrank tangential pages with the same keyword.
+    # pages outrank tangential pages with the same keyword. Clamped to a floor
+    # of 1 so a legitimate match is never zeroed out by depth alone — pages
+    # under tutorials/ or use-cases/ should still surface as lower-ranked
+    # results, not be dropped entirely.
     depth = page.relpath.count("/")
-    score -= depth
-    return score
+    return max(1, match_score - depth)
 
 
 def find_relevant_docs(

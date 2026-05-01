@@ -152,6 +152,30 @@ class TestFindRelevantDocs:
         results = find_relevant_docs("install configure deploy investigate", pages, top_n=2)
         assert len(results) <= 2
 
+    def test_nested_page_with_weak_match_is_not_dropped_by_depth(self, tmp_path: Path) -> None:
+        """A page whose only match is a single body token, nested deep enough
+        that the depth penalty equals or exceeds its raw score, must still
+        surface as a lower-ranked result instead of being excluded entirely.
+
+        Regression: previously the depth penalty was applied unconditionally
+        before the score>0 filter, so a page with raw_score=1 at depth=2
+        scored -1 and was dropped from results.
+        """
+        # Page nested 2 levels deep whose only match for "masking" is a single
+        # body-token mention. raw_score == 1, depth == 2, so without clamping
+        # the final score would be -1 and the page would be filtered out.
+        _write_doc(
+            tmp_path,
+            "tutorials/advanced/notes.mdx",
+            "# Notes\n\nWe briefly mention masking in this tutorial.\n",
+        )
+        pages = discover_docs(tmp_path)
+        results = find_relevant_docs("masking", pages)
+        slugs = [p.slug for p in results]
+        assert "notes" in slugs, (
+            "weak nested match must still surface, not be dropped by depth alone"
+        )
+
 
 class TestBuildDocsReferenceText:
     def test_returns_empty_when_no_docs_present(

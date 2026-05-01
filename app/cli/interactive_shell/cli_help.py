@@ -116,7 +116,6 @@ def answer_cli_help(question: str, session: ReplSession, console: Console) -> No
 
 
 __all__ = [
-    "_build_grounded_prompt",
     "answer_cli_help",
     "build_cli_reference_text",
     "build_docs_reference_text",
