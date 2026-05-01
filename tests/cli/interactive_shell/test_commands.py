@@ -410,6 +410,90 @@ class TestModelCommand:
         dispatch_slash("/model set", ReplSession(), console)
         assert "usage" in buf.getvalue()
 
+    def test_set_with_toolcall_flag_writes_both_env_vars(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`/model set <provider> [model] --toolcall-model <m>` must persist both."""
+        self._patch_llm(monkeypatch)
+        import app.cli.wizard.env_sync as env_sync
+
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", env_path)
+        console, buf = _capture()
+        dispatch_slash(
+            "/model set anthropic claude-opus-4-7 --toolcall-model claude-opus-4-7",
+            ReplSession(),
+            console,
+        )
+
+        output = buf.getvalue()
+        assert "switched LLM provider" in output
+        assert "toolcall model" in output
+        contents = env_path.read_text(encoding="utf-8")
+        assert "LLM_PROVIDER=anthropic" in contents
+        assert "ANTHROPIC_REASONING_MODEL=claude-opus-4-7" in contents
+        assert "ANTHROPIC_TOOLCALL_MODEL=claude-opus-4-7" in contents
+
+    def test_set_unknown_flag_prints_usage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        self._patch_llm(monkeypatch)
+        import app.cli.wizard.env_sync as env_sync
+
+        monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", tmp_path / ".env")
+        console, buf = _capture()
+        dispatch_slash("/model set anthropic --made-up-flag x", ReplSession(), console)
+        assert "usage" in buf.getvalue()
+
+    def test_toolcall_set_updates_only_toolcall_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """`/model toolcall set <m>` must persist only the toolcall env var."""
+        self._patch_llm(monkeypatch)
+        import app.cli.wizard.env_sync as env_sync
+
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", env_path)
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+
+        console, buf = _capture()
+        dispatch_slash("/model toolcall set claude-opus-4-7", ReplSession(), console)
+
+        output = buf.getvalue()
+        assert "toolcall model set to" in output
+        contents = env_path.read_text(encoding="utf-8")
+        assert "ANTHROPIC_TOOLCALL_MODEL=claude-opus-4-7" in contents
+        # Reasoning model is left untouched.
+        assert "ANTHROPIC_REASONING_MODEL" not in contents
+        # LLM_PROVIDER must not be rewritten by a toolcall-only switch.
+        assert "LLM_PROVIDER=" not in contents
+
+    def test_toolcall_set_missing_arg_prints_usage(self) -> None:
+        console, buf = _capture()
+        dispatch_slash("/model toolcall set", ReplSession(), console)
+        assert "usage" in buf.getvalue()
+
+    def test_toolcall_set_for_codex_provider_is_rejected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Providers without a separate toolcall model (codex/claude-code/ollama)
+        must not silently accept toolcall overrides."""
+        import app.cli.wizard.env_sync as env_sync
+
+        monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", tmp_path / ".env")
+        monkeypatch.setenv("LLM_PROVIDER", "codex")
+        console, buf = _capture()
+        dispatch_slash("/model toolcall set gpt-5.4", ReplSession(), console)
+        assert "does not expose a separate toolcall model" in buf.getvalue()
+
     def test_switch_alias_switches_provider(
         self,
         monkeypatch: pytest.MonkeyPatch,

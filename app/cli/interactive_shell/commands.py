@@ -165,7 +165,13 @@ def _render_models_table(console: Console) -> None:
     console.print(table)
 
 
-def switch_llm_provider(provider_name: str, console: Console, model: str | None = None) -> bool:
+def switch_llm_provider(
+    provider_name: str,
+    console: Console,
+    model: str | None = None,
+    *,
+    toolcall_model: str | None = None,
+) -> bool:
     from app.cli.wizard.config import PROVIDER_BY_VALUE
     from app.cli.wizard.env_sync import sync_env_values
 
@@ -184,6 +190,18 @@ def switch_llm_provider(provider_name: str, console: Console, model: str | None 
     if provider.legacy_model_env:
         values[provider.legacy_model_env] = selected_model
 
+    selected_toolcall: str | None = None
+    if toolcall_model is not None:
+        if not provider.toolcall_model_env:
+            console.print(
+                f"[yellow]provider {provider.value} does not expose a separate "
+                "toolcall model[/yellow] — toolcall override ignored."
+            )
+        else:
+            selected_toolcall = toolcall_model.strip()
+            if selected_toolcall:
+                values[provider.toolcall_model_env] = selected_toolcall
+
     env_path = sync_env_values(values)
     os.environ.update(values)
 
@@ -191,9 +209,91 @@ def switch_llm_provider(provider_name: str, console: Console, model: str | None 
         f"[green]switched LLM provider:[/green] {provider.value} "
         f"[dim]({selected_model or 'provider default'})[/dim]"
     )
+    if selected_toolcall:
+        console.print(
+            f"[green]toolcall model:[/green] {selected_toolcall} "
+            f"[dim]({provider.toolcall_model_env})[/dim]"
+        )
     console.print(f"[dim]updated {env_path}[/dim]")
     _render_models_table(console)
     return True
+
+
+def switch_toolcall_model(
+    toolcall_model: str,
+    console: Console,
+    *,
+    provider_name: str | None = None,
+) -> bool:
+    """Set the toolcall model for the active (or named) provider."""
+    from app.cli.wizard.config import PROVIDER_BY_VALUE
+    from app.cli.wizard.env_sync import sync_env_values
+
+    raw_name = provider_name if provider_name else os.getenv("LLM_PROVIDER", "anthropic")
+    resolved_name = (raw_name or "anthropic").strip().lower()
+    provider = PROVIDER_BY_VALUE.get(resolved_name)
+    if provider is None:
+        choices = ", ".join(sorted(PROVIDER_BY_VALUE))
+        console.print(
+            f"[red]unknown LLM provider:[/red] {escape(resolved_name)} "
+            f"[dim](choices: {choices})[/dim]"
+        )
+        return False
+    if not provider.toolcall_model_env:
+        console.print(
+            f"[yellow]provider {provider.value} does not expose a separate "
+            "toolcall model[/yellow] — nothing to set."
+        )
+        return False
+    new_model = toolcall_model.strip()
+    if not new_model:
+        console.print("[red]toolcall model cannot be empty[/red]")
+        return False
+
+    values = {provider.toolcall_model_env: new_model}
+    env_path = sync_env_values(values)
+    os.environ.update(values)
+
+    console.print(
+        f"[green]toolcall model set to:[/green] {new_model} "
+        f"[dim]({provider.value} · {provider.toolcall_model_env})[/dim]"
+    )
+    console.print(f"[dim]updated {env_path}[/dim]")
+    _render_models_table(console)
+    return True
+
+
+def _parse_model_set_args(args: list[str]) -> tuple[str, str | None, str | None] | None:
+    """Parse `set <provider> [reasoning_model] [--toolcall-model <m>]`.
+
+    ``args`` is the slice after the ``set``/``use``/``switch`` keyword.
+    Returns ``(provider, reasoning_model, toolcall_model)`` or ``None`` if the
+    arguments are malformed.
+    """
+    if not args:
+        return None
+
+    provider = args[0]
+    reasoning_model: str | None = None
+    toolcall_model: str | None = None
+
+    i = 1
+    while i < len(args):
+        token = args[i]
+        if token in ("--toolcall-model", "--toolcall"):
+            if i + 1 >= len(args):
+                return None
+            toolcall_model = args[i + 1]
+            i += 2
+            continue
+        if token.startswith("--"):
+            return None
+        if reasoning_model is not None:
+            return None
+        reasoning_model = token
+        i += 1
+
+    return provider, reasoning_model, toolcall_model
 
 
 def _cmd_integrations(session: ReplSession, console: Console, args: list[str]) -> bool:  # noqa: ARG001
@@ -276,16 +376,45 @@ def _cmd_model(session: ReplSession, console: Console, args: list[str]) -> bool:
         _render_models_table(console)
         return True
 
-    if sub in ("set", "use", "switch"):
-        if len(args) < 2:
-            console.print("[red]usage:[/red] /model set <provider> [model]")
+    if sub == "toolcall":
+        # /model toolcall set <model>   — set toolcall model for active provider
+        # /model toolcall show          — alias for /model show
+        if len(args) >= 2 and args[1].lower() == "show":
+            _render_models_table(console)
             return True
-        switch_llm_provider(args[1], console, model=args[2] if len(args) > 2 else None)
+        if len(args) >= 2 and args[1].lower() in ("set", "use", "switch"):
+            if len(args) < 3:
+                console.print("[red]usage:[/red] /model toolcall set <model>")
+                return True
+            switch_toolcall_model(args[2], console)
+            return True
+        console.print(
+            "[red]usage:[/red] /model toolcall set <model> "
+            "[dim](sets the toolcall model for the active provider)[/dim]"
+        )
+        return True
+
+    if sub in ("set", "use", "switch"):
+        parsed = _parse_model_set_args(args[1:])
+        if parsed is None:
+            console.print(
+                "[red]usage:[/red] /model set <provider> [model] [--toolcall-model <model>]"
+            )
+            return True
+        provider_name, reasoning_model, toolcall_model = parsed
+        switch_llm_provider(
+            provider_name,
+            console,
+            model=reasoning_model,
+            toolcall_model=toolcall_model,
+        )
         return True
 
     console.print(
         f"[red]unknown subcommand:[/red] {escape(sub)}  "
-        "(try [bold]/model show[/bold] or [bold]/model set <provider> [model][/bold])"
+        "(try [bold]/model show[/bold], "
+        "[bold]/model set <provider> [model] [--toolcall-model <m>][/bold], "
+        "or [bold]/model toolcall set <model>[/bold])"
     )
     return True
 
@@ -601,7 +730,9 @@ SLASH_COMMANDS: dict[str, SlashCommand] = {
     ),
     "/model": SlashCommand(
         "/model",
-        "show or set the active LLM ('/model show', '/model set <id>')",
+        "show or set the active LLM ('/model show', "
+        "'/model set <provider> [model] [--toolcall-model <m>]', "
+        "'/model toolcall set <model>')",
         _cmd_model,
     ),
     "/health": SlashCommand("/health", "show integration and agent health", _cmd_health),
