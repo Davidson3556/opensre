@@ -177,6 +177,26 @@ def test_detect_version_os_error(_mock_which: MagicMock, mock_run: MagicMock) ->
     assert probe.logged_in is None
 
 
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
+@patch("app.integrations.llm_cli.binary_resolver.shutil.which")
+def test_detect_version_timeout_expired(_mock_which: MagicMock, mock_run: MagicMock) -> None:
+    """Cold-start `claude --version` can exceed the probe timeout; must not raise."""
+    import subprocess
+
+    _mock_which.return_value = "/usr/bin/claude"
+    mock_run.side_effect = subprocess.TimeoutExpired(
+        cmd=["/usr/bin/claude", "--version"], timeout=8.0
+    )
+
+    probe = ClaudeCodeAdapter().detect()
+
+    assert probe.installed is False
+    assert probe.logged_in is None
+    assert probe.bin_path is None
+    assert "could not run" in probe.detail.lower()
+    assert "--version" in probe.detail
+
+
 # ---------------------------------------------------------------------------
 # build()
 # ---------------------------------------------------------------------------
@@ -228,7 +248,9 @@ def test_build_sets_no_color_env(_mock_which: MagicMock) -> None:
 
 @patch("app.integrations.llm_cli.claude_code._fallback_claude_code_paths", return_value=[])
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which", return_value=None)
-def test_build_raises_when_binary_not_found(_mock_which: MagicMock, _mock_fallback: MagicMock) -> None:
+def test_build_raises_when_binary_not_found(
+    _mock_which: MagicMock, _mock_fallback: MagicMock
+) -> None:
     import pytest
 
     with pytest.raises(RuntimeError, match="Claude Code CLI not found"):
@@ -287,7 +309,9 @@ def test_detect_uses_claude_code_bin_env(tmp_path: Path) -> None:
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which", return_value="/usr/bin/claude")
-def test_detect_falls_back_when_bin_env_invalid(_mock_which: MagicMock, mock_run: MagicMock) -> None:
+def test_detect_falls_back_when_bin_env_invalid(
+    _mock_which: MagicMock, mock_run: MagicMock
+) -> None:
     with patch.dict(
         os.environ,
         {"CLAUDE_CODE_BIN": "/does/not/exist/claude", "ANTHROPIC_API_KEY": "sk-t"},
@@ -378,10 +402,15 @@ def test_anthropic_key_forwarded_via_build() -> None:
     with (
         patch.dict(
             os.environ,
-            {"ANTHROPIC_API_KEY": "sk-forward-me", "ANTHROPIC_BASE_URL": "https://proxy.example.com"},
+            {
+                "ANTHROPIC_API_KEY": "sk-forward-me",
+                "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            },
             clear=False,
         ),
-        patch("app.integrations.llm_cli.binary_resolver.shutil.which", return_value="/usr/bin/claude"),
+        patch(
+            "app.integrations.llm_cli.binary_resolver.shutil.which", return_value="/usr/bin/claude"
+        ),
     ):
         inv = ClaudeCodeAdapter().build(prompt="p", model=None, workspace="")
 
