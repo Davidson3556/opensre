@@ -10,17 +10,12 @@ from typing import Literal
 
 from app.config import (
     ANTHROPIC_REASONING_MODEL,
-    ANTHROPIC_TOOLCALL_MODEL,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     GEMINI_REASONING_MODEL,
-    GEMINI_TOOLCALL_MODEL,
     NVIDIA_REASONING_MODEL,
-    NVIDIA_TOOLCALL_MODEL,
     OPENAI_REASONING_MODEL,
-    OPENAI_TOOLCALL_MODEL,
     OPENROUTER_REASONING_MODEL,
-    OPENROUTER_TOOLCALL_MODEL,
 )
 from app.integrations.llm_cli.base import LLMCLIAdapter
 
@@ -55,9 +50,6 @@ class ProviderOption:
     #: providers that don't expose a separate toolcall model (e.g. CLI-backed
     #: providers like ``codex``/``claude-code``, or Ollama).
     toolcall_model_env: str | None = None
-    #: Default toolcall model to use when the user has not picked one. Empty
-    #: string means "no default" (e.g. CLI providers).
-    default_toolcall_model: str = ""
     #: Human-readable name for the credential requested during onboarding. Most
     #: providers want an API key; Ollama wants a host URL. Used as the wizard
     #: prompt label, e.g. ``{label} {credential_label} ({api_key_env})``.
@@ -197,7 +189,6 @@ SUPPORTED_PROVIDERS = (
         models=ANTHROPIC_MODELS,
         legacy_model_env="ANTHROPIC_MODEL",
         toolcall_model_env="ANTHROPIC_TOOLCALL_MODEL",
-        default_toolcall_model=ANTHROPIC_TOOLCALL_MODEL,
     ),
     ProviderOption(
         value="openai",
@@ -209,7 +200,6 @@ SUPPORTED_PROVIDERS = (
         models=OPENAI_MODELS,
         legacy_model_env="OPENAI_MODEL",
         toolcall_model_env="OPENAI_TOOLCALL_MODEL",
-        default_toolcall_model=OPENAI_TOOLCALL_MODEL,
     ),
     ProviderOption(
         value="openrouter",
@@ -221,7 +211,6 @@ SUPPORTED_PROVIDERS = (
         models=OPENROUTER_MODELS,
         legacy_model_env="OPENROUTER_MODEL",
         toolcall_model_env="OPENROUTER_TOOLCALL_MODEL",
-        default_toolcall_model=OPENROUTER_TOOLCALL_MODEL,
     ),
     ProviderOption(
         value="gemini",
@@ -233,7 +222,6 @@ SUPPORTED_PROVIDERS = (
         models=GEMINI_MODELS,
         legacy_model_env="GEMINI_MODEL",
         toolcall_model_env="GEMINI_TOOLCALL_MODEL",
-        default_toolcall_model=GEMINI_TOOLCALL_MODEL,
     ),
     ProviderOption(
         value="nvidia",
@@ -245,7 +233,6 @@ SUPPORTED_PROVIDERS = (
         models=NVIDIA_MODELS,
         legacy_model_env="NVIDIA_MODEL",
         toolcall_model_env="NVIDIA_TOOLCALL_MODEL",
-        default_toolcall_model=NVIDIA_TOOLCALL_MODEL,
     ),
     ProviderOption(
         value="codex",

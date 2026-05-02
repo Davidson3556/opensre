@@ -280,7 +280,7 @@ def _parse_model_set_args(args: list[str]) -> tuple[str, str | None, str | None]
     i = 1
     while i < len(args):
         token = args[i]
-        if token in ("--toolcall-model", "--toolcall"):
+        if token == "--toolcall-model":
             if i + 1 >= len(args):
                 return None
             toolcall_model = args[i + 1]
