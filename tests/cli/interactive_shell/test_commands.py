@@ -447,7 +447,29 @@ class TestModelCommand:
         monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", tmp_path / ".env")
         console, buf = _capture()
         dispatch_slash("/model set anthropic --made-up-flag x", ReplSession(), console)
-        assert "usage" in buf.getvalue()
+        output = buf.getvalue()
+        assert "unknown flag" in output
+        assert "--made-up-flag" in output
+        assert "usage" in output
+
+    def test_set_toolcall_flag_without_value_prints_specific_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Reviewer ask: a missing flag value must say *which* flag, not just
+        echo the generic usage line."""
+        self._patch_llm(monkeypatch)
+        import app.cli.wizard.env_sync as env_sync
+
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", env_path)
+        console, buf = _capture()
+        dispatch_slash("/model set anthropic --toolcall-model", ReplSession(), console)
+        output = buf.getvalue()
+        assert "missing value for --toolcall-model" in output
+        # And we must not have written anything to .env on a parse failure.
+        assert not env_path.exists() or "ANTHROPIC_TOOLCALL_MODEL" not in env_path.read_text()
 
     def test_toolcall_set_updates_only_toolcall_model(
         self,

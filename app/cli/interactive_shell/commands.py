@@ -263,15 +263,16 @@ def switch_toolcall_model(
     return True
 
 
-def _parse_model_set_args(args: list[str]) -> tuple[str, str | None, str | None] | None:
+def _parse_model_set_args(args: list[str]) -> tuple[str, str | None, str | None]:
     """Parse `set <provider> [reasoning_model] [--toolcall-model <m>]`.
 
     ``args`` is the slice after the ``set``/``use``/``switch`` keyword.
-    Returns ``(provider, reasoning_model, toolcall_model)`` or ``None`` if the
-    arguments are malformed.
+    Raises :class:`ValueError` with a user-facing message when the input is
+    malformed, so the caller can surface a specific reason ("missing value
+    for --toolcall-model") instead of a generic usage line.
     """
     if not args:
-        return None
+        raise ValueError("missing provider name")
 
     provider = args[0]
     reasoning_model: str | None = None
@@ -282,14 +283,14 @@ def _parse_model_set_args(args: list[str]) -> tuple[str, str | None, str | None]
         token = args[i]
         if token == "--toolcall-model":
             if i + 1 >= len(args):
-                return None
+                raise ValueError("missing value for --toolcall-model")
             toolcall_model = args[i + 1]
             i += 2
             continue
         if token.startswith("--"):
-            return None
+            raise ValueError(f"unknown flag: {token}")
         if reasoning_model is not None:
-            return None
+            raise ValueError(f"unexpected extra argument: {token}")
         reasoning_model = token
         i += 1
 
@@ -395,13 +396,14 @@ def _cmd_model(session: ReplSession, console: Console, args: list[str]) -> bool:
         return True
 
     if sub in ("set", "use", "switch"):
-        parsed = _parse_model_set_args(args[1:])
-        if parsed is None:
+        try:
+            provider_name, reasoning_model, toolcall_model = _parse_model_set_args(args[1:])
+        except ValueError as exc:
+            console.print(f"[red]{escape(str(exc))}[/red]")
             console.print(
-                "[red]usage:[/red] /model set <provider> [model] [--toolcall-model <model>]"
+                "[dim]usage:[/dim] /model set <provider> [model] [--toolcall-model <model>]"
             )
             return True
-        provider_name, reasoning_model, toolcall_model = parsed
         switch_llm_provider(
             provider_name,
             console,
