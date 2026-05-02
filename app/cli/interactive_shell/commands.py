@@ -174,6 +174,7 @@ def switch_llm_provider(
 ) -> bool:
     from app.cli.wizard.config import PROVIDER_BY_VALUE
     from app.cli.wizard.env_sync import sync_env_values
+    from app.llm_credentials import has_llm_api_key
 
     provider_key = provider_name.strip().lower()
     provider = PROVIDER_BY_VALUE.get(provider_key)
@@ -182,6 +183,31 @@ def switch_llm_provider(
         console.print(
             f"[red]unknown LLM provider:[/red] {escape(provider_name)} "
             f"[dim](choices: {choices})[/dim]"
+        )
+        return False
+
+    # Refuse to half-update .env when the target provider has no usable
+    # credential. Without this the user lands in a state where LLM_PROVIDER
+    # points at e.g. anthropic but ANTHROPIC_API_KEY is unset, so the very
+    # next call into LLMSettings.from_env() raises and /model show prints
+    # "LLM settings unavailable" — which is exactly what reviewers caught
+    # in #1192. Skip the check for providers whose credential isn't a
+    # secret (ollama uses OLLAMA_HOST which has a working default) and for
+    # CLI-backed providers (codex, claude-code) that authenticate through
+    # the vendor CLI and have no api_key_env at all.
+    if (
+        provider.credential_secret
+        and provider.api_key_env
+        and not has_llm_api_key(provider.api_key_env)
+    ):
+        console.print(
+            f"[red]missing credential for {provider.value}:[/red] "
+            f"{provider.api_key_env} is not set in env or the keyring."
+        )
+        console.print(
+            f"[dim]set it with[/dim] [bold]export {provider.api_key_env}=<your-key>[/bold] "
+            "[dim]or run[/dim] [bold]opensre onboard[/bold] "
+            "[dim]to save it to the keyring, then rerun this command.[/dim]"
         )
         return False
 

@@ -397,6 +397,9 @@ class TestModelCommand:
         import app.cli.wizard.env_sync as env_sync
 
         monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", tmp_path / ".env")
+        # /model set now refuses to half-update .env when the target provider
+        # has no usable credential; supply one so the happy path still runs.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         console, buf = _capture()
         dispatch_slash("/model set anthropic", ReplSession(), console)
 
@@ -404,6 +407,43 @@ class TestModelCommand:
         assert "switched LLM provider" in output
         assert "anthropic" in output
         assert "LLM_PROVIDER=anthropic" in (tmp_path / ".env").read_text(encoding="utf-8")
+
+    def test_set_refuses_when_credential_missing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """Reviewer ask (#1192): if the target provider has no API key in env
+        or keyring, /model set must NOT touch .env or os.environ — otherwise
+        the user lands in a broken half-state where LLM_PROVIDER points at a
+        provider with no usable credential and the next /model show prints
+        'LLM settings unavailable'."""
+        self._patch_llm(monkeypatch)
+        import app.cli.wizard.env_sync as env_sync
+
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", env_path)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # Keyring lookups in CI / sandboxes are flaky; force the helper into
+        # the env-only path so the test is deterministic.
+        monkeypatch.setenv("OPENSRE_DISABLE_KEYRING", "1")
+        # LLM_PROVIDER must not be rewritten by a rejected switch — capture
+        # what it was before so we can assert it is unchanged.
+        monkeypatch.setenv("LLM_PROVIDER", "gemini")
+
+        console, buf = _capture()
+        dispatch_slash("/model set anthropic", ReplSession(), console)
+
+        output = buf.getvalue()
+        assert "missing credential for anthropic" in output
+        assert "ANTHROPIC_API_KEY" in output
+        assert "switched LLM provider" not in output
+        # No .env should have been written.
+        assert not env_path.exists()
+        # And the live LLM_PROVIDER must be untouched.
+        import os
+
+        assert os.environ.get("LLM_PROVIDER") == "gemini"
 
     def test_set_missing_provider_prints_usage(self) -> None:
         console, buf = _capture()
@@ -421,6 +461,7 @@ class TestModelCommand:
 
         env_path = tmp_path / ".env"
         monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", env_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         console, buf = _capture()
         dispatch_slash(
             "/model set anthropic claude-opus-4-7 --toolcall-model claude-opus-4-7",
@@ -445,6 +486,7 @@ class TestModelCommand:
         import app.cli.wizard.env_sync as env_sync
 
         monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", tmp_path / ".env")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         console, buf = _capture()
         dispatch_slash("/model set anthropic --made-up-flag x", ReplSession(), console)
         output = buf.getvalue()
@@ -464,6 +506,7 @@ class TestModelCommand:
 
         env_path = tmp_path / ".env"
         monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", env_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         console, buf = _capture()
         dispatch_slash("/model set anthropic --toolcall-model", ReplSession(), console)
         output = buf.getvalue()
@@ -525,6 +568,7 @@ class TestModelCommand:
         import app.cli.wizard.env_sync as env_sync
 
         monkeypatch.setattr(env_sync, "PROJECT_ENV_PATH", tmp_path / ".env")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         console, buf = _capture()
         dispatch_slash("/model switch anthropic", ReplSession(), console)
 
