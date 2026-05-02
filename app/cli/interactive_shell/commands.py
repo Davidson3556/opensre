@@ -231,9 +231,15 @@ def switch_llm_provider(
     env_path = sync_env_values(values)
     os.environ.update(values)
 
+    # Be explicit about which slot each model lands in. The previous output
+    # ("switched LLM provider: anthropic (X)") read ambiguously: a reviewer
+    # ran `/model set anthropic claude-haiku-...` and asked "how is the
+    # reasoning model changing then?" because `(X)` did not say *which*
+    # slot X went into. Always label both slots on a switch.
+    console.print(f"[green]switched LLM provider:[/green] {provider.value}")
     console.print(
-        f"[green]switched LLM provider:[/green] {provider.value} "
-        f"[dim]({selected_model or 'provider default'})[/dim]"
+        f"[green]reasoning model:[/green] {selected_model or 'provider default'} "
+        f"[dim]({provider.model_env})[/dim]"
     )
     if selected_toolcall:
         console.print(

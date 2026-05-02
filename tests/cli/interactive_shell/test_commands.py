@@ -406,6 +406,11 @@ class TestModelCommand:
         output = buf.getvalue()
         assert "switched LLM provider" in output
         assert "anthropic" in output
+        # Reviewer (#1192) couldn't tell from "anthropic (X)" which slot the
+        # model went into; the success message must now explicitly label the
+        # reasoning slot and name the env var it lands in.
+        assert "reasoning model:" in output
+        assert "ANTHROPIC_REASONING_MODEL" in output
         assert "LLM_PROVIDER=anthropic" in (tmp_path / ".env").read_text(encoding="utf-8")
 
     def test_set_refuses_when_credential_missing(
