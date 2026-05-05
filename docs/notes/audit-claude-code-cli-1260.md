@@ -151,8 +151,10 @@ was not. **Added `test_classify_auth_no_credentials_windows` in this branch.**
   via Claude subscription"). Fix: read `authMethod` (e.g. `apiKey` →
   "Authenticated via ANTHROPIC_API_KEY"; `claude.ai` → subscription). Verify
   the exact value the CLI emits for each path before changing the parser.
-  Existing test `test_probe_cli_auth_api_key` mocks `apiKeySource` and would
-  need updating alongside the parser.
+  Existing tests `test_probe_cli_auth_api_key`, `test_detect_api_key_authenticated`,
+  and the `_auth_status_proc` helper mock `apiKeySource`. They are annotated
+  in-tree with a pointer back to this note so the false coverage is visible
+  next to the assertions; update them alongside the parser.
 - **P2** — `opensre doctor` does not surface anything for CLI-backed providers.
   When `LLM_PROVIDER=claude-code` it currently passes silently
   ([doctor.py:46-64](../../app/cli/commands/doctor.py#L46-L64)). A small

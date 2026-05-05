@@ -147,7 +147,14 @@ def test_probe_cli_auth_subscription(mock_run: MagicMock) -> None:
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 def test_probe_cli_auth_api_key(mock_run: MagicMock) -> None:
-    """API key auth: loggedIn=true, apiKeySource present → API key detail."""
+    """API key auth: loggedIn=true, apiKeySource present → API key detail.
+
+    NOTE: ``claude auth status`` on CLI 2.1.123 does not emit ``apiKeySource``
+    (actual fields: ``loggedIn``, ``authMethod``, ``apiProvider``, ``email``,
+    ``subscriptionType``, ``orgId``, ``orgName``). This test exercises a branch
+    that is currently unreachable in production. Update alongside the parser
+    fix tracked as P2 in ``docs/notes/audit-claude-code-cli-1260.md``.
+    """
     m = MagicMock()
     m.returncode = 0
     m.stdout = '{"loggedIn": true, "apiKeySource": "ANTHROPIC_API_KEY"}\n'
@@ -239,7 +246,11 @@ def test_detect_subscription_authenticated(mock_which: MagicMock, mock_run: Magi
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which")
 def test_detect_api_key_authenticated(mock_which: MagicMock, mock_run: MagicMock) -> None:
-    """detect() returns logged_in=True via API key when binary reports apiKeySource."""
+    """detect() returns logged_in=True via API key when binary reports apiKeySource.
+
+    NOTE: ``apiKeySource`` is not emitted by current CLI versions; see the note
+    on ``test_probe_cli_auth_api_key`` and the P2 follow-up in the audit doc.
+    """
     mock_which.return_value = "/usr/bin/claude"
 
     auth_proc = MagicMock()
@@ -270,6 +281,12 @@ def _version_proc() -> MagicMock:
 
 
 def _auth_status_proc(logged_in: bool, api_key_source: str = "", email: str = "") -> MagicMock:
+    """Build a mocked ``claude auth status`` JSON payload.
+
+    NOTE: ``api_key_source`` populates ``apiKeySource``, which is not emitted by
+    current CLI versions (see ``test_probe_cli_auth_api_key`` and the P2
+    follow-up in ``docs/notes/audit-claude-code-cli-1260.md``).
+    """
     m = MagicMock()
     m.returncode = 0
     data: dict = {"loggedIn": logged_in}
