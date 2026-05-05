@@ -49,8 +49,23 @@ def _parse_semver(text: str) -> str | None:
 def _probe_cli_auth(binary_path: str) -> tuple[bool | None, str]:
     """Check Claude Code auth via `claude auth status` (local, no API call).
 
-    Covers both subscription login and ANTHROPIC_API_KEY; subscription takes
-    priority as reported by the CLI itself.
+    Returns ``(True, …)`` for any working auth (subscription or API key),
+    ``(False, …)`` when the CLI definitively reports the user as not logged
+    in, and ``(None, …)`` only when the probe itself failed (timeout, spawn
+    error, or unparseable output from an older CLI).
+
+    Implementation notes
+    --------------------
+    * ``claude auth status`` exits **non-zero** when ``loggedIn`` is false (CLI
+      ≥ 2.x), so we parse JSON regardless of the return code and only fall
+      back to the exit code when JSON parsing fails. The previous behaviour of
+      returning ``None`` on any non-zero exit hid a real "not logged in" state
+      behind the wizard's "could not verify" branch.
+    * The active auth method is read from ``authMethod`` (``"claude.ai"``,
+      ``"api_key"``, ``"none"``). ``apiKeySource`` is only set when the env
+      contributes an API key — it can be present even when the CLI is actively
+      using a subscription, so it's read only as supporting detail for
+      ``api_key`` auth, not as the primary discriminator.
     """
     try:
         proc = subprocess.run(
@@ -68,21 +83,34 @@ def _probe_cli_auth(binary_path: str) -> tuple[bool | None, str]:
         )
     except OSError as exc:
         return None, f"Could not spawn claude for auth probe: {exc}"
-    if proc.returncode != 0:
+
+    try:
+        data = json.loads(proc.stdout or "")
+    except (json.JSONDecodeError, ValueError):
+        if proc.returncode == 0:
+            # Older CLI versions may not output JSON — treat exit 0 as authenticated.
+            return True, "Authenticated via Claude CLI."
         err = (proc.stderr or proc.stdout or "").strip()[:500]
         return None, f"claude auth status failed: {err or 'unknown error'}"
-    try:
-        data = json.loads(proc.stdout)
-        if not data.get("loggedIn"):
-            return False, "Not authenticated. Run: claude auth login  or set ANTHROPIC_API_KEY."
-        api_key_source = data.get("apiKeySource", "")
-        if api_key_source:
-            return True, f"Authenticated via {api_key_source}."
-        email = data.get("email", "")
+
+    if not isinstance(data, dict) or not data.get("loggedIn"):
+        return False, "Not authenticated. Run: claude login  or set ANTHROPIC_API_KEY."
+
+    auth_method = str(data.get("authMethod") or "").lower()
+    email = str(data.get("email") or "")
+    api_key_source = str(data.get("apiKeySource") or "")
+
+    if auth_method == "api_key":
+        source = api_key_source or "ANTHROPIC_API_KEY"
+        return True, f"Authenticated via {source}."
+    if auth_method == "claude.ai":
         return True, f"Authenticated via Claude subscription{f' ({email})' if email else ''}."
-    except (json.JSONDecodeError, AttributeError):
-        # Older CLI versions may not output JSON — treat exit 0 as authenticated.
-        return True, "Authenticated via Claude CLI."
+    # Older CLI versions may omit authMethod — fall back to legacy heuristic.
+    if api_key_source:
+        return True, f"Authenticated via {api_key_source}."
+    if email:
+        return True, f"Authenticated via Claude subscription ({email})."
+    return True, "Authenticated via Claude CLI."
 
 
 def _classify_claude_code_auth(binary_path: str | None = None) -> tuple[bool | None, str]:

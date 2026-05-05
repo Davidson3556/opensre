@@ -17,12 +17,20 @@ to [#1199 (comment)](https://github.com/Tracer-Cloud/opensre/issues/1199) and th
 - **Cross-OS coverage is complete in code** (binary names, fallback dirs,
   subprocess env keys, no-binary fallback ordering). One **test gap**
   (Windows-no-binary case) — added in this branch.
-- **Latent bug found while verifying the JSON shape live:** `_probe_cli_auth`
-  parses a key (`apiKeySource`) that the current CLI does not emit. The
-  `loggedIn` boolean still parses correctly, so the wizard verdict is correct,
-  but the detail string is wrong for API-key users. Cosmetic only; tracked as
-  a P2 follow-up below (not fixed in this branch — needs verification of the
-  exact JSON shape under API-key auth).
+- **Two real bugs found while verifying the live CLI** — both fixed in this
+  branch:
+  1. ``claude auth status`` exits **1** when ``loggedIn`` is false. The probe
+     short-circuited on ``returncode != 0`` and returned ``None`` before
+     parsing JSON, so the wizard showed "Could not verify login" instead of
+     "requires login" — users had no clear signal that they needed to run
+     ``claude login``. **User-visible.**
+  2. The probe used ``apiKeySource`` as the primary discriminator between
+     subscription and API-key auth. Verified on CLI 2.1.123 that
+     ``apiKeySource`` is reported even when the active auth method is the
+     subscription (whenever ``ANTHROPIC_API_KEY`` is also in the env). The
+     authoritative discriminator is ``authMethod`` (``claude.ai`` /
+     ``api_key`` / ``none``). Detail string was previously misleading for
+     subscription-with-env-key users.
 - Optional follow-ups listed below; none of them block closing this issue.
 
 ## 1. Goal 1 — confirm #1217 fully addresses #1199
@@ -89,23 +97,23 @@ fallback." Audit of every user-visible string:
 the one place that put `ANTHROPIC_API_KEY` first, which contradicts the rest of
 the codebase. **Fixed in this branch.**
 
-**Found gap (real, latent):** `_probe_cli_auth` reads a field called
-`apiKeySource` from the CLI's JSON output, but the current CLI
-(`claude --version` 2.1.123) does not emit that key at all. Verified by running
-`claude auth status` locally — the actual fields are
-`['apiProvider', 'authMethod', 'email', 'loggedIn', 'orgId', 'orgName', 'subscriptionType']`.
-Practical impact: subscription users still get the right detail (the code falls
-through to the `email` branch). API-key users would also fall through to the
-`email` branch and be **misreported as "Authenticated via Claude subscription"**
-in the detail string, even though `loggedIn` is correctly `True`. This is
-cosmetic — it does not affect the auth verdict the wizard uses (`logged_in`
-True/False/None), so it does not re-introduce the `#1199` failure mode — but
-the detail string is wrong for one class of users. Likely cause: the field
-name `apiKeySource` was either based on an older CLI version or speculative at
-the time `#1217` was written. Recommended follow-up below (P2). Not fixed in
-this branch because the right fix needs verification of what the CLI emits for
-an actual API-key authenticated session, which I could not test from a
-subscription-authed machine.
+**Found bug (auth detail discriminator):** `_probe_cli_auth` originally used
+`apiKeySource` as the primary discriminator between subscription and API-key
+auth, with `email` as the subscription fallback. Live verification on CLI
+2.1.123 across all four auth states showed this is wrong:
+
+| Auth state | exit | `loggedIn` | `authMethod` | `apiKeySource` | `email` |
+| --- | --- | --- | --- | --- | --- |
+| Subscription only | 0 | `true` | `claude.ai` | absent | present |
+| API key only (env, fresh HOME) | 0 | `true` | `api_key` | `"ANTHROPIC_API_KEY"` | absent |
+| Subscription + API key in env | 0 | `true` | `claude.ai` | `"ANTHROPIC_API_KEY"` | present |
+| No auth | **1** | `false` | `none` | absent | absent |
+
+The third row is the proof: `apiKeySource` is set even though the CLI is
+actively using the subscription. The previous code branched on
+`apiKeySource`-presence and would have reported "Authenticated via
+ANTHROPIC_API_KEY" for those users. Fixed by branching on `authMethod`
+instead, with `apiKeySource` and `email` used only as supporting detail.
 
 ## 3. Goal 3 — cross-OS matrix
 
@@ -134,27 +142,32 @@ was not. **Added `test_classify_auth_no_credentials_windows` in this branch.**
 
 ### Landed in this branch
 
+- **P0 (user-visible bug fix)** — `_probe_cli_auth` now parses the JSON output
+  before consulting the exit code. Real CLI returns exit 1 with valid JSON
+  when `loggedIn` is false; the previous code returned `None` (uncertain)
+  on any non-zero exit, so the wizard's "Could not verify login" branch hid
+  the actual "user is not logged in" state. Now `loggedIn: false` resolves to
+  a definitive `False`, and the wizard routes the user to the "requires
+  login" recovery path with the correct hint.
+- **P1 (auth detail bug fix)** — `_probe_cli_auth` now branches on
+  `authMethod` (`claude.ai` / `api_key`) instead of `apiKeySource` to choose
+  the detail string, so subscription users with `ANTHROPIC_API_KEY` also set
+  in the env no longer get reported as "Authenticated via ANTHROPIC_API_KEY".
 - **P1** — `claude_code.py` module docstring updated to lead with `claude login`
   (subscription) and treat `ANTHROPIC_API_KEY` as fallback, matching the rest
   of the codebase.
 - **P1** — Added `test_classify_auth_no_credentials_windows` mirroring the
   Linux test, closing the cross-OS test-coverage gap.
+- **P1** — Added `test_probe_cli_auth_subscription_with_env_api_key_reports_subscription`
+  as a regression guard for the third row in the auth-state table above, plus
+  a refreshed `test_probe_cli_auth_not_logged_in` that uses the real CLI's
+  `exit 1 + loggedIn:false` shape (regression guard for the P0 fix above).
+  Updated existing tests to include `authMethod` in their mocked JSON so they
+  match the live CLI shape rather than the partial shape inferred at the time
+  of `#1217`.
 
 ### Optional follow-ups (separate issues)
 
-- **P2** — `_probe_cli_auth` parses a JSON field name (`apiKeySource`) that the
-  current Claude Code CLI does not emit. Verified against `claude` 2.1.123:
-  fields are `loggedIn`, `authMethod`, `apiProvider`, `email`,
-  `subscriptionType`, `orgId`, `orgName`. The functional outcome is correct
-  for subscription users and `loggedIn` itself is parsed correctly, but
-  API-key-authenticated users get a misleading detail string ("Authenticated
-  via Claude subscription"). Fix: read `authMethod` (e.g. `apiKey` →
-  "Authenticated via ANTHROPIC_API_KEY"; `claude.ai` → subscription). Verify
-  the exact value the CLI emits for each path before changing the parser.
-  Existing tests `test_probe_cli_auth_api_key`, `test_detect_api_key_authenticated`,
-  and the `_auth_status_proc` helper mock `apiKeySource`. They are annotated
-  in-tree with a pointer back to this note so the false coverage is visible
-  next to the assertions; update them alongside the parser.
 - **P2** — `opensre doctor` does not surface anything for CLI-backed providers.
   When `LLM_PROVIDER=claude-code` it currently passes silently
   ([doctor.py:46-64](../../app/cli/commands/doctor.py#L46-L64)). A small
@@ -170,6 +183,14 @@ was not. **Added `test_classify_auth_no_credentials_windows` in this branch.**
 
 ## Files changed in this branch
 
-- [`app/integrations/llm_cli/claude_code.py`](../../app/integrations/llm_cli/claude_code.py) — docstring ordering.
-- [`tests/integrations/llm_cli/test_claude_code_adapter.py`](../../tests/integrations/llm_cli/test_claude_code_adapter.py) — added Windows no-binary test.
+- [`app/integrations/llm_cli/claude_code.py`](../../app/integrations/llm_cli/claude_code.py)
+  — docstring ordering and `_probe_cli_auth` rewrite (parse JSON before
+  consulting exit code; branch on `authMethod`; clearer docstring on the
+  three return states and why each happens).
+- [`tests/integrations/llm_cli/test_claude_code_adapter.py`](../../tests/integrations/llm_cli/test_claude_code_adapter.py)
+  — added the Windows no-binary test, the subscription-with-env-key regression
+  test, the exit-1 `loggedIn:false` regression test; updated existing mocked
+  JSON to include `authMethod` so it matches the live CLI shape; helper
+  `_auth_status_proc` extended with an `auth_method` parameter and now
+  mirrors the real CLI's exit code (`1` when not logged in).
 - This note.

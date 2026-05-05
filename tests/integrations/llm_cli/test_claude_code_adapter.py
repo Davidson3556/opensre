@@ -133,10 +133,13 @@ def test_classify_auth_api_key_not_blocked_by_unreadable_creds() -> None:
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 def test_probe_cli_auth_subscription(mock_run: MagicMock) -> None:
-    """Subscription login: loggedIn=true, no apiKeySource → subscription detail."""
+    """Subscription login (authMethod=claude.ai): True with subscription detail."""
     m = MagicMock()
     m.returncode = 0
-    m.stdout = '{"loggedIn": true, "email": "user@example.com"}\n'
+    m.stdout = (
+        '{"loggedIn": true, "authMethod": "claude.ai", '
+        '"email": "user@example.com", "subscriptionType": "pro"}\n'
+    )
     m.stderr = ""
     mock_run.return_value = m
     logged_in, detail = _probe_cli_auth("/usr/bin/claude")
@@ -147,17 +150,14 @@ def test_probe_cli_auth_subscription(mock_run: MagicMock) -> None:
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 def test_probe_cli_auth_api_key(mock_run: MagicMock) -> None:
-    """API key auth: loggedIn=true, apiKeySource present → API key detail.
+    """API-key auth (authMethod=api_key): True with ANTHROPIC_API_KEY detail.
 
-    NOTE: ``claude auth status`` on CLI 2.1.123 does not emit ``apiKeySource``
-    (actual fields: ``loggedIn``, ``authMethod``, ``apiProvider``, ``email``,
-    ``subscriptionType``, ``orgId``, ``orgName``). This test exercises a branch
-    that is currently unreachable in production. Update alongside the parser
-    fix tracked as P2 in ``docs/notes/audit-claude-code-cli-1260.md``.
+    Real CLI shape verified by running ``claude auth status`` with only
+    ``ANTHROPIC_API_KEY`` set (no subscription, fresh HOME).
     """
     m = MagicMock()
     m.returncode = 0
-    m.stdout = '{"loggedIn": true, "apiKeySource": "ANTHROPIC_API_KEY"}\n'
+    m.stdout = '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}\n'
     m.stderr = ""
     mock_run.return_value = m
     logged_in, detail = _probe_cli_auth("/usr/bin/claude")
@@ -166,10 +166,41 @@ def test_probe_cli_auth_api_key(mock_run: MagicMock) -> None:
 
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
-def test_probe_cli_auth_not_logged_in(mock_run: MagicMock) -> None:
+def test_probe_cli_auth_subscription_with_env_api_key_reports_subscription(
+    mock_run: MagicMock,
+) -> None:
+    """Subscription login wins over an env API key.
+
+    The CLI emits both ``authMethod="claude.ai"`` and
+    ``apiKeySource="ANTHROPIC_API_KEY"`` when a subscription user also has the
+    env var set, but it is actively using the subscription. The detail string
+    must reflect that, not the env var.
+    """
     m = MagicMock()
     m.returncode = 0
-    m.stdout = '{"loggedIn": false}\n'
+    m.stdout = (
+        '{"loggedIn": true, "authMethod": "claude.ai", '
+        '"apiKeySource": "ANTHROPIC_API_KEY", "email": "user@example.com"}\n'
+    )
+    m.stderr = ""
+    mock_run.return_value = m
+    logged_in, detail = _probe_cli_auth("/usr/bin/claude")
+    assert logged_in is True
+    assert "subscription" in detail
+    assert "user@example.com" in detail
+
+
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
+def test_probe_cli_auth_not_logged_in(mock_run: MagicMock) -> None:
+    """Not logged in: real CLI returns exit 1 with valid JSON ``loggedIn=false``.
+
+    Regression guard: the previous implementation short-circuited on
+    ``returncode != 0`` and returned ``None`` (uncertain), causing the wizard
+    to show "could not verify" instead of the correct "requires login" path.
+    """
+    m = MagicMock()
+    m.returncode = 1
+    m.stdout = '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}\n'
     m.stderr = ""
     mock_run.return_value = m
     logged_in, detail = _probe_cli_auth("/usr/bin/claude")
@@ -178,8 +209,8 @@ def test_probe_cli_auth_not_logged_in(mock_run: MagicMock) -> None:
 
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
-def test_probe_cli_auth_nonzero_exit(mock_run: MagicMock) -> None:
-    """Non-zero exit → None (probe failure, not confirmed unauthenticated)."""
+def test_probe_cli_auth_unknown_subcommand(mock_run: MagicMock) -> None:
+    """Older CLI without ``auth status``: non-zero exit + non-JSON stderr → None."""
     m = MagicMock()
     m.returncode = 1
     m.stdout = ""
@@ -231,7 +262,9 @@ def test_detect_subscription_authenticated(mock_which: MagicMock, mock_run: Magi
 
     auth_proc = MagicMock()
     auth_proc.returncode = 0
-    auth_proc.stdout = '{"loggedIn": true, "email": "user@example.com"}\n'
+    auth_proc.stdout = (
+        '{"loggedIn": true, "authMethod": "claude.ai", "email": "user@example.com"}\n'
+    )
     auth_proc.stderr = ""
     mock_run.side_effect = [_version_proc(), auth_proc]
 
@@ -246,16 +279,14 @@ def test_detect_subscription_authenticated(mock_which: MagicMock, mock_run: Magi
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which")
 def test_detect_api_key_authenticated(mock_which: MagicMock, mock_run: MagicMock) -> None:
-    """detect() returns logged_in=True via API key when binary reports apiKeySource.
-
-    NOTE: ``apiKeySource`` is not emitted by current CLI versions; see the note
-    on ``test_probe_cli_auth_api_key`` and the P2 follow-up in the audit doc.
-    """
+    """detect() returns logged_in=True via API key when CLI reports authMethod=api_key."""
     mock_which.return_value = "/usr/bin/claude"
 
     auth_proc = MagicMock()
     auth_proc.returncode = 0
-    auth_proc.stdout = '{"loggedIn": true, "apiKeySource": "ANTHROPIC_API_KEY"}\n'
+    auth_proc.stdout = (
+        '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}\n'
+    )
     auth_proc.stderr = ""
     mock_run.side_effect = [_version_proc(), auth_proc]
 
@@ -280,20 +311,29 @@ def _version_proc() -> MagicMock:
     return m
 
 
-def _auth_status_proc(logged_in: bool, api_key_source: str = "", email: str = "") -> MagicMock:
-    """Build a mocked ``claude auth status`` JSON payload.
+def _auth_status_proc(
+    logged_in: bool,
+    auth_method: str = "",
+    api_key_source: str = "",
+    email: str = "",
+) -> MagicMock:
+    """Build a mocked ``claude auth status`` JSON payload mirroring the real CLI.
 
-    NOTE: ``api_key_source`` populates ``apiKeySource``, which is not emitted by
-    current CLI versions (see ``test_probe_cli_auth_api_key`` and the P2
-    follow-up in ``docs/notes/audit-claude-code-cli-1260.md``).
+    Real CLI 2.x returns exit 1 with valid JSON when ``loggedIn`` is false; the
+    helper mirrors that so tests exercise the same path the wizard hits in
+    production.
     """
     m = MagicMock()
-    m.returncode = 0
     data: dict = {"loggedIn": logged_in}
+    if auth_method:
+        data["authMethod"] = auth_method
+    elif not logged_in:
+        data["authMethod"] = "none"
     if api_key_source:
         data["apiKeySource"] = api_key_source
     if email:
         data["email"] = email
+    m.returncode = 0 if logged_in else 1
     m.stdout = json.dumps(data) + "\n"
     m.stderr = ""
     return m
@@ -305,7 +345,7 @@ def test_detect_logged_in_via_api_key(mock_which: MagicMock, mock_run: MagicMock
     mock_which.return_value = "/usr/bin/claude"
     mock_run.side_effect = [
         _version_proc(),
-        _auth_status_proc(True, api_key_source="ANTHROPIC_API_KEY"),
+        _auth_status_proc(True, auth_method="api_key", api_key_source="ANTHROPIC_API_KEY"),
     ]
 
     with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}, clear=False):
