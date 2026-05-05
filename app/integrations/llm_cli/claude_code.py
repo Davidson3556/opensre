@@ -97,6 +97,12 @@ def _auth_status_from_json_payload(data: dict) -> tuple[bool, str]:
         return True, f"Authenticated via {source}."
     if auth_method == "claude.ai":
         return True, f"Authenticated via Claude subscription{f' ({email})' if email else ''}."
+    if auth_method:
+        # Unrecognized but non-empty authMethod (e.g. a future "oauth" / "sso"):
+        # surface it verbatim instead of leaning on apiKeySource, which the CLI
+        # also populates for env-supplied API keys regardless of the active
+        # method and would mis-report the source.
+        return True, f"Authenticated via {auth_method}{f' ({email})' if email else ''}."
     # Older CLI versions may omit authMethod — fall back to legacy heuristic.
     if api_key_source:
         return True, f"Authenticated via {api_key_source}."

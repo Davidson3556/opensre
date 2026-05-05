@@ -248,6 +248,53 @@ def test_probe_cli_auth_api_key_only_uses_authmethod(mock_run: MagicMock) -> Non
 
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
+def test_probe_cli_auth_unrecognized_authmethod_does_not_use_apikeysource(
+    mock_run: MagicMock,
+) -> None:
+    """A future authMethod (e.g. ``oauth``) must not fall through to apiKeySource.
+
+    The CLI populates ``apiKeySource`` whenever the env contributes an API key,
+    so a logged-in subscription/OAuth user with ``ANTHROPIC_API_KEY`` set would
+    otherwise be reported as "Authenticated via ANTHROPIC_API_KEY" — the exact
+    mis-reporting the legacy heuristic produced for ``claude.ai``.
+    """
+    m = MagicMock()
+    m.returncode = 0
+    m.stdout = (
+        '{"loggedIn": true, "authMethod": "oauth", '
+        '"apiKeySource": "ANTHROPIC_API_KEY", "email": "user@example.com"}\n'
+    )
+    m.stderr = ""
+    mock_run.return_value = m
+    logged_in, detail = _probe_cli_auth("/usr/bin/claude")
+    assert logged_in is True
+    assert "ANTHROPIC_API_KEY" not in detail
+    assert "oauth" in detail
+    assert "user@example.com" in detail
+
+
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
+def test_probe_cli_auth_exit_1_json_on_stderr_only_is_probe_failure(
+    mock_run: MagicMock,
+) -> None:
+    """Exit 1 with JSON only on stderr is treated as an opaque probe failure.
+
+    ``_try_parse_auth_status_stdout`` reads stdout only, so JSON that lands on
+    stderr falls through to the exit-code branch and returns ``(None, "claude
+    auth status failed: …")``. Pinning this contract guards against a future
+    refactor that starts parsing stderr and silently changes the return value.
+    """
+    m = MagicMock()
+    m.returncode = 1
+    m.stdout = ""
+    m.stderr = '{"loggedIn": false, "authMethod": "none"}'
+    mock_run.return_value = m
+    logged_in, detail = _probe_cli_auth("/usr/bin/claude")
+    assert logged_in is None
+    assert "failed" in detail
+
+
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
 def test_probe_cli_auth_timeout(mock_run: MagicMock) -> None:
     import subprocess
 
