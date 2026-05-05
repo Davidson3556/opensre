@@ -180,7 +180,7 @@ def test_probe_cli_auth_not_logged_in(mock_run: MagicMock) -> None:
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
 def test_probe_cli_auth_nonzero_exit(mock_run: MagicMock) -> None:
-    """Non-zero exit → None (probe failure, not confirmed unauthenticated)."""
+    """Non-zero exit with no parseable JSON → None (probe failure)."""
     m = MagicMock()
     m.returncode = 1
     m.stdout = ""
@@ -189,6 +189,62 @@ def test_probe_cli_auth_nonzero_exit(mock_run: MagicMock) -> None:
     logged_in, detail = _probe_cli_auth("/usr/bin/claude")
     assert logged_in is None
     assert "failed" in detail
+
+
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
+def test_probe_cli_auth_not_logged_in_exits_1(mock_run: MagicMock) -> None:
+    """Real CLI returns exit 1 with valid JSON ``loggedIn=false`` when no auth.
+
+    Regression for #1260. The previous implementation short-circuited on
+    ``returncode != 0`` before parsing JSON and returned ``None``, causing the
+    wizard to show "could not verify" instead of the correct "requires login".
+    """
+    m = MagicMock()
+    m.returncode = 1
+    m.stdout = '{"loggedIn": false, "authMethod": "none", "apiProvider": "firstParty"}\n'
+    m.stderr = ""
+    mock_run.return_value = m
+    logged_in, detail = _probe_cli_auth("/usr/bin/claude")
+    assert logged_in is False
+    assert "Not authenticated" in detail
+
+
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
+def test_probe_cli_auth_subscription_with_env_api_key_reports_subscription(
+    mock_run: MagicMock,
+) -> None:
+    """Subscription auth wins over an env API key in the detail string.
+
+    The CLI emits both ``authMethod="claude.ai"`` and
+    ``apiKeySource="ANTHROPIC_API_KEY"`` when a subscription user also has the
+    env var set, but the active method is the subscription. The detail must
+    reflect that, not the env var. Regression for #1260.
+    """
+    m = MagicMock()
+    m.returncode = 0
+    m.stdout = (
+        '{"loggedIn": true, "authMethod": "claude.ai", '
+        '"apiKeySource": "ANTHROPIC_API_KEY", "email": "user@example.com"}\n'
+    )
+    m.stderr = ""
+    mock_run.return_value = m
+    logged_in, detail = _probe_cli_auth("/usr/bin/claude")
+    assert logged_in is True
+    assert "subscription" in detail
+    assert "user@example.com" in detail
+
+
+@patch("app.integrations.llm_cli.claude_code.subprocess.run")
+def test_probe_cli_auth_api_key_only_uses_authmethod(mock_run: MagicMock) -> None:
+    """authMethod=api_key → detail names the env source via apiKeySource."""
+    m = MagicMock()
+    m.returncode = 0
+    m.stdout = '{"loggedIn": true, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}\n'
+    m.stderr = ""
+    mock_run.return_value = m
+    logged_in, detail = _probe_cli_auth("/usr/bin/claude")
+    assert logged_in is True
+    assert "ANTHROPIC_API_KEY" in detail
 
 
 @patch("app.integrations.llm_cli.claude_code.subprocess.run")
