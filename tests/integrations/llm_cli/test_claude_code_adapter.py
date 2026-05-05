@@ -61,6 +61,24 @@ def test_classify_auth_no_credentials_macos_returns_none() -> None:
     assert logged_in is None
 
 
+def test_classify_auth_no_credentials_windows() -> None:
+    """On Windows, no env var and no credentials file → definitive False.
+
+    Mirror of the Linux case: Windows stores OAuth in ``~/.claude/.credentials.json``
+    (not in a system credential store), so the file's absence is conclusive.
+    """
+    with (
+        patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False),
+        patch("app.integrations.llm_cli.claude_code.sys.platform", "win32"),
+        patch("app.integrations.llm_cli.claude_code.Path") as mock_path,
+    ):
+        mock_creds = MagicMock()
+        mock_creds.exists.return_value = False
+        mock_path.home.return_value.__truediv__.return_value.__truediv__.return_value = mock_creds
+        logged_in, _detail = _classify_claude_code_auth()
+    assert logged_in is False
+
+
 def test_classify_auth_credentials_file_present(tmp_path: Path) -> None:
     # Create a fake ~/.claude/.credentials.json under tmp_path.
     claude_dir = tmp_path / ".claude"

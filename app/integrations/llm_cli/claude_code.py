@@ -9,8 +9,10 @@ CLAUDE_CODE_MODEL Optional model override (e.g. ``claude-opus-4-7``).
 
 Auth
 ----
-Claude Code authenticates via ``ANTHROPIC_API_KEY`` (env var) or OAuth credentials
-stored in ``~/.claude/.credentials.json`` after ``claude login``.
+Claude Code authenticates via OAuth from ``claude login`` (subscription, the
+preferred path; OAuth tokens land in the macOS Keychain on darwin and in
+``~/.claude/.credentials.json`` on Linux/Windows). ``ANTHROPIC_API_KEY`` is an
+explicit fallback for environments where interactive login is not possible.
 """
 
 from __future__ import annotations
