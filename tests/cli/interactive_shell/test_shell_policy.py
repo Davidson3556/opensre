@@ -9,16 +9,25 @@ from app.cli.interactive_shell.shell_policy import (
 )
 
 
-def test_parse_shell_command_detects_passthrough_prefix() -> None:
-    parsed = parse_shell_command("!echo hello", is_windows=False)
+def test_parse_shell_command_returns_argv_for_simple_command() -> None:
+    parsed = parse_shell_command("echo hello", is_windows=False)
 
-    assert parsed.passthrough is True
+    assert parsed.argv == ["echo", "hello"]
     assert parsed.command == "echo hello"
-    assert parsed.argv is None
     assert parsed.parse_error is None
 
 
-def test_parse_shell_command_rejects_operators_in_safe_mode() -> None:
+def test_parse_shell_command_rejects_explicit_shell_prefix() -> None:
+    """The legacy `!` passthrough escape hatch is gone; argv parses literally."""
+    parsed = parse_shell_command("!echo hello", is_windows=False)
+    decision = evaluate_policy(parsed=parsed)
+
+    # `!echo` is parsed as a single token; classification is unknown -> blocked.
+    assert decision.allow is False
+    assert decision.classification == "unknown"
+
+
+def test_parse_shell_command_rejects_operators() -> None:
     parsed = parse_shell_command("ls | wc -l", is_windows=False)
     decision = evaluate_policy(parsed=parsed)
 
@@ -71,7 +80,7 @@ def test_evaluate_policy_blocks_restricted_command_sudo() -> None:
 
     assert decision.allow is False
     assert decision.classification == "restricted"
-    assert decision.reason == "restricted command is not allowed from inferred execution."
+    assert decision.reason == "restricted command is not allowed."
 
 
 def test_evaluate_policy_blocks_restricted_command_dd() -> None:

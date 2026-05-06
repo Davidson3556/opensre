@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 from dataclasses import dataclass
 
@@ -12,13 +11,12 @@ class ShellExecutionResult:
     """Normalized command execution output."""
 
     command: str
-    argv: list[str] | None
+    argv: list[str]
     stdout: str
     stderr: str
     exit_code: int | None
     timed_out: bool
     truncated: bool
-    executed_with_shell: bool
 
 
 def _truncate_output(text: str, *, max_chars: int) -> tuple[str, bool]:
@@ -30,33 +28,19 @@ def _truncate_output(text: str, *, max_chars: int) -> tuple[str, bool]:
 def execute_shell_command(
     *,
     command: str,
-    argv: list[str] | None,
-    use_shell: bool,
+    argv: list[str],
     timeout_seconds: int,
     max_output_chars: int,
 ) -> ShellExecutionResult:
-    """Execute a command and return a structured result object."""
-    if use_shell:
-        completed = subprocess.run(
-            command,
-            shell=True,
-            executable=os.environ.get("SHELL") or None,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
-    else:
-        if argv is None:
-            raise ValueError("argv is required for shell=False execution.")
-        completed = subprocess.run(
-            argv,
-            shell=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-            check=False,
-        )
+    """Execute ``argv`` with ``shell=False`` and return a structured result."""
+    completed = subprocess.run(  # noqa: S603 - argv is parsed and policy-gated upstream
+        argv,
+        shell=False,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
 
     stdout, truncated_stdout = _truncate_output(
         completed.stdout or "",
@@ -74,7 +58,6 @@ def execute_shell_command(
         exit_code=completed.returncode,
         timed_out=False,
         truncated=truncated_stdout or truncated_stderr,
-        executed_with_shell=use_shell,
     )
 
 

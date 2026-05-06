@@ -204,7 +204,11 @@ def test_direct_shell_command_plans_shell_action() -> None:
     assert plan_terminal_tasks("pwd") == ["shell"]
     assert plan_terminal_tasks("cd /tmp") == ["shell"]
     assert plan_terminal_tasks("CD /tmp") == ["shell"]
-    assert plan_terminal_tasks("!ls -la") == ["shell"]
+
+
+def test_legacy_bang_passthrough_is_not_planned_as_shell_action() -> None:
+    """`!cmd` no longer routes through inferred shell execution."""
+    assert plan_terminal_tasks("!ls -la") == []
 
 
 def test_sample_alert_launch_plans_sample_alert_action() -> None:
@@ -599,86 +603,6 @@ def test_execute_cli_actions_records_shell_failure(monkeypatch: object) -> None:
     assert "exit code" in output
 
 
-def test_execute_cli_actions_runs_passthrough_with_shell_true(monkeypatch: object) -> None:
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    def _fake_run(command: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout="ok\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
-
-    session = ReplSession()
-    console, buf = _capture()
-
-    assert execute_cli_actions("run `!echo hello`", session, console) is True
-    assert calls == [
-        (
-            "echo hello",
-            {
-                "shell": True,
-                "executable": shell_execution.os.environ.get("SHELL") or None,
-                "capture_output": True,
-                "text": True,
-                "timeout": action_executor.SHELL_COMMAND_TIMEOUT_SECONDS,
-                "check": False,
-            },
-        )
-    ]
-    assert session.history[-1] == {"type": "shell", "text": "!echo hello", "ok": True}
-    output = buf.getvalue()
-    assert "explicit shell passthrough enabled" in output
-    assert "ok" in output
-
-
-def test_execute_cli_actions_routes_bang_cd_through_builtin(monkeypatch: object) -> None:
-    dirs: list[Path] = []
-
-    def _fake_chdir(target: Path) -> None:
-        dirs.append(target)
-
-    def _boom(*_args: object, **_kwargs: object) -> None:  # pragma: no cover
-        raise AssertionError("subprocess.run should not be used for !cd builtin routing")
-
-    monkeypatch.setattr(action_executor.os, "chdir", _fake_chdir)
-    monkeypatch.setattr(shell_execution.subprocess, "run", _boom)
-
-    session = ReplSession()
-    console, buf = _capture()
-
-    message = "run `!cd /tmp`"
-    assert execute_cli_actions(message, session, console) is True
-    assert dirs == [Path("/tmp")]
-    assert session.history[-1] == {"type": "shell", "text": "cd /tmp", "ok": True}
-    captured = buf.getvalue()
-    assert "explicit shell passthrough enabled" not in captured
-
-
-def test_execute_cli_actions_routes_bang_pwd_through_builtin(monkeypatch: object) -> None:
-    def _fake_cwd(_: type[Path]) -> PurePosixPath:
-        return PurePosixPath("/shown")
-
-    def _boom(*_args: object, **_kwargs: object) -> None:  # pragma: no cover
-        raise AssertionError("subprocess.run should not be used for !pwd builtin routing")
-
-    monkeypatch.setattr(action_executor.Path, "cwd", classmethod(_fake_cwd))
-    monkeypatch.setattr(shell_execution.subprocess, "run", _boom)
-
-    session = ReplSession()
-    console, buf = _capture()
-
-    assert execute_cli_actions("run `!pwd`", session, console) is True
-    assert session.history[-1] == {"type": "shell", "text": "pwd", "ok": True}
-    captured = buf.getvalue()
-    assert "/shown" in captured
-    assert "explicit shell passthrough enabled" not in captured
-
-
 def test_execute_cli_actions_blocks_mutating_command_by_default() -> None:
     session = ReplSession()
     console, buf = _capture()
@@ -688,7 +612,7 @@ def test_execute_cli_actions_blocks_mutating_command_by_default() -> None:
     output = buf.getvalue()
     assert "command blocked" in output
     assert "mutating commands are blocked" in output
-    assert "run !<command>" in output
+    assert "directly in your shell" in output
 
 
 def test_execute_cli_actions_blocks_ambiguous_shell_operators() -> None:

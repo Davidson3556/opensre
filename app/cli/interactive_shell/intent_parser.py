@@ -209,8 +209,6 @@ def extract_shell_command(clause: PromptClause) -> PlannedAction | None:
         return shell_action(command, clause.position + explicit_match.start("command"))
 
     command = normalize_shell_command(clause.text)
-    if command is not None and command.startswith("!") and len(command) > 1:
-        return shell_action(command, clause.position)
     if command is not None and looks_like_direct_shell_command(command):
         return shell_action(command, clause.position)
     return None

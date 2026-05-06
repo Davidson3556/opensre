@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 from unittest.mock import MagicMock
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
+from app.cli.interactive_shell import action_executor, shell_execution
 from app.cli.interactive_shell.action_executor import (
     read_diag,
     run_cd_command,
@@ -80,13 +82,14 @@ def test_run_cd_command_chdirs_to_target(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_run_shell_command_records_when_policy_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    hint = "Run mutating commands directly in your shell if you truly intend them."
     monkeypatch.setattr(
         "app.cli.interactive_shell.action_executor.evaluate_policy",
         lambda **_: PolicyDecision(
             allow=False,
             classification="mutating",
             reason="test block",
-            hint="use ! for passthrough",
+            hint=hint,
         ),
     )
 
@@ -96,9 +99,77 @@ def test_run_shell_command_records_when_policy_blocks(monkeypatch: pytest.Monkey
 
     run_shell_command("rm -rf /nope", session, console)
 
-    assert "test block" in buf.getvalue()
-    assert "use !" in buf.getvalue().lower() or "passthrough" in buf.getvalue().lower()
+    output = buf.getvalue()
+    assert "test block" in output
+    assert "directly in your shell" in output
     assert session.history[-1] == {"type": "shell", "text": "rm -rf /nope", "ok": False}
+
+
+def test_run_shell_command_uses_structured_argv_no_shell_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structured execution must always pass shell=False with a parsed argv list."""
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="ok\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
+
+    session = ReplSession()
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False)
+
+    run_shell_command('cat "/tmp/file with spaces.txt"', session, console)
+
+    assert calls == [
+        (
+            ["cat", "/tmp/file with spaces.txt"],
+            {
+                "shell": False,
+                "capture_output": True,
+                "text": True,
+                "timeout": action_executor.SHELL_COMMAND_TIMEOUT_SECONDS,
+                "check": False,
+            },
+        )
+    ]
+    assert session.history[-1]["ok"] is True
+
+
+def test_run_shell_command_records_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_timeout(*_args: object, **_kwargs: object) -> None:
+        raise subprocess.TimeoutExpired(cmd=["echo"], timeout=1)
+
+    monkeypatch.setattr(shell_execution.subprocess, "run", _raise_timeout)
+
+    session = ReplSession()
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False)
+
+    run_shell_command("echo hello", session, console)
+
+    assert "timed out" in buf.getvalue()
+    assert session.history[-1] == {"type": "shell", "text": "echo hello", "ok": False}
+
+
+def test_run_shell_command_rejects_passthrough_prefix() -> None:
+    """`!cmd` no longer escapes structured execution; classification falls through."""
+    session = ReplSession()
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False)
+
+    run_shell_command("!echo hi", session, console)
+
+    output = buf.getvalue()
+    assert "command blocked" in output
+    assert session.history[-1] == {"type": "shell", "text": "!echo hi", "ok": False}
 
 
 def test_run_synthetic_test_unknown_suite_records_failure() -> None:

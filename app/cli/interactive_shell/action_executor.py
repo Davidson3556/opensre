@@ -138,33 +138,24 @@ def run_shell_command(command: str, session: ReplSession, console: Console) -> N
         session.record("shell", command, ok=False)
         return
 
-    argv_builtin = parsed.argv
-    if argv_builtin is None and parsed.passthrough and parsed.command.strip():
-        passthrough_body = parsed.command.strip()
-        try:
-            argv_builtin = shlex.split(passthrough_body, posix=not _intent_parser.IS_WINDOWS)
-        except ValueError:
-            try:
-                argv_builtin = shlex.split(passthrough_body, posix=False)
-            except ValueError:
-                argv_builtin = None
+    argv = parsed.argv
+    if argv is None:
+        # evaluate_policy returns allow=False whenever argv is None, so we never reach here
+        # for a real input. Defensive guard for type-checkers.
+        session.record("shell", command, ok=False)
+        return
 
-    if argv_builtin is not None and argv_builtin[0].lower() == "cd":
+    if argv[0].lower() == "cd":
         run_cd_command(parsed.command, session, console)
         return
-    if argv_builtin is not None and argv_builtin[0].lower() == "pwd":
+    if argv[0].lower() == "pwd":
         run_pwd_command(parsed.command, session, console)
         return
-
-    use_shell = parsed.passthrough
-    if use_shell:
-        console.print("[dim]explicit shell passthrough enabled[/dim]")
 
     try:
         result = execute_shell_command(
             command=parsed.command,
-            argv=parsed.argv,
-            use_shell=use_shell,
+            argv=argv,
             timeout_seconds=SHELL_COMMAND_TIMEOUT_SECONDS,
             max_output_chars=_MAX_COMMAND_OUTPUT_CHARS,
         )

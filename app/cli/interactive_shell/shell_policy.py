@@ -9,7 +9,6 @@ from typing import Literal
 
 CommandClassification = Literal["read_only", "mutating", "restricted", "unknown"]
 
-_EXPLICIT_SHELL_PREFIX = "!"
 _SHELL_OPERATOR_RE = re.compile(r"(^|\s)(\|\||&&|[|;<>]|>>|<<|2>)(\s|$)")
 _INLINE_SUBSHELL_RE = re.compile(r"`|\$\(")
 
@@ -83,7 +82,6 @@ _MUTATING_COMMANDS = frozenset(
 # Allowing them defeats the mutating-command policy because the dangerous child process
 # is spawned by the permitted parent — no shell involved, policy never sees it.
 # Same risk applies to xargs — it stays in `_MUTATING_COMMANDS` (blocked by name).
-# Users who genuinely need these can prefix with ! for explicit passthrough.
 _EXEC_WRAPPER_COMMANDS = frozenset({"find", "env"})
 
 _READ_ONLY_COMMANDS = frozenset(
@@ -233,7 +231,6 @@ class ParsedShellCommand:
 
     command: str
     argv: list[str] | None
-    passthrough: bool
     parse_error: str | None = None
 
 
@@ -248,22 +245,8 @@ class PolicyDecision:
 
 
 def parse_shell_command(command: str, *, is_windows: bool) -> ParsedShellCommand:
-    """Parse command text and detect explicit passthrough prefix."""
+    """Parse command text into a structured argv list for shell=False execution."""
     stripped = command.strip()
-    if stripped.startswith(_EXPLICIT_SHELL_PREFIX):
-        passthrough_command = stripped[len(_EXPLICIT_SHELL_PREFIX) :].strip()
-        if not passthrough_command:
-            return ParsedShellCommand(
-                command="",
-                argv=None,
-                passthrough=True,
-                parse_error="missing command after passthrough prefix (!).",
-            )
-        return ParsedShellCommand(
-            command=passthrough_command,
-            argv=None,
-            passthrough=True,
-        )
 
     if (
         _SHELL_OPERATOR_RE.search(stripped) is not None
@@ -272,10 +255,9 @@ def parse_shell_command(command: str, *, is_windows: bool) -> ParsedShellCommand
         return ParsedShellCommand(
             command=stripped,
             argv=None,
-            passthrough=False,
             parse_error=(
-                "shell operators and command substitution are blocked in safe mode. "
-                "Use !<command> to run this intentionally."
+                "shell operators and command substitution are not supported. "
+                "Run individual commands separately."
             ),
         )
 
@@ -288,7 +270,6 @@ def parse_shell_command(command: str, *, is_windows: bool) -> ParsedShellCommand
             return ParsedShellCommand(
                 command=stripped,
                 argv=None,
-                passthrough=False,
                 parse_error=f"could not parse command: {exc}",
             )
 
@@ -296,11 +277,10 @@ def parse_shell_command(command: str, *, is_windows: bool) -> ParsedShellCommand
         return ParsedShellCommand(
             command=stripped,
             argv=None,
-            passthrough=False,
             parse_error="empty command.",
         )
 
-    return ParsedShellCommand(command=stripped, argv=argv, passthrough=False)
+    return ParsedShellCommand(command=stripped, argv=argv)
 
 
 def classify_command(argv: list[str]) -> CommandClassification:
@@ -336,21 +316,13 @@ def classify_command(argv: list[str]) -> CommandClassification:
 
 
 def evaluate_policy(*, parsed: ParsedShellCommand) -> PolicyDecision:
-    """Allow read-only commands by default for inferred execution."""
+    """Allow read-only commands; reject everything else under the structured runner."""
     if parsed.parse_error is not None:
         return PolicyDecision(
             allow=False,
             classification="unknown",
             reason=parsed.parse_error,
-            hint="Rewrite as a plain command or use !<command> for explicit shell passthrough.",
-        )
-
-    if parsed.passthrough:
-        return PolicyDecision(
-            allow=True,
-            classification="unknown",
-            reason=None,
-            hint=None,
+            hint="Rewrite as a plain command without shell operators or substitutions.",
         )
 
     if parsed.argv is None:
@@ -358,7 +330,7 @@ def evaluate_policy(*, parsed: ParsedShellCommand) -> PolicyDecision:
             allow=False,
             classification="unknown",
             reason="failed to parse command.",
-            hint="Rewrite as a plain command or use !<command> for explicit shell passthrough.",
+            hint="Rewrite as a plain command without shell operators or substitutions.",
         )
 
     classification = classify_command(parsed.argv)
@@ -375,20 +347,17 @@ def evaluate_policy(*, parsed: ParsedShellCommand) -> PolicyDecision:
             allow=False,
             classification=classification,
             reason=(
-                "mutating commands are blocked in safe mode "
+                "mutating commands are blocked "
                 "(includes exec-wrapper commands such as find and env)."
             ),
-            hint=(
-                "Use a read-only command, or run !<command> to explicitly "
-                "opt into shell passthrough."
-            ),
+            hint="Run mutating commands directly in your shell if you truly intend them.",
         )
 
     if classification == "restricted":
         return PolicyDecision(
             allow=False,
             classification=classification,
-            reason="restricted command is not allowed from inferred execution.",
+            reason="restricted command is not allowed.",
             hint="Run the command directly in your shell if you truly intend it.",
         )
 
@@ -396,7 +365,7 @@ def evaluate_policy(*, parsed: ParsedShellCommand) -> PolicyDecision:
         allow=False,
         classification=classification,
         reason="command is not in the safe read-only allowlist.",
-        hint="Use a known read-only command, or run !<command> for explicit passthrough.",
+        hint="Use a known read-only command, or run it directly in your shell.",
     )
 
 
