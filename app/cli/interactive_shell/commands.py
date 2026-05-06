@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -38,6 +38,41 @@ class SlashCommand:
     name: str
     help_text: str
     handler: Callable[[ReplSession, Console, list[str]], bool]
+
+
+class CommandRegistry:
+    """Central slash-command registry.
+
+    Wraps the lookup table behind a small interface so handlers can be moved
+    out of this file (one domain module per group) without touching
+    ``dispatch_slash`` or any consumer of ``SLASH_COMMANDS``. The registry's
+    internal dict is exposed as ``SLASH_COMMANDS`` for back-compat with
+    ``loop.py``, ``cli_reference.py``, and tests that iterate it directly.
+    """
+
+    def __init__(self) -> None:
+        self._commands: dict[str, SlashCommand] = {}
+
+    def register(self, command: SlashCommand) -> None:
+        if command.name in self._commands:
+            raise ValueError(f"duplicate slash command: {command.name}")
+        self._commands[command.name] = command
+
+    def get(self, name: str) -> SlashCommand | None:
+        return self._commands.get(name)
+
+    @property
+    def commands(self) -> dict[str, SlashCommand]:
+        return self._commands
+
+    def values(self) -> Iterable[SlashCommand]:
+        return self._commands.values()
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._commands)
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._commands
 
 
 def _cmd_help(session: ReplSession, console: Console, args: list[str]) -> bool:  # noqa: ARG001
@@ -873,68 +908,105 @@ def _cmd_stop(session: ReplSession, console: Console, args: list[str]) -> bool: 
     return True
 
 
-SLASH_COMMANDS: dict[str, SlashCommand] = {
-    "/help": SlashCommand("/help", "show available commands", _cmd_help),
-    "/?": SlashCommand("/?", "shortcut for /help", _cmd_help),
-    "/exit": SlashCommand("/exit", "exit the interactive shell", _cmd_exit),
-    "/quit": SlashCommand("/quit", "alias for /exit", _cmd_exit),
-    "/clear": SlashCommand("/clear", "clear the screen and re-render the banner", _cmd_clear),
-    "/reset": SlashCommand("/reset", "clear session state (keeps trust mode)", _cmd_reset),
-    "/trust": SlashCommand("/trust", "toggle trust mode ('/trust off' to disable)", _cmd_trust),
-    "/status": SlashCommand("/status", "show session status", _cmd_status),
-    "/list": SlashCommand(
-        "/list",
-        "list integrations, MCP servers, and the active LLM connection "
-        "('/list integrations', '/list models', '/list mcp')",
-        _cmd_list,
-    ),
-    "/integrations": SlashCommand(
-        "/integrations",
-        "manage integrations ('/integrations list', '/integrations verify', '/integrations show <service>')",
-        _cmd_integrations,
-    ),
-    "/mcp": SlashCommand(
-        "/mcp",
-        "manage MCP servers ('/mcp list', '/mcp connect', '/mcp disconnect')",
-        _cmd_mcp,
-    ),
-    "/model": SlashCommand(
-        "/model",
-        "show or set the active LLM ('/model show', "
-        "'/model set <provider> [model] [--toolcall-model <m>]', "
-        "'/model toolcall set <model>')",
-        _cmd_model,
-    ),
-    "/health": SlashCommand("/health", "show integration and agent health", _cmd_health),
-    "/doctor": SlashCommand("/doctor", "run full environment diagnostic", _cmd_doctor),
-    "/version": SlashCommand("/version", "print version, Python and OS info", _cmd_version),
-    "/template": SlashCommand(
-        "/template",
-        "print a starter alert JSON template ('/template generic|datadog|grafana|honeycomb|coralogix')",
-        _cmd_template,
-    ),
-    "/investigate": SlashCommand(
-        "/investigate",
-        "run an RCA investigation from a file ('/investigate <file>')",
-        _cmd_investigate_file,
-    ),
-    "/history": SlashCommand("/history", "show persisted command history", _cmd_history),
-    "/last": SlashCommand("/last", "reprint the most recent investigation report", _cmd_last),
-    "/save": SlashCommand("/save", "save last investigation to a file ('/save <path>')", _cmd_save),
-    "/context": SlashCommand("/context", "show accumulated infra context", _cmd_context),
-    "/cost": SlashCommand("/cost", "show token usage and session cost", _cmd_cost),
-    "/verbose": SlashCommand(
-        "/verbose", "toggle verbose logging ('/verbose off' to disable)", _cmd_verbose
-    ),
-    "/compact": SlashCommand("/compact", "trim old session history to free memory", _cmd_compact),
-    "/tasks": SlashCommand("/tasks", "list recent and in-flight shell tasks", _cmd_tasks),
-    "/cancel": SlashCommand(
-        "/cancel", "cancel a running task by id ('/cancel <task_id>' — see /tasks)", _cmd_cancel
-    ),
-    "/stop": SlashCommand(
-        "/stop", "hints for stopping in-flight investigations and background tasks", _cmd_stop
-    ),
-}
+def _build_default_registry() -> CommandRegistry:
+    registry = CommandRegistry()
+    registry.register(SlashCommand("/help", "show available commands", _cmd_help))
+    registry.register(SlashCommand("/?", "shortcut for /help", _cmd_help))
+    registry.register(SlashCommand("/exit", "exit the interactive shell", _cmd_exit))
+    registry.register(SlashCommand("/quit", "alias for /exit", _cmd_exit))
+    registry.register(
+        SlashCommand("/clear", "clear the screen and re-render the banner", _cmd_clear)
+    )
+    registry.register(SlashCommand("/reset", "clear session state (keeps trust mode)", _cmd_reset))
+    registry.register(
+        SlashCommand("/trust", "toggle trust mode ('/trust off' to disable)", _cmd_trust)
+    )
+    registry.register(SlashCommand("/status", "show session status", _cmd_status))
+    registry.register(
+        SlashCommand(
+            "/list",
+            "list integrations, MCP servers, and the active LLM connection "
+            "('/list integrations', '/list models', '/list mcp')",
+            _cmd_list,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "/integrations",
+            "manage integrations ('/integrations list', '/integrations verify', "
+            "'/integrations show <service>')",
+            _cmd_integrations,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "/mcp",
+            "manage MCP servers ('/mcp list', '/mcp connect', '/mcp disconnect')",
+            _cmd_mcp,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "/model",
+            "show or set the active LLM ('/model show', "
+            "'/model set <provider> [model] [--toolcall-model <m>]', "
+            "'/model toolcall set <model>')",
+            _cmd_model,
+        )
+    )
+    registry.register(SlashCommand("/health", "show integration and agent health", _cmd_health))
+    registry.register(SlashCommand("/doctor", "run full environment diagnostic", _cmd_doctor))
+    registry.register(SlashCommand("/version", "print version, Python and OS info", _cmd_version))
+    registry.register(
+        SlashCommand(
+            "/template",
+            "print a starter alert JSON template "
+            "('/template generic|datadog|grafana|honeycomb|coralogix')",
+            _cmd_template,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "/investigate",
+            "run an RCA investigation from a file ('/investigate <file>')",
+            _cmd_investigate_file,
+        )
+    )
+    registry.register(SlashCommand("/history", "show persisted command history", _cmd_history))
+    registry.register(
+        SlashCommand("/last", "reprint the most recent investigation report", _cmd_last)
+    )
+    registry.register(
+        SlashCommand("/save", "save last investigation to a file ('/save <path>')", _cmd_save)
+    )
+    registry.register(SlashCommand("/context", "show accumulated infra context", _cmd_context))
+    registry.register(SlashCommand("/cost", "show token usage and session cost", _cmd_cost))
+    registry.register(
+        SlashCommand("/verbose", "toggle verbose logging ('/verbose off' to disable)", _cmd_verbose)
+    )
+    registry.register(
+        SlashCommand("/compact", "trim old session history to free memory", _cmd_compact)
+    )
+    registry.register(SlashCommand("/tasks", "list recent and in-flight shell tasks", _cmd_tasks))
+    registry.register(
+        SlashCommand(
+            "/cancel",
+            "cancel a running task by id ('/cancel <task_id>' — see /tasks)",
+            _cmd_cancel,
+        )
+    )
+    registry.register(
+        SlashCommand(
+            "/stop",
+            "hints for stopping in-flight investigations and background tasks",
+            _cmd_stop,
+        )
+    )
+    return registry
+
+
+_REGISTRY: CommandRegistry = _build_default_registry()
+SLASH_COMMANDS: dict[str, SlashCommand] = _REGISTRY.commands
 
 
 def dispatch_slash(command_line: str, session: ReplSession, console: Console) -> bool:
@@ -948,7 +1020,7 @@ def dispatch_slash(command_line: str, session: ReplSession, console: Console) ->
         return True
     name = parts[0].lower()
     args = parts[1:]
-    cmd = SLASH_COMMANDS.get(name)
+    cmd = _REGISTRY.get(name)
     if cmd is None:
         console.print()
         console.print(
