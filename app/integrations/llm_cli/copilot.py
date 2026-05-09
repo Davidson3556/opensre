@@ -200,7 +200,17 @@ class CopilotAdapter:
             )
         return self._probe_binary(binary)
 
-    def build(self, *, prompt: str, model: str | None, workspace: str) -> CLIInvocation:
+    def build(
+        self,
+        *,
+        prompt: str,
+        model: str | None,
+        workspace: str,
+        reasoning_effort: str | None = None,
+    ) -> CLIInvocation:
+        # Copilot CLI does not expose a reasoning-effort knob; accept the param
+        # for protocol parity and discard it (same shape as ClaudeCodeAdapter).
+        del reasoning_effort
         binary = self._resolve_binary()
         if not binary:
             raise RuntimeError(
