@@ -29,6 +29,7 @@ See **[SETUP.md](SETUP.md)** for detailed setup instructions including Windows-s
 1. Install [uv](https://docs.astral.sh/uv/getting-started/installation/) and clone the repository (see [SETUP.md](SETUP.md) for Windows and alternatives)
 2. Install dependencies: `make install`
 3. Run checks: `make lint && make format-check && make typecheck && make test-cov`
+    - When invoking the CLI from your checkout, prefer **`uv run opensre …`** (see `SETUP.md` troubleshooting if another `opensre` shadows `.venv`).
 4. Build release artifacts when needed: `make build`
 
 If you prefer VS Code, you can use the repo's devcontainer at [.devcontainer/devcontainer.json](.devcontainer/devcontainer.json) instead of setting up Python manually.
@@ -110,11 +111,12 @@ make test-cov      # pytest: run tests with coverage report
 ```
 
 All four must pass. **CI will block merging if any fail.**
+
 ### Run one focused test
 
 Replace the placeholders with your actual file or test name:
 
-```bash
+````bash
 pytest tests/cli/test_.py                                       # single file
 pytest tests/cli/test_.py::test_                                # single function
 pytest tests/tools/ -k "test_registry"                          # tools example
@@ -191,7 +193,7 @@ make lint          # Auto-fixes many style issues
 make format-check  # Checks formatting without modifying files
 make typecheck     # Catches type errors
 make test-cov      # Ensures tests pass and coverage is tracked
-```
+````
 
 To verify the package can be shipped, run:
 

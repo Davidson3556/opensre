@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.markup import escape
 
 from app.cli.interactive_shell.command_registry import repl_data
-from app.cli.interactive_shell.command_registry.types import SlashCommand
+from app.cli.interactive_shell.command_registry.types import ExecutionTier, SlashCommand
 from app.cli.interactive_shell.rendering import (
     render_integrations_table,
     render_mcp_table,
@@ -37,12 +37,14 @@ def _cmd_integrations(session: ReplSession, console: Console, args: list[str]) -
     if sub == "show":
         if len(args) < 2:
             console.print("[dim]usage:[/dim] /integrations show <service>")
+            session.mark_latest(ok=False, kind="slash")
             return True
         service = args[1].lower()
         results = repl_data.load_verified_integrations()
         match = next((r for r in results if r.get("service") == service), None)
         if match is None:
             console.print(f"[{TERMINAL_ERROR}]service not found:[/] {escape(service)}")
+            session.mark_latest(ok=False, kind="slash")
             return True
         table = repl_table(
             title=f"Integration: {service}",
@@ -61,6 +63,7 @@ def _cmd_integrations(session: ReplSession, console: Console, args: list[str]) -
         "(try [bold]/integrations list[/bold], [bold]/integrations verify[/bold], "
         "or [bold]/integrations show <service>[/bold])"
     )
+    session.mark_latest(ok=False, kind="slash")
     return True
 
 
@@ -145,6 +148,7 @@ COMMANDS: list[SlashCommand] = [
         "('/list integrations', '/list models', '/list mcp')",
         _cmd_list,
         first_arg_completions=_LIST_FIRST_ARGS,
+        execution_tier=ExecutionTier.SAFE,
     ),
     SlashCommand(
         "/integrations",
@@ -152,12 +156,14 @@ COMMANDS: list[SlashCommand] = [
         "'/integrations show <service>')",
         _cmd_integrations,
         first_arg_completions=_INTEGRATIONS_FIRST_ARGS,
+        execution_tier=ExecutionTier.SAFE,
     ),
     SlashCommand(
         "/mcp",
         "manage MCP servers ('/mcp list', '/mcp connect', '/mcp disconnect')",
         _cmd_mcp,
         first_arg_completions=_MCP_FIRST_ARGS,
+        execution_tier=ExecutionTier.SAFE,
     ),
 ]
 
