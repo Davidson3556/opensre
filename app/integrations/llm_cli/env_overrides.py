@@ -41,6 +41,10 @@ ANTHROPIC_CLI_ENV_KEYS: Final[tuple[str, ...]] = (
 
 CURSOR_CLI_ENV_KEYS: Final[tuple[str, ...]] = ("CURSOR_API_KEY",)
 
+# GH_TOKEN and GITHUB_TOKEN are non-prefixed and so are NOT covered by the
+# ``COPILOT_`` entry in ``_SAFE_SUBPROCESS_ENV_PREFIXES`` — they must reach the
+# subprocess via ``CLIInvocation.env`` (built by ``CopilotAdapter.build``).
+# Do not drop them on the assumption the prefix allowlist forwards them.
 COPILOT_CLI_ENV_KEYS: Final[tuple[str, ...]] = (
     "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN",
