@@ -224,7 +224,7 @@ export COPILOT_BIN=
 # export GITHUB_TOKEN=
 ```
 
-Requires the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) (`npm i -g @github/copilot`). Login uses the interactive `/login` slash command and stores credentials under `$COPILOT_HOME` (default `~/.copilot`); OpenSRE detects that directory as the primary auth signal. `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, and `GITHUB_TOKEN` are forwarded as auth fallbacks when present. If `COPILOT_MODEL` is unset, OpenSRE omits the `--model` flag and the CLI uses its configured default. Invocations run as `copilot -p PROMPT --no-color --no-banner --no-ask-user --silent` so they never block on user input.
+Requires the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) (`npm i -g @github/copilot`). Login uses the interactive `/login` slash command. Auth is detected in this order: (1) `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` env, (2) the plaintext fallback `$COPILOT_HOME/config.json` (default `~/.copilot/config.json`), parsed and validated as a non-empty JSON object. Keychain-stored credentials cannot be introspected from Python without an OS auth prompt, so on those systems detection reports `logged_in=None` and the runner verifies at invoke time. If `COPILOT_MODEL` is unset, OpenSRE omits the `--model` flag and the CLI uses its configured default. Invocations run as `copilot -p PROMPT --no-color --no-ask-user --silent` so they never block on user input.
 
 See [`app/integrations/llm_cli/AGENTS.md`](https://github.com/Tracer-Cloud/opensre/blob/main/app/integrations/llm_cli/AGENTS.md) for the adapter pattern used to add new CLI providers.
 

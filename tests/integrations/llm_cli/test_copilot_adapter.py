@@ -37,19 +37,20 @@ def _clean_copilot_env(monkeypatch: pytest.MonkeyPatch, *, home: Path | None = N
 
 @patch("app.integrations.llm_cli.copilot.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which")
-def test_detect_with_stored_credentials_is_logged_in(
+def test_detect_with_config_json_is_logged_in(
     mock_which: MagicMock,
     mock_run: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A non-empty COPILOT_HOME is the primary positive auth signal."""
+    """A populated $COPILOT_HOME/config.json is a positive auth signal."""
     mock_which.return_value = "/usr/bin/copilot"
     mock_run.return_value = _version_proc()
 
     home = tmp_path / "copilot_home"
     home.mkdir()
-    (home / "auth.json").write_text("{}")
+    # Plaintext fallback per the Copilot CLI docs — must be a real JSON object.
+    (home / "config.json").write_text('{"github_token": "ghu_realtoken"}')
 
     _clean_copilot_env(monkeypatch, home=home)
     probe = CopilotAdapter().detect()
@@ -58,7 +59,81 @@ def test_detect_with_stored_credentials_is_logged_in(
     assert probe.logged_in is True
     assert probe.bin_path == "/usr/bin/copilot"
     assert probe.version == "1.4.2"
-    assert "stored Copilot CLI credentials" in probe.detail
+    assert "config.json" in probe.detail
+
+
+@patch("app.integrations.llm_cli.copilot.subprocess.run")
+@patch("app.integrations.llm_cli.binary_resolver.shutil.which")
+def test_detect_with_empty_config_json_is_not_logged_in(
+    mock_which: MagicMock,
+    mock_run: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Greptile review: an empty / leftover config.json must NOT be a false positive."""
+    mock_which.return_value = "/usr/bin/copilot"
+    mock_run.return_value = _version_proc()
+
+    home = tmp_path / "copilot_home"
+    home.mkdir()
+    # Empty object — Copilot has not been logged in.
+    (home / "config.json").write_text("{}")
+
+    _clean_copilot_env(monkeypatch, home=home)
+    probe = CopilotAdapter().detect()
+    assert probe.installed is True
+    assert probe.logged_in is None
+    assert "Could not verify" in probe.detail
+
+
+@patch("app.integrations.llm_cli.copilot.subprocess.run")
+@patch("app.integrations.llm_cli.binary_resolver.shutil.which")
+def test_detect_with_unrelated_files_is_not_logged_in(
+    mock_which: MagicMock,
+    mock_run: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Greptile review: junk files in COPILOT_HOME must not yield logged_in=True.
+
+    Previous heuristic returned True if ANY file existed in the dir; this is a
+    regression test for the false-positive case the reviewer flagged.
+    """
+    mock_which.return_value = "/usr/bin/copilot"
+    mock_run.return_value = _version_proc()
+
+    home = tmp_path / "copilot_home"
+    home.mkdir()
+    (home / "telemetry.log").write_text("noise")
+    (home / "cache.bin").write_bytes(b"\x00\x01")
+
+    _clean_copilot_env(monkeypatch, home=home)
+    probe = CopilotAdapter().detect()
+    assert probe.installed is True
+    assert probe.logged_in is None
+    assert "Could not verify" in probe.detail
+
+
+@patch("app.integrations.llm_cli.copilot.subprocess.run")
+@patch("app.integrations.llm_cli.binary_resolver.shutil.which")
+def test_detect_with_invalid_json_config_is_not_logged_in(
+    mock_which: MagicMock,
+    mock_run: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A corrupt config.json must not be treated as authenticated."""
+    mock_which.return_value = "/usr/bin/copilot"
+    mock_run.return_value = _version_proc()
+
+    home = tmp_path / "copilot_home"
+    home.mkdir()
+    (home / "config.json").write_text("not-json{")
+
+    _clean_copilot_env(monkeypatch, home=home)
+    probe = CopilotAdapter().detect()
+    assert probe.installed is True
+    assert probe.logged_in is None
 
 
 @patch("app.integrations.llm_cli.copilot.subprocess.run")
@@ -156,9 +231,8 @@ def test_build_argv_uses_non_interactive_flags(
     assert "-p" in inv.argv
     idx = inv.argv.index("-p")
     assert inv.argv[idx + 1] == "hello world"
-    # Non-interactive guarantees: no banner, no color, no agent ask_user, silent.
+    # Each flag is essential for a non-interactive run; see comment in build().
     assert "--no-color" in inv.argv
-    assert "--no-banner" in inv.argv
     assert "--no-ask-user" in inv.argv
     assert "--silent" in inv.argv
     assert inv.stdin is None

@@ -4,27 +4,41 @@ Env vars
 --------
 COPILOT_BIN     Optional explicit path to the ``copilot`` binary.
                 Blank or non-runnable paths are ignored; PATH + fallbacks apply.
-COPILOT_MODEL   Optional model override (e.g. ``gpt-5.2``, ``claude-sonnet-4.6``).
-                Unset or empty → omit ``--model``; CLI default applies.
+COPILOT_MODEL   Optional model override. Unset or empty → omit ``--model``;
+                the CLI default applies.
 COPILOT_HOME    Optional config directory override. Defaults to ``~/.copilot``.
 
-Auth
-----
-Copilot CLI has no scriptable ``auth status`` subcommand — login is the
-interactive ``/login`` slash command, which writes credentials under
-``$COPILOT_HOME`` (default ``~/.copilot``). Probe order:
+Auth probe
+----------
+Copilot CLI does **not** expose a non-interactive auth-status subcommand.
+``copilot login`` opens an OAuth device flow (so we cannot run it during
+``detect()`` without risking a hung browser launch); ``/login``, ``/user``,
+``/logout`` are slash commands that only work inside an interactive
+session. Per the official docs, credentials live in:
 
-1. Run ``copilot --version`` to confirm the binary works (``installed``).
-2. Treat the presence of a non-empty ``$COPILOT_HOME`` directory as the
-   primary positive auth signal (where ``/login`` stores credentials).
-3. Fall back to ``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN``
-   if no stored credentials are found — the CLI accepts these too.
-4. If nothing matches, report ``logged_in=None`` (auth state unclear);
-   the runner will surface the auth hint if invocation fails.
+* the system keychain (``copilot-cli`` service) when one is available
+  (macOS Keychain, Windows Credential Manager, Linux libsecret), or
+* the plaintext fallback ``$COPILOT_HOME/config.json`` when no keychain
+  is reachable.
+
+We therefore classify auth in this order:
+
+1. ``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN`` env var set
+   → ``True`` (the CLI accepts these as a documented fallback).
+2. ``$COPILOT_HOME/config.json`` exists and parses as a non-empty JSON
+   object → ``True``. We validate the *content*, not just the file's
+   existence, so leftover/empty/junk files do not cause a false positive
+   (Greptile review).
+3. Otherwise → ``None`` (auth state cannot be verified from the host).
+   This is the steady state for keychain-stored credentials: the
+   credential is in the OS keychain and Python cannot read it without
+   triggering a TouchID/password prompt. The runner will surface the
+   auth hint if invocation fails; the wizard offers retry / repick.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -62,21 +76,25 @@ def _copilot_home() -> Path:
     return Path.home() / ".copilot"
 
 
-def _stored_credentials_present() -> bool:
-    """True when ``$COPILOT_HOME`` exists and is non-empty.
+def _config_json_has_credentials() -> bool:
+    """Return True only when the plaintext credential fallback is real and populated.
 
-    The interactive ``/login`` device flow writes credentials beneath this
-    directory; treating it as "auth present" mirrors how ``claude_code``
-    treats ``~/.claude/.credentials.json``. We do not parse the file format
-    because Copilot CLI does not document a stable schema.
+    Per the Copilot CLI docs, ``$COPILOT_HOME/config.json`` is the plaintext
+    fallback used when no system keychain is available. It is a JSON object;
+    an empty file, an empty object, or unreadable bytes do **not** count as
+    being logged in. This is stricter than the previous "any file in the
+    directory" heuristic, which the reviewer flagged as a false-positive
+    risk for leftover/junk files.
     """
-    home = _copilot_home()
+    path = _copilot_home() / "config.json"
     try:
-        if not home.is_dir():
+        if not path.is_file() or path.stat().st_size <= 2:
             return False
-        return any(home.iterdir())
-    except OSError:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
         return False
+    return isinstance(data, dict) and bool(data)
 
 
 def _has_token_env() -> str | None:
@@ -88,13 +106,24 @@ def _has_token_env() -> str | None:
 
 
 def _classify_copilot_auth() -> tuple[bool | None, str]:
-    """Resolve auth state without spawning the CLI (no scriptable auth probe)."""
-    if _stored_credentials_present():
-        return True, f"Authenticated via {_copilot_home()} (stored Copilot CLI credentials)."
+    """Resolve auth state without spawning the CLI.
+
+    Documented fallbacks (in order):
+      1. Token env var (the CLI's own documented fallback).
+      2. ``$COPILOT_HOME/config.json`` plaintext credential file.
+      3. Unknown — keychain-stored credentials are not introspectable
+         from Python without triggering an OS auth prompt.
+    """
     token_key = _has_token_env()
     if token_key:
         return True, f"Authenticated via {token_key}."
-    return None, f"Could not verify Copilot CLI auth. {_AUTH_HINT}"
+    if _config_json_has_credentials():
+        return True, f"Authenticated via {_copilot_home() / 'config.json'}."
+    return (
+        None,
+        "Could not verify Copilot CLI auth from the host (keychain credentials "
+        f"are not introspectable). {_AUTH_HINT}",
+    )
 
 
 def _fallback_copilot_paths() -> list[str]:
@@ -182,16 +211,20 @@ class CopilotAdapter:
         ws = (workspace or "").strip()
         cwd = str(Path(ws).expanduser()) if ws else os.getcwd()
 
+        # Each flag is required for a non-interactive run; do not drop these
+        # without checking `copilot --help`:
+        #   -p PROMPT       enters one-shot mode (without it, copilot opens a TUI).
+        #   --no-color      strips ANSI so stdout is parseable.
+        #   --no-ask-user   disables the agent's `ask_user` tool, otherwise the
+        #                   agent can pause waiting for input even with -p.
+        #   --silent        emits only the agent response, not stats / banner.
         argv: list[str] = [
             binary,
             "-p",
             prompt,
             "--no-color",
-            "--no-banner",
             "--no-ask-user",
             "--silent",
-            "--log-level",
-            "none",
         ]
 
         resolved_model = (model or "").strip()
