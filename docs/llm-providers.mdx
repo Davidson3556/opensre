@@ -20,7 +20,7 @@ OpenSRE is provider-agnostic: bring your own model. Selection is controlled by t
 | Ollama (local)| `ollama`     | None (local daemon)             | `llama3.2`                                    | `llama3.2`                                      |
 | OpenAI Codex CLI| `codex`    | `codex login` (CLI)             | Codex CLI default                             | Codex CLI default                               |
 | Claude Code CLI| `claude-code`| `claude login` (CLI)            | Claude Code CLI default                       | Claude Code CLI default                         |
-| GitHub Copilot CLI| `copilot`| `copilot` then `/login` (CLI)   | Copilot CLI default                           | Copilot CLI default                             |
+| GitHub Copilot CLI| `copilot`| `copilot login` or `gh auth login` (CLI) | Copilot CLI default                           | Copilot CLI default                             |
 
 OpenSRE distinguishes two model slots per provider:
 
@@ -212,19 +212,23 @@ Requires the [Claude Code CLI](https://github.com/anthropics/claude-code) (`npm 
 
 ```bash
 export LLM_PROVIDER=copilot
-# Authenticate the Copilot CLI separately (interactive /login slash command):
-copilot
-# Then inside the prompt, enter: /login
+# Authenticate the Copilot CLI separately. Either flow works — the adapter
+# detects both. The interactive `/login` slash command inside `copilot` writes
+# to the platform credential store; `gh auth login` is an equivalent path that
+# Copilot CLI delegates to automatically.
+copilot login          # OAuth device flow; preferred CLI-first onboarding
+# or:
+gh auth login          # logs you into the gh CLI; Copilot will use that token
 # Optional overrides (all blank-by-default):
 export COPILOT_MODEL=
 export COPILOT_BIN=
-# Optional auth fallbacks (only used when no stored Copilot CLI login exists):
+# Optional auth bypass for automation (only used when no CLI login is detected):
 # export COPILOT_GITHUB_TOKEN=
 # export GH_TOKEN=
 # export GITHUB_TOKEN=
 ```
 
-Requires the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) (`npm i -g @github/copilot`). Login uses the interactive `/login` slash command. Auth is detected in this order: (1) `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` env, (2) the plaintext fallback `$COPILOT_HOME/config.json` (default `~/.copilot/config.json`), parsed and validated as a non-empty JSON object. Keychain-stored credentials cannot be introspected from Python without an OS auth prompt, so on those systems detection reports `logged_in=None` and the runner verifies at invoke time. If `COPILOT_MODEL` is unset, OpenSRE omits the `--model` flag and the CLI uses its configured default. Invocations run as `copilot -p PROMPT --no-color --no-ask-user --silent` so they never block on user input.
+Requires the [GitHub Copilot CLI](https://docs.github.com/copilot/how-tos/use-copilot-agents/use-copilot-cli) (`npm i -g @github/copilot`). Copilot CLI has no scriptable `auth status` subcommand (only the interactive `/login`, `/user`, `/logout` slash commands and the `copilot login` device flow), so auth is detected via documented credential storage. **Probe order is CLI-first, env tokens last** (per PR #1533 review): (1) platform credential store — macOS Keychain via `security find-generic-password`, Linux libsecret via `secret-tool lookup`; silent metadata probe, the secret value is never read; (2) `$COPILOT_HOME/config.json` (default `~/.copilot/config.json`), parsed and validated as a non-empty JSON object; (3) `gh auth token` (cross-platform `gh` CLI fallback — Copilot accepts gh's stored token); (4) `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` / `GITHUB_TOKEN` env (documented automation bypass). On Windows there is no reliable silent probe for Credential Manager, so detection reports `logged_in=None` and the runner verifies at invoke time — `explain_failure` then surfaces the auth hint if stderr matches an auth error pattern. If `COPILOT_MODEL` is unset, OpenSRE omits the `--model` flag and the CLI uses its configured default. Invocations run as `copilot -p PROMPT --no-color --no-ask-user --silent` so they never block on user input.
 
 See [`app/integrations/llm_cli/AGENTS.md`](https://github.com/Tracer-Cloud/opensre/blob/main/app/integrations/llm_cli/AGENTS.md) for the adapter pattern used to add new CLI providers.
 

@@ -17,7 +17,7 @@ Use this package when adding a new **non-interactive** LLM that shells out to a 
 | `codex.py`           | Reference adapter: binary resolution, `codex exec`, probe via `--version` + `login status`. |
 | `opencode.py`        | Multi-provider CLI: `--version`, then `opencode auth list` (see `_parse_opencode_auth_list_output`). |
 | `kimi.py`            | `kimi --print` path: `--version`, `kimi login status`, then env/config.toml fallback (`KIMI_API_KEY`). |
-| `copilot.py`         | `copilot -p` path: `--version`, then probe `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` env, then `$COPILOT_HOME/config.json` (plaintext fallback per docs); keychain-stored credentials report `logged_in=None` because the OS keychain is not introspectable from Python without a user prompt. |
+| `copilot.py`         | `copilot -p` path: `--version`, then auth probe in order — (1) platform credential store (macOS Keychain via `security find-generic-password`, Linux libsecret via `secret-tool lookup`; silent metadata only, secret value never read), (2) `$COPILOT_HOME/config.json` (plaintext fallback per docs, parsed and validated as a non-empty JSON object), (3) `gh auth token` (cross-platform `gh` CLI fallback, returncode-only so the token never enters Python), (4) `COPILOT_GITHUB_TOKEN`/`GH_TOKEN`/`GITHUB_TOKEN` env (documented automation bypass). CLI auth state precedes env tokens by design (per PR #1533 review). Windows Credential Manager has no reliable silent probe wired up; `logged_in=None` defers verification to invocation, where `explain_failure` surfaces the auth hint on real auth errors. |
 
 
 ## Wiring a new provider
