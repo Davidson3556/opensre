@@ -17,7 +17,7 @@ Use this package when adding a new **non-interactive** LLM that shells out to a 
 | `codex.py`           | Reference adapter: binary resolution, `codex exec`, probe via `--version` + `login status`. |
 | `opencode.py`        | Multi-provider CLI: `--version`, then `opencode auth list` (see `_parse_opencode_auth_list_output`). |
 | `kimi.py`            | `kimi --print` path: `--version`, `kimi login status`, then env/config.toml fallback (`KIMI_API_KEY`). |
-| `copilot.py`         | `copilot -p` path: `--version`, then env tokens, then ``gh auth status`` (and ``--hostname`` when ``COPILOT_GH_HOST`` / ``GH_HOST`` targets a non-default host), then validated ``$COPILOT_HOME/config.json``; else ``logged_in=None``. No OS keychain probes. |
+| `copilot.py`         | `copilot -p` path: `--version`, then env tokens, then `gh auth status` (and `--hostname` when `COPILOT_GH_HOST` / `GH_HOST` targets a non-default host); otherwise `logged_in=None`. Plaintext `$COPILOT_HOME/config.json` is not inspected. No OS keychain probes. |
 
 
 ## Wiring a new provider

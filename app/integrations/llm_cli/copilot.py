@@ -26,18 +26,15 @@ We classify auth in this order (cheap probes only — no Copilot network call):
    ``github_pat_``, ``ghu_`` — **not** ``ghp_``). If ``COPILOT_GH_HOST`` or
    ``GH_HOST`` targets a non-default host, we run ``gh auth status --hostname …``
    as documented for GitHub Enterprise / data residency. Clearly logged-out
-   phrasing → ``False``; spawn error / timeout / ambiguous → ``None`` (fall
-   through). This matches Copilot's documented **GitHub CLI fallback** (lowest
-   runtime priority, but cheap to probe). **BYOK / ``COPILOT_OFFLINE``**: no
-   GitHub token may be required; probe may still return ``None`` while
-   ``copilot -p`` works — invoke-time failure is the real check.
-3. ``$COPILOT_HOME/config.json`` exists and parses as a non-empty JSON
-   object → ``True``. The plaintext fallback written by ``copilot login``
-   when no system keychain is available (Linux CI, some headless setups).
-   We validate content so leftover/empty files are not false positives.
-4. Otherwise → ``None``. Auth state genuinely cannot be verified (no ``gh``,
-   no env token, no plaintext file). The runner appends the auth hint on a
-   non-zero exit; the wizard offers retry / repick.
+   phrasing → ``False``; spawn error / timeout / ambiguous → ``None``.
+   Plaintext ``config.json`` under ``$COPILOT_HOME`` is **not** read: it is easy
+   to mis-classify and keychain-backed logins omit it anyway.
+   This matches Copilot's documented **GitHub CLI fallback**. **BYOK /
+   ``COPILOT_OFFLINE``**: no GitHub token may be required; probe may still return
+   ``None`` while ``copilot -p`` works — invoke-time failure is the real check.
+3. Otherwise → ``None``. Auth state cannot be verified from env + ``gh``.
+   The runner appends the auth hint on a non-zero exit; the wizard offers retry
+   / repick.
 
 Note: OS-level credential stores (macOS Keychain, Windows Credential
 Manager, Linux libsecret) are intentionally **not** probed. Service-name
@@ -47,7 +44,6 @@ the main interactive-login path more reliably on every platform.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -104,32 +100,6 @@ def _parse_semver(text: str) -> str | None:
     return m.group(1) if m else None
 
 
-def _copilot_home() -> Path:
-    override = os.environ.get("COPILOT_HOME", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return Path.home() / ".copilot"
-
-
-def _config_json_has_credentials() -> bool:
-    """Return True only when the plaintext credential fallback is real and populated.
-
-    Per the Copilot CLI docs, ``$COPILOT_HOME/config.json`` is the plaintext
-    fallback used when no system keychain is available. It is a JSON object;
-    an empty file, an empty object, or unreadable bytes do **not** count as
-    being logged in.
-    """
-    path = _copilot_home() / "config.json"
-    try:
-        if not path.is_file() or path.stat().st_size <= 2:
-            return False
-        with path.open("r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return False
-    return isinstance(data, dict) and bool(data)
-
-
 def _has_token_env() -> str | None:
     """Return the first set token env var name, if any."""
     for key in COPILOT_CLI_ENV_KEYS:
@@ -174,7 +144,7 @@ def _classify_gh_auth_status() -> tuple[bool | None, str]:
     - ``True``  — ``gh`` clearly reports an active session.
     - ``False`` — ``gh`` clearly reports no accounts / not logged in.
     - ``None``  — ``gh`` not on PATH, spawn failed, timed out, or output is
-                  ambiguous. Caller falls through to the next probe.
+                  ambiguous (auth then resolved as unknown if no token env).
 
     Timeouts and errors map to ``None`` (not ``False``) per AGENTS.md: the
     user may be on a flaky network and should not be forced to re-authenticate.
@@ -215,8 +185,7 @@ def _classify_copilot_auth() -> tuple[bool | None, str]:
     Probe order (see module docstring for rationale):
       1. Token env var.
       2. ``gh auth status`` (covers interactive ``gh``-backed login on all platforms).
-      3. ``$COPILOT_HOME/config.json`` plaintext fallback (CI / Linux headless).
-      4. ``None`` — genuinely unknown.
+      3. ``None`` — genuinely unknown.
     """
     token_key = _has_token_env()
     if token_key:
@@ -226,13 +195,10 @@ def _classify_copilot_auth() -> tuple[bool | None, str]:
     if gh_logged_in is not None:
         return gh_logged_in, gh_detail
 
-    if _config_json_has_credentials():
-        return True, f"Authenticated via {_copilot_home() / 'config.json'}."
-
     return (
         None,
-        f"Could not verify Copilot CLI auth (no token env, gh not logged in or not installed, "
-        f"no valid config.json). {_AUTH_HINT}",
+        f"Could not verify Copilot CLI auth (no token env, gh session not verified or gh not installed). "
+        f"{_AUTH_HINT}",
     )
 
 

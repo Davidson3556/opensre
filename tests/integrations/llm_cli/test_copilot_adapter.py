@@ -252,20 +252,16 @@ def test_detect_gh_logged_out_yields_false(
 @patch("app.integrations.llm_cli.copilot.shutil.which")
 @patch("app.integrations.llm_cli.copilot.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which")
-def test_detect_gh_timeout_falls_through_to_config_json(
+def test_detect_gh_timeout_maps_to_unknown_auth(
     mock_which: MagicMock,
     mock_run: MagicMock,
     mock_copilot_which: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A gh timeout maps to None (not False) and probe falls through to config.json."""
+    """A gh timeout maps to None for gh; overall auth stays unknown without token env."""
     mock_copilot_which.return_value = "/usr/bin/copilot"
     mock_which.return_value = "/usr/bin/gh"
-
-    home = tmp_path / "copilot_home"
-    home.mkdir()
-    (home / "config.json").write_text('{"github_token": "ghu_real"}')
 
     def side_effect(args: list[str], **_kwargs: object) -> MagicMock:
         if "--version" in args:
@@ -275,13 +271,13 @@ def test_detect_gh_timeout_falls_through_to_config_json(
         raise AssertionError(f"unexpected subprocess call: {args}")
 
     mock_run.side_effect = side_effect
-    _clean_copilot_env(monkeypatch, home=home)
+    _clean_copilot_env(monkeypatch, home=tmp_path / "empty")
 
     probe = CopilotAdapter().detect()
 
     assert probe.installed is True
-    assert probe.logged_in is True
-    assert "config.json" in probe.detail
+    assert probe.logged_in is None
+    assert "Could not verify" in probe.detail
 
 
 @patch("app.integrations.llm_cli.copilot.shutil.which")
@@ -294,7 +290,7 @@ def test_detect_gh_not_installed_falls_through(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """When gh is not on PATH the probe skips to config.json / None without error."""
+    """When gh is not on PATH, auth resolves to unknown if no token env."""
     mock_copilot_which.return_value = "/usr/bin/copilot"
     mock_which.return_value = None  # gh not installed
 
@@ -307,25 +303,19 @@ def test_detect_gh_not_installed_falls_through(
     assert probe.logged_in is None
 
 
-# ---------------------------------------------------------------------------
-# detect() — config.json fallback
-# ---------------------------------------------------------------------------
-
-
 @patch("app.integrations.llm_cli.copilot.shutil.which")
 @patch("app.integrations.llm_cli.copilot.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which")
-def test_detect_with_config_json_is_logged_in(
+def test_detect_config_json_plaintext_not_used_for_auth(
     mock_which: MagicMock,
     mock_run: MagicMock,
     mock_copilot_which: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A populated $COPILOT_HOME/config.json is a positive auth signal."""
+    """Copilot may store plaintext tokens in config.json — we do not treat that as probe signal."""
     mock_copilot_which.return_value = "/usr/bin/copilot"
-    mock_which.return_value = None  # gh not installed
-
+    mock_which.return_value = None
     mock_run.return_value = _version_proc()
 
     home = tmp_path / "copilot_home"
@@ -336,37 +326,13 @@ def test_detect_with_config_json_is_logged_in(
     probe = CopilotAdapter().detect()
 
     assert probe.installed is True
-    assert probe.logged_in is True
-    assert probe.version == "1.4.2"
-    assert "config.json" in probe.detail
-
-
-@patch("app.integrations.llm_cli.copilot.shutil.which")
-@patch("app.integrations.llm_cli.copilot.subprocess.run")
-@patch("app.integrations.llm_cli.binary_resolver.shutil.which")
-def test_detect_with_empty_config_json_is_not_logged_in(
-    mock_which: MagicMock,
-    mock_run: MagicMock,
-    mock_copilot_which: MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """An empty / leftover config.json must NOT be a false positive."""
-    mock_copilot_which.return_value = "/usr/bin/copilot"
-    mock_which.return_value = None
-    mock_run.return_value = _version_proc()
-
-    home = tmp_path / "copilot_home"
-    home.mkdir()
-    (home / "config.json").write_text("{}")
-
-    _clean_copilot_env(monkeypatch, home=home)
-    probe = CopilotAdapter().detect()
-
-    assert probe.installed is True
     assert probe.logged_in is None
     assert "Could not verify" in probe.detail
 
+
+# ---------------------------------------------------------------------------
+# detect() — binary / version failures
+# ---------------------------------------------------------------------------
 
 @patch("app.integrations.llm_cli.copilot.shutil.which")
 @patch("app.integrations.llm_cli.copilot.subprocess.run")
@@ -392,37 +358,6 @@ def test_detect_with_unrelated_files_is_not_logged_in(
 
     assert probe.installed is True
     assert probe.logged_in is None
-
-
-@patch("app.integrations.llm_cli.copilot.shutil.which")
-@patch("app.integrations.llm_cli.copilot.subprocess.run")
-@patch("app.integrations.llm_cli.binary_resolver.shutil.which")
-def test_detect_with_invalid_json_config_is_not_logged_in(
-    mock_which: MagicMock,
-    mock_run: MagicMock,
-    mock_copilot_which: MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A corrupt config.json must not be treated as authenticated."""
-    mock_copilot_which.return_value = "/usr/bin/copilot"
-    mock_which.return_value = None
-    mock_run.return_value = _version_proc()
-
-    home = tmp_path / "copilot_home"
-    home.mkdir()
-    (home / "config.json").write_text("not-json{")
-
-    _clean_copilot_env(monkeypatch, home=home)
-    probe = CopilotAdapter().detect()
-
-    assert probe.installed is True
-    assert probe.logged_in is None
-
-
-# ---------------------------------------------------------------------------
-# detect() — binary / version failures
-# ---------------------------------------------------------------------------
 
 
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which", return_value=None)
