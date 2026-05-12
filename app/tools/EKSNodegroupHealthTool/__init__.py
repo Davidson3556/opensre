@@ -7,6 +7,7 @@ from typing import Any
 from botocore.exceptions import ClientError
 
 from app.services.eks.eks_client import EKSClient
+from app.tools._telemetry import report_run_error
 from app.tools.EKSListClustersTool import _eks_available, _eks_creds
 from app.tools.tool_decorator import tool
 
@@ -87,6 +88,23 @@ def get_eks_nodegroup_health(
             "error": None,
         }
     except ClientError as e:
+        report_run_error(
+            e,
+            tool_name="get_eks_nodegroup_health",
+            source="eks",
+            component="app.tools.EKSNodegroupHealthTool",
+            method="EKSClient.describe_nodegroup",
+            severity="warning",
+            extras={"cluster_name": cluster_name, "region": region},
+        )
         return {"source": "eks", "available": False, "cluster_name": cluster_name, "error": str(e)}
     except Exception as e:
+        report_run_error(
+            e,
+            tool_name="get_eks_nodegroup_health",
+            source="eks",
+            component="app.tools.EKSNodegroupHealthTool",
+            method="EKSClient.describe_nodegroup",
+            extras={"cluster_name": cluster_name, "region": region},
+        )
         return {"source": "eks", "available": False, "cluster_name": cluster_name, "error": str(e)}
