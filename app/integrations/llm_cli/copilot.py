@@ -11,33 +11,38 @@ COPILOT_HOME    Optional config directory override. Defaults to ``~/.copilot``.
 Auth probe
 ----------
 Copilot CLI does **not** expose a non-interactive auth-status subcommand.
-``copilot login`` opens an OAuth device flow (so we cannot run it during
-``detect()`` without risking a hung browser launch); ``/login``, ``/user``,
-``/logout`` are slash commands that only work inside an interactive
-session. Per the official docs, credentials live in:
+``copilot login`` opens an OAuth device flow; ``/login`` / ``/logout`` are
+slash commands that only work inside an interactive session.
 
-* the system keychain (``copilot-cli`` service) when one is available
-  (macOS Keychain, Windows Credential Manager, Linux libsecret), or
-* the plaintext fallback ``$COPILOT_HOME/config.json`` when no keychain
-  is reachable.
-
-We therefore classify auth in this order:
+We classify auth in this order (cheap probes only — no Copilot network call):
 
 1. ``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN`` env var set
-   → ``True`` (the CLI accepts these as a documented fallback).
-2. macOS Keychain entry under service ``copilot-cli`` (silent metadata
-   probe via ``security find-generic-password``; no TouchID prompt) →
-   ``True``. This is the Copilot CLI's preferred credential store on
-   macOS, so users who ran ``/login`` interactively are detected here
-   without setting any env var.
+   → ``True``. These are the documented headless/CI auth fallbacks that the
+   CLI checks before anything else.
+2. ``gh auth status`` (when ``gh`` is on PATH) → parse stdout/stderr using
+   strings that match current ``gh`` output (for example ``✓ Logged in to
+   github.com account …``, ``- Active account: true``, or a ``- Token:`` line
+   whose prefix is a Copilot-supported token type per GitHub docs: ``gho_``,
+   ``github_pat_``, ``ghu_`` — **not** ``ghp_``). If ``COPILOT_GH_HOST`` or
+   ``GH_HOST`` targets a non-default host, we run ``gh auth status --hostname …``
+   as documented for GitHub Enterprise / data residency. Clearly logged-out
+   phrasing → ``False``; spawn error / timeout / ambiguous → ``None`` (fall
+   through). This matches Copilot's documented **GitHub CLI fallback** (lowest
+   runtime priority, but cheap to probe). **BYOK / ``COPILOT_OFFLINE``**: no
+   GitHub token may be required; probe may still return ``None`` while
+   ``copilot -p`` works — invoke-time failure is the real check.
 3. ``$COPILOT_HOME/config.json`` exists and parses as a non-empty JSON
-   object → ``True``. We validate the *content*, not just the file's
-   existence, so leftover / empty / junk files do not cause a false
-   positive.
-4. Otherwise → ``None`` (auth state cannot be verified). On Linux
-   libsecret / Windows Credential Manager we do not yet have a silent
-   probe wired up. The runner surfaces the auth hint if invocation
-   fails; the wizard offers retry / repick.
+   object → ``True``. The plaintext fallback written by ``copilot login``
+   when no system keychain is available (Linux CI, some headless setups).
+   We validate content so leftover/empty files are not false positives.
+4. Otherwise → ``None``. Auth state genuinely cannot be verified (no ``gh``,
+   no env token, no plaintext file). The runner appends the auth hint on a
+   non-zero exit; the wizard offers retry / repick.
+
+Note: OS-level credential stores (macOS Keychain, Windows Credential
+Manager, Linux libsecret) are intentionally **not** probed. Service-name
+lookups are fragile across CLI versions and ``gh auth status`` already covers
+the main interactive-login path more reliably on every platform.
 """
 
 from __future__ import annotations
@@ -45,8 +50,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 from app.integrations.llm_cli.base import CLIInvocation, CLIProbe
@@ -67,19 +72,28 @@ from app.integrations.llm_cli.env_overrides import (
 
 _COPILOT_VERSION_RE = re.compile(r"(\d+\.\d+\.\d+)")
 _PROBE_TIMEOUT_SEC = 5.0
-_KEYCHAIN_PROBE_TIMEOUT_SEC = 2.0
-# Service names the macOS Keychain probe accepts as a positive auth signal:
-# - ``copilot-cli`` is what the GitHub docs name for a copilot-specific login;
-# - ``github-copilot-cli`` / ``gh-copilot`` are historical variants;
-# - ``gh:github.com`` is the entry written by the standalone ``gh`` CLI.
-#   The Copilot CLI delegates to ``gh``'s stored token when no copilot-specific
-#   login exists, so a logged-in ``gh`` is sufficient for ``copilot -p`` to work.
-_KEYCHAIN_SERVICES: tuple[str, ...] = (
-    "copilot-cli",
-    "github-copilot-cli",
-    "gh-copilot",
-    "gh:github.com",
+_GH_AUTH_TIMEOUT_SEC = 5.0
+
+# ``gh auth status`` prints a line like ``  ✓ Logged in to github.com account …``.
+# Match with or without the leading checkmark (``gh`` versions differ).
+_GH_LOGGED_IN_ACCOUNT_LINE = re.compile(
+    r"(?m)^\s*(?:✓\s*)?logged in to\s+\S+\s+account\b",
+    re.IGNORECASE,
 )
+# Copilot-supported token prefixes (classic ``ghp_`` is not supported by Copilot CLI).
+_GH_TOKEN_LINE = re.compile(
+    r"(?m)^\s*-\s*token:\s*(gho_|github_pat_|ghu_)",
+    re.IGNORECASE,
+)
+
+# Hard negatives only — avoid ``gh auth login`` alone (could appear in unrelated text).
+_GH_LOGGED_OUT_PHRASES = (
+    "not logged in",
+    "you are not logged into any github hosts",
+    "you are not logged into any hosts",
+    "no accounts",
+)
+
 _AUTH_HINT = "Run `copilot` then /login, or set COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN."
 
 
@@ -101,9 +115,7 @@ def _config_json_has_credentials() -> bool:
     Per the Copilot CLI docs, ``$COPILOT_HOME/config.json`` is the plaintext
     fallback used when no system keychain is available. It is a JSON object;
     an empty file, an empty object, or unreadable bytes do **not** count as
-    being logged in. This is stricter than the previous "any file in the
-    directory" heuristic, which the reviewer flagged as a false-positive
-    risk for leftover/junk files.
+    being logged in.
     """
     path = _copilot_home() / "config.json"
     try:
@@ -124,61 +136,101 @@ def _has_token_env() -> str | None:
     return None
 
 
-def _macos_keychain_has_copilot_entry() -> str | None:
-    """Return the matching service name iff macOS Keychain has a Copilot entry.
+def _gh_auth_status_argv(gh_bin: str) -> list[str]:
+    """Build ``gh auth status`` argv; add ``--hostname`` for non-default GitHub hosts.
 
-    ``security find-generic-password -s <service>`` (no ``-w``/``-g``) queries
-    entry *metadata* only and does not require Keychain unlock or TouchID. The
-    process returns 0 when an entry exists, 44 when it is missing. We try the
-    documented service name and a couple of historical variants so a working
-    ``/login`` is detected regardless of which CLI version wrote the entry.
-    Returns the service name on the first hit, or ``None`` when no match.
+    See GitHub Copilot docs (authenticate with GitHub CLI) and ``gh`` docs:
+    ``gh auth status --hostname HOST`` for Enterprise / data residency when
+    ``github.com`` is not the active host.
     """
-    if sys.platform != "darwin":
-        return None
-    for service in _KEYCHAIN_SERVICES:
-        try:
-            proc = subprocess.run(
-                ["security", "find-generic-password", "-s", service],
-                capture_output=True,
-                text=True,
-                timeout=_KEYCHAIN_PROBE_TIMEOUT_SEC,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return None
-        if proc.returncode == 0:
-            return service
-    return None
+    argv: list[str] = [gh_bin, "auth", "status"]
+    host = os.environ.get("COPILOT_GH_HOST", "").strip() or os.environ.get("GH_HOST", "").strip()
+    if not host:
+        return argv
+    normalized = host.lower().rstrip("/").removeprefix("https://").removeprefix("http://")
+    if normalized in {"", "github.com", "api.github.com"}:
+        return argv
+    argv.extend(["--hostname", host])
+    return argv
+
+
+def _gh_output_indicates_logged_in(stdout: str, stderr: str) -> bool:
+    """Return True when ``gh auth status`` output clearly shows an authenticated host."""
+    text = f"{stdout}\n{stderr}"
+    lowered = text.lower()
+    return (
+        "active account: true" in lowered
+        or bool(_GH_LOGGED_IN_ACCOUNT_LINE.search(text))
+        or bool(_GH_TOKEN_LINE.search(text))
+    )
+
+
+def _classify_gh_auth_status() -> tuple[bool | None, str]:
+    """Run ``gh auth status`` and classify its output into the three-state contract.
+
+    Returns ``(logged_in, detail)`` where:
+    - ``True``  — ``gh`` clearly reports an active session.
+    - ``False`` — ``gh`` clearly reports no accounts / not logged in.
+    - ``None``  — ``gh`` not on PATH, spawn failed, timed out, or output is
+                  ambiguous. Caller falls through to the next probe.
+
+    Timeouts and errors map to ``None`` (not ``False``) per AGENTS.md: the
+    user may be on a flaky network and should not be forced to re-authenticate.
+    Negative phrases are checked **before** positive ones to avoid substring
+    false-positives (e.g. "not logged in" contains "logged in").
+    """
+    gh_bin = shutil.which("gh")
+    if not gh_bin:
+        return None, ""
+
+    argv = _gh_auth_status_argv(gh_bin)
+    try:
+        proc = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=_GH_AUTH_TIMEOUT_SEC,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None, ""
+
+    combined = f"{proc.stdout}\n{proc.stderr}".lower()
+
+    # Check negative phrases first to avoid substring false-positives.
+    if any(phrase in combined for phrase in _GH_LOGGED_OUT_PHRASES):
+        return False, "gh auth status: not logged in. Run `gh auth login` or set a token env var."
+
+    if _gh_output_indicates_logged_in(proc.stdout or "", proc.stderr or ""):
+        return True, "Authenticated via `gh` CLI session (gh auth status)."
+
+    return None, ""
 
 
 def _classify_copilot_auth() -> tuple[bool | None, str]:
     """Resolve auth state without spawning the Copilot CLI itself.
 
-    Documented fallbacks (in order):
-      1. Token env var (the CLI's own documented auth fallback).
-      2. macOS Keychain entry (``security find-generic-password -s copilot-cli``)
-         — silent metadata probe, no TouchID prompt. The Copilot CLI's preferred
-         credential store on macOS.
-      3. ``$COPILOT_HOME/config.json`` plaintext credential file (used when no
-         system keychain is available, e.g. some CI / Linux environments).
-      4. Unknown — Linux libsecret and Windows Credential Manager are not yet
-         introspected here (no equivalent silent probe is wired up); the runner
-         will surface the auth hint if invocation fails, and the wizard offers
-         retry / repick.
+    Probe order (see module docstring for rationale):
+      1. Token env var.
+      2. ``gh auth status`` (covers interactive ``gh``-backed login on all platforms).
+      3. ``$COPILOT_HOME/config.json`` plaintext fallback (CI / Linux headless).
+      4. ``None`` — genuinely unknown.
     """
     token_key = _has_token_env()
     if token_key:
         return True, f"Authenticated via {token_key}."
-    keychain_service = _macos_keychain_has_copilot_entry()
-    if keychain_service:
-        return True, f"Authenticated via macOS Keychain (service '{keychain_service}')."
+
+    gh_logged_in, gh_detail = _classify_gh_auth_status()
+    if gh_logged_in is not None:
+        return gh_logged_in, gh_detail
+
     if _config_json_has_credentials():
         return True, f"Authenticated via {_copilot_home() / 'config.json'}."
+
     return (
         None,
-        "Could not verify Copilot CLI auth from the host (system keychain "
-        f"credentials are not introspectable on this platform). {_AUTH_HINT}",
+        f"Could not verify Copilot CLI auth (no token env, gh not logged in or not installed, "
+        f"no valid config.json). {_AUTH_HINT}",
     )
 
 
