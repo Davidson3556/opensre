@@ -171,16 +171,24 @@ def _normalize_named_bridge_call(
     *,
     tool_name: str,
     arguments: OpenClawParams,
+    surface_tool_name: str,
 ) -> OpenClawBridgeResponse:
+    """Invoke a named MCP tool and normalise its result.
+
+    ``tool_name`` is the MCP-side tool identifier (e.g. ``conversations_get``);
+    ``surface_tool_name`` is the OpenSRE registered tool name that this call
+    is running on behalf of (e.g. ``get_openclaw_conversation``) so the Sentry
+    ``tool_name`` tag matches the tool's declared metadata.
+    """
     try:
         result = invoke_openclaw_mcp_tool(config, tool_name, arguments)
     except Exception as err:
         report_run_error(
             err,
-            tool_name=tool_name,
+            tool_name=surface_tool_name,
             source="openclaw",
             component="app.tools.OpenClawMCPTool",
-            method="invoke_openclaw_mcp_tool",
+            method=f"invoke_openclaw_mcp_tool('{tool_name}')",
             extras={"mcp_tool": tool_name, "transport": config.mode},
         )
         return _openclaw_unavailable_response(
@@ -410,6 +418,7 @@ def get_openclaw_conversation(
         config,
         tool_name="conversations_get",
         arguments={"conversationId": normalized_conversation_id},
+        surface_tool_name="get_openclaw_conversation",
     )
 
 
@@ -475,6 +484,7 @@ def send_openclaw_message(
         config,
         tool_name="message_send",
         arguments={"conversationId": normalized_conversation_id, "content": normalized_content},
+        surface_tool_name="send_openclaw_message",
     )
 
 

@@ -18,9 +18,11 @@ tracking because they shape what the agent sees.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from app.utils.errors import report_exception
+
+ToolErrorSeverity = Literal["error", "warning"]
 
 _DEFAULT_LOGGER = logging.getLogger("app.tools")
 
@@ -32,7 +34,7 @@ def report_run_error(
     source: str,
     component: str,
     method: str | None = None,
-    severity: str = "error",
+    severity: ToolErrorSeverity = "error",
     logger: logging.Logger | None = None,
     extras: dict[str, Any] | None = None,
 ) -> None:
@@ -62,4 +64,4 @@ def report_run_error(
     )
 
 
-__all__ = ["report_run_error"]
+__all__ = ["ToolErrorSeverity", "report_run_error"]
