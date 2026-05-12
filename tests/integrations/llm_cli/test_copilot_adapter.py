@@ -334,6 +334,7 @@ def test_detect_config_json_plaintext_not_used_for_auth(
 # detect() — binary / version failures
 # ---------------------------------------------------------------------------
 
+
 @patch("app.integrations.llm_cli.copilot.shutil.which")
 @patch("app.integrations.llm_cli.copilot.subprocess.run")
 @patch("app.integrations.llm_cli.binary_resolver.shutil.which")
