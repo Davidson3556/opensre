@@ -492,14 +492,18 @@ def test_build_forwards_copilot_config_envs(
     _mock_which: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """COPILOT_HOME / COPILOT_MODEL flow through the adapter's invocation env."""
+    """Copilot HOME/MODEL/host envs flow through the adapter's invocation env."""
     _clean_copilot_env(monkeypatch)
     monkeypatch.setenv("COPILOT_HOME", "/x/copilot")
     monkeypatch.setenv("COPILOT_MODEL", "gpt-5.2")
+    monkeypatch.setenv("COPILOT_GH_HOST", "corp.github.example")
+    monkeypatch.setenv("GH_HOST", "https://gh.enterprise.test")
     inv = CopilotAdapter().build(prompt="p", model=None, workspace="")
     assert inv.env is not None
     assert inv.env["COPILOT_HOME"] == "/x/copilot"
     assert inv.env["COPILOT_MODEL"] == "gpt-5.2"
+    assert inv.env["COPILOT_GH_HOST"] == "corp.github.example"
+    assert inv.env["GH_HOST"] == "https://gh.enterprise.test"
 
 
 def test_build_raises_when_binary_unresolved(monkeypatch: pytest.MonkeyPatch) -> None:
