@@ -94,7 +94,9 @@ _GH_LOGGED_OUT_PHRASES = (
     "no accounts",
 )
 
-_AUTH_HINT = "Run `copilot` then /login, or set COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN."
+_AUTH_HINT = (
+    "Run `copilot login` or `gh auth login`, or set COPILOT_GITHUB_TOKEN / GH_TOKEN / GITHUB_TOKEN."
+)
 
 
 def _parse_semver(text: str) -> str | None:
