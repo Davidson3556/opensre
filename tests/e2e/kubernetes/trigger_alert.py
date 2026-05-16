@@ -26,7 +26,7 @@ import urllib.request
 
 import boto3
 
-from tests.e2e.kubernetes.infrastructure_sdk.eks import cluster_exists
+from tests.e2e.kubernetes.infrastructure_sdk.eks import CLUSTER_NAME, _cluster_exists
 from tests.shared.infrastructure_sdk.trigger_config import (
     load_trigger_config,
     regenerate_trigger_config,
@@ -141,13 +141,13 @@ def _missing_datadog_creds() -> list[str]:
 
 
 def _poll_datadog_logs(max_wait: int = 90) -> bool:
-    api_key = os.environ.get("DD_API_KEY", "")
-    app_key = os.environ.get("DD_APP_KEY", "")
-    site = os.environ.get("DD_SITE", "datadoghq.com")
     missing = _missing_datadog_creds()
     if missing:
         print(f"  Skipping Datadog poll: missing env var(s): {', '.join(missing)}")
         return False
+    api_key = os.environ["DD_API_KEY"]
+    app_key = os.environ["DD_APP_KEY"]
+    site = os.environ.get("DD_SITE", "datadoghq.com")
 
     print("Polling Datadog Logs API...")
     deadline = time.monotonic() + max_wait
@@ -218,7 +218,8 @@ def query_slack_alerts(
 def verify(since_epoch: float, *, dd_max_wait: int = 120, slack_max_wait: int = 300) -> int:
     """Poll Datadog and Slack to confirm the pipeline failure was observed.
 
-    Returns 0 on success, 1 if Datadog verification fails.
+    Returns 0 on success, 1 if Datadog creds are missing or the log is not
+    seen within ``dd_max_wait`` seconds.
     """
     missing = _missing_datadog_creds()
     if missing:
@@ -284,8 +285,12 @@ def main() -> int:
     since_epoch = args.since_epoch or time.time()
 
     if args.verify_only:
-        if not cluster_exists():
-            print("FAIL: EKS cluster 'tracer-eks-test' is not available; nothing to verify.")
+        status = _cluster_exists()
+        if status != "ACTIVE":
+            print(
+                f"FAIL: EKS cluster {CLUSTER_NAME!r} is not ACTIVE "
+                f"(status={status or 'NOT FOUND'}); nothing to verify."
+            )
             return 1
         return verify(since_epoch)
 
@@ -298,8 +303,11 @@ def main() -> int:
         return 1
 
     trigger_api_url = cfg["trigger_api_url"]
-    if not cluster_exists():
-        print("ERROR: EKS cluster 'tracer-eks-test' is not available.")
+    status = _cluster_exists()
+    if status != "ACTIVE":
+        print(
+            f"ERROR: EKS cluster {CLUSTER_NAME!r} is not ACTIVE (status={status or 'NOT FOUND'})."
+        )
         print("Trigger API exists but cannot run pipeline jobs without the cluster.")
         return 1
     print(f"Triggering pipeline via API: {trigger_api_url}")
