@@ -136,11 +136,17 @@ def _load_or_regen_trigger_config() -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _missing_datadog_creds() -> list[str]:
+    return [name for name in ("DD_API_KEY", "DD_APP_KEY") if not os.environ.get(name)]
+
+
 def _poll_datadog_logs(max_wait: int = 90) -> bool:
     api_key = os.environ.get("DD_API_KEY", "")
     app_key = os.environ.get("DD_APP_KEY", "")
     site = os.environ.get("DD_SITE", "datadoghq.com")
-    if not api_key or not app_key:
+    missing = _missing_datadog_creds()
+    if missing:
+        print(f"  Skipping Datadog poll: missing env var(s): {', '.join(missing)}")
         return False
 
     print("Polling Datadog Logs API...")
@@ -214,6 +220,11 @@ def verify(since_epoch: float, *, dd_max_wait: int = 120, slack_max_wait: int = 
 
     Returns 0 on success, 1 if Datadog verification fails.
     """
+    missing = _missing_datadog_creds()
+    if missing:
+        print(f"FAIL: cannot verify -- missing env var(s): {', '.join(missing)}")
+        return 1
+
     start = time.monotonic()
 
     dd_found = _poll_datadog_logs(max_wait=dd_max_wait)
@@ -273,6 +284,9 @@ def main() -> int:
     since_epoch = args.since_epoch or time.time()
 
     if args.verify_only:
+        if not cluster_exists():
+            print("FAIL: EKS cluster 'tracer-eks-test' is not available; nothing to verify.")
+            return 1
         return verify(since_epoch)
 
     start_epoch = time.time()
