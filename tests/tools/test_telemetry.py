@@ -707,6 +707,41 @@ def test_eks_client_error_path_uses_warning_severity(
     assert error_records_for_tool == [], "ClientError severity='warning' must not also log at ERROR"
 
 
+def test_eks_nodegroup_health_tags_failing_nodegroup_during_iteration(
+    captured_sentry_events: list[CapturedSentryEvent],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mid-loop ``describe_nodegroup`` failure must tag the actual failing nodegroup.
+
+    The tool loops through one nodegroup at a time. When the caller does not
+    pass ``nodegroup_name`` the loop runs over the discovered list, and a
+    failure on the second nodegroup should reach Sentry tagged with
+    ``ng-broken``, not ``None`` or the first nodegroup.
+    """
+    from app.tools import EKSNodegroupHealthTool as mod
+
+    def _describe(_cluster: str, ng: str) -> dict[str, Any]:
+        if ng == "ng-broken":
+            raise RuntimeError("describe_nodegroup failed")
+        return {"status": "ACTIVE"}
+
+    instance = MagicMock()
+    instance.list_nodegroups.return_value = ["ng-ok", "ng-broken"]
+    instance.describe_nodegroup.side_effect = _describe
+    monkeypatch.setattr(mod, "EKSClient", MagicMock(return_value=instance))
+
+    result = mod.get_eks_nodegroup_health(cluster_name="c", role_arn="arn:aws:iam::123:role/x")
+
+    assert result["available"] is False
+    assert len(captured_sentry_events) == 1
+    event = captured_sentry_events[0]
+    assert event.extras["tag.tool_name"] == "get_eks_nodegroup_health"
+    assert event.extras["nodegroup_name"] == "ng-broken", (
+        "Mid-loop failure must tag the actual failing nodegroup, not the (None) "
+        f"caller input. Got extras={event.extras!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Registry-wide coverage
 #
