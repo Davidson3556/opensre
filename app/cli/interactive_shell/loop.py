@@ -178,6 +178,7 @@ def _dispatch_should_show_spinner(text: str, session: ReplSession) -> bool:
 _EXCLUSIVE_STDIN_MENU_COMMANDS: frozenset[str] = frozenset(
     {
         "/history",
+        "/help",
         "/integrations",
         "/list",
         "/mcp",
@@ -185,6 +186,7 @@ _EXCLUSIVE_STDIN_MENU_COMMANDS: frozenset[str] = frozenset(
         "/template",
         "/trust",
         "/verbose",
+        "/?",
     }
 )
 _EXCLUSIVE_STDIN_SUBCOMMANDS: frozenset[tuple[str, str]] = frozenset(

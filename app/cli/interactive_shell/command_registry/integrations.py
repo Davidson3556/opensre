@@ -333,25 +333,33 @@ _MCP_FIRST_ARGS: tuple[tuple[str, str], ...] = (
 COMMANDS: list[SlashCommand] = [
     SlashCommand(
         "/list",
-        "list integrations, MCP, tools, LLM (TTY: bare '/list' opens inline menu; "
-        "else '/list integrations', '/list models', '/list mcp', '/list tools')",
+        "Browse integrations, MCP servers, models, and tools.",
         _cmd_list,
+        usage=("/list", "/list integrations", "/list models", "/list mcp", "/list tools"),
+        notes=("In a TTY, bare /list opens an interactive menu.",),
         first_arg_completions=_LIST_FIRST_ARGS,
         execution_tier=ExecutionTier.SAFE,
     ),
     SlashCommand(
         "/integrations",
-        "manage integrations (TTY: bare '/integrations' opens menu; else "
-        "'/integrations list', '/integrations verify', '/integrations show <service>')",
+        "Manage integrations.",
         _cmd_integrations,
+        usage=(
+            "/integrations",
+            "/integrations list",
+            "/integrations verify",
+            "/integrations show <service>",
+        ),
+        notes=("In a TTY, bare /integrations opens an interactive menu.",),
         first_arg_completions=_INTEGRATIONS_FIRST_ARGS,
         execution_tier=ExecutionTier.SAFE,
     ),
     SlashCommand(
         "/mcp",
-        "manage MCP servers (TTY: bare '/mcp' opens menu; else "
-        "'/mcp list', '/mcp connect', '/mcp disconnect')",
+        "Manage MCP servers.",
         _cmd_mcp,
+        usage=("/mcp", "/mcp list", "/mcp connect", "/mcp disconnect"),
+        notes=("In a TTY, bare /mcp opens an interactive menu.",),
         first_arg_completions=_MCP_FIRST_ARGS,
         execution_tier=ExecutionTier.SAFE,
     ),

@@ -14,7 +14,7 @@ import os
 import select
 import shutil
 import sys
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from rich.console import Console
 from rich.markup import escape
@@ -28,11 +28,12 @@ from app.cli.interactive_shell.ui.theme import (
     SECONDARY,
 )
 
-_HINT = "↑↓  Enter  Esc"
+_HINT = "↑↓/j/k  Enter/Space  Esc/q"
 CRUMB_SEP = "  ›  "
 # Blank line after the submitted slash line before the menu header (all pickers).
 _MENU_LEADING_LINES = 1
 _TERMINAL_NEWLINE = "\r\n"
+MenuAction = Literal["up", "down", "enter", "cancel", "eof", "ignore"]
 
 
 def repl_tty_interactive() -> bool:
@@ -50,7 +51,7 @@ def repl_section_break(console: Console) -> None:
 # ── raw key reader ───────────────────────────────────────────────────────────
 
 
-def _read_action() -> str:
+def _read_action() -> MenuAction:
     """Return up | down | enter | cancel | eof."""
     if os.name == "nt":
         import msvcrt
@@ -58,14 +59,28 @@ def _read_action() -> str:
         c = msvcrt.getch()  # type: ignore[attr-defined]
         if c in (b"\x03",):
             return "cancel"
-        if c in (b"\r", b"\n"):
+        if c in (b"\r", b"\n", b" "):
             return "enter"
+        if c in (b"j", b"J"):
+            return "down"
+        if c in (b"k", b"K"):
+            return "up"
+        if c in (b"q", b"Q"):
+            return "cancel"
         if c in (b"\xe0", b"\x00"):
             c2 = msvcrt.getch()  # type: ignore[attr-defined]
-            return "up" if c2 == b"H" else "down" if c2 == b"P" else "cancel"
+            if c2 == b"H":
+                return "up"
+            if c2 == b"P":
+                return "down"
+            if c2 == b"M":
+                return "enter"
+            if c2 == b"K":
+                return "ignore"
+            return "ignore"
         if c == b"\x1b":
             return "cancel"
-        return "cancel"
+        return "ignore"
 
     import termios
     import tty
@@ -82,8 +97,14 @@ def _read_action() -> str:
         key_code = cast(int, data[0])
         if key_code in (3, 4):
             return "cancel"
-        if key_code in (10, 13):
+        if key_code in (10, 13, 32):
             return "enter"
+        if data in (b"j", b"J"):
+            return "down"
+        if data in (b"k", b"K"):
+            return "up"
+        if data in (b"q", b"Q"):
+            return "cancel"
         if key_code == 27:
             if select.select([fd], [], [], 0.05)[0]:
                 seq = os.read(fd, 1)
@@ -93,10 +114,19 @@ def _read_action() -> str:
                         return "up"
                     if arrow == b"B":
                         return "down"
+                    if arrow == b"C":
+                        return "enter"
+                    if arrow == b"D":
+                        return "ignore"
             return "cancel"
-        return "cancel"
+        return "ignore"
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_attrs)  # type: ignore[attr-defined]
+
+
+def read_menu_action() -> MenuAction:
+    """Read one normalized inline-menu action from stdin."""
+    return _read_action()
 
 
 # ── rendering helpers ────────────────────────────────────────────────────────
@@ -104,6 +134,11 @@ def _read_action() -> str:
 
 def _cols() -> int:
     return max(40, shutil.get_terminal_size(fallback=(80, 24)).columns)
+
+
+def menu_columns() -> int:
+    """Return the current terminal width floor used by inline menus."""
+    return _cols()
 
 
 def _rule(width: int) -> str:
@@ -129,8 +164,19 @@ def _write_menu_line(text: str = "") -> None:
     sys.stdout.write(_TERMINAL_NEWLINE)
 
 
+def write_menu_line(text: str = "") -> None:
+    """Write one inline-menu line at column zero."""
+    _write_menu_line(text)
+
+
 def _erase_menu_block(height: int) -> None:
     sys.stdout.write(f"\r\x1b[{height}A\r\x1b[J")
+
+
+def erase_menu_lines(height: int) -> None:
+    """Erase a previously-rendered inline menu block."""
+    _erase_menu_block(height)
+    sys.stdout.flush()
 
 
 def _draw_menu(
@@ -202,6 +248,8 @@ def _pick(*, title: str, crumb: str, labels: list[str]) -> int | None:
         if action in ("cancel", "eof"):
             _erase_menu(crumb, labels)
             return None
+        if action == "ignore":
+            continue
         if action == "up":
             idx = (idx - 1) % len(labels)
         elif action == "down":
@@ -249,8 +297,12 @@ def print_valid_choice_list(
 
 __all__ = [
     "CRUMB_SEP",
+    "erase_menu_lines",
+    "menu_columns",
     "print_valid_choice_list",
+    "read_menu_action",
     "repl_choose_one",
     "repl_section_break",
     "repl_tty_interactive",
+    "write_menu_line",
 ]
