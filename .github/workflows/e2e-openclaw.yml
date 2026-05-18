@@ -156,7 +156,7 @@ jobs:
 
       - name: Upload gateway logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: openclaw-gateway-logs
           path: /tmp/openclaw-e2e-logs/

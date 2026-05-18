@@ -149,6 +149,10 @@ def _poll_datadog_logs(max_wait: int = 90) -> bool:
     app_key = os.environ["DD_APP_KEY"]
     site = os.environ.get("DD_SITE", "datadoghq.com")
 
+    last_status: int | None = None
+    last_body_sample: str = ""
+    last_error: str = ""
+
     print("Polling Datadog Logs API...")
     deadline = time.monotonic() + max_wait
     while time.monotonic() < deadline:
@@ -175,18 +179,34 @@ def _poll_datadog_logs(max_wait: int = 90) -> bool:
                 },
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
-                body = json.loads(resp.read())
+                last_status = resp.status
+                raw = resp.read()
+            last_body_sample = raw.decode("utf-8", errors="replace")[:200]
+            body = json.loads(raw)
             if body.get("data"):
                 elapsed = max_wait - int(deadline - time.monotonic())
                 print(f"  Log found in Datadog ({elapsed}s)")
                 return True
+        except urllib.error.HTTPError as exc:
+            last_status = exc.code
+            try:
+                last_body_sample = exc.read().decode("utf-8", errors="replace")[:200]
+            except Exception:
+                last_body_sample = ""
+            last_error = f"HTTP {exc.code}"
+            print(f"  Poll error: {last_error}")
         except Exception as e:
+            last_error = repr(e)
             print(f"  Poll error: {e}")
 
         remaining = int(deadline - time.monotonic())
         print(f"  Not in DD yet... ({remaining}s remaining)")
         time.sleep(5)
 
+    if last_status is not None:
+        print(f"  Last DD response: HTTP {last_status}; body[:200]={last_body_sample!r}")
+    elif last_error:
+        print(f"  All DD polls failed: {last_error}")
     return False
 
 
