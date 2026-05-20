@@ -223,3 +223,26 @@ def _pump_task_pty(
     finally:
         with contextlib.suppress(OSError):
             os.close(master_fd)
+
+
+__all__ = [
+    "SHELL_COMMAND_TIMEOUT_SECONDS",
+    "SYNTHETIC_TEST_TIMEOUT_SECONDS",
+    "CLAUDE_CODE_IMPLEMENTATION_TIMEOUT_SECONDS",
+    "_SYNTHETIC_POLL_SECONDS",
+    "_MAX_COMMAND_OUTPUT_CHARS",
+    "_SYNTHETIC_DIAG_CHARS",
+    "_TASK_OUTPUT_PREFIX_WIDTH",
+    "_MIN_SUBPROCESS_TERMINAL_WIDTH",
+    "_TASK_OUTPUT_JOIN_TIMEOUT_SECONDS",
+    "terminate_child_process",
+    "read_diag",
+    "_print_task_output_line",
+    "_subprocess_env_with_aligned_width",
+    "_pump_task_stream",
+    "_start_task_output_streams",
+    "_join_task_output_streams",
+    "_console_file_is_tty",
+    "_should_use_pty",
+    "_pump_task_pty",
+]

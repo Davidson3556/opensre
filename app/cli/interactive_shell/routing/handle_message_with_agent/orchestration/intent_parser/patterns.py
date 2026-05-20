@@ -225,3 +225,28 @@ _NON_COMMAND_STARTS = frozenset(
 # Shell builtins that may not be discoverable via `shutil.which()` on all platforms.
 # Keep this list intentionally small and add tests when extending it.
 _SHELL_BUILTINS = frozenset({"cd", "pwd"})
+
+__all__ = [
+    "IS_WINDOWS",
+    "ACTION_PATTERNS",
+    "SAMPLE_ALERT_RE",
+    "QUOTED_INVESTIGATION_RE",
+    "SYNTHETIC_RDS_TEST_RE",
+    "TASK_CANCEL_TRIGGER_RE",
+    "TASK_CANCEL_ID_RE",
+    "TASK_CANCEL_SYNTHETIC_RE",
+    "TASK_CANCEL_GENERIC_TRIGGER_RE",
+    "TASK_CANCEL_GENERIC_RE",
+    "IMPLEMENTATION_RE",
+    "_LLM_PROVIDER_NAMES",
+    "_LLM_PROVIDER_RE",
+    "_LLM_PROVIDER_SWITCH_RE",
+    "INTEGRATION_DETAIL_RE",
+    "INTEGRATION_CAPABILITY_RE",
+    "INTEGRATION_CONFIG_DETAIL_RE",
+    "CLAUSE_SPLIT_RE",
+    "_EXPLICIT_SHELL_RE",
+    "_SHELL_PROMPT_RE",
+    "_NON_COMMAND_STARTS",
+    "_SHELL_BUILTINS",
+]
