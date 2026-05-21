@@ -324,24 +324,56 @@ def _questionary_choice(choice: Choice) -> questionary.Choice:
     )
 
 
+_CUSTOM_MODEL_SENTINEL = "__custom__"
+
+
 def _choose_model(provider: ProviderOption, *, default: str | None) -> str:
-    """Prompt for a model from the provider's wizard catalog."""
-    resolved_default = (default or "").strip() or provider.default_model
+    """Prompt the user to pick a model from ``provider.models``.
+
+    Choices come from the curated config in ``app/cli/wizard/config.py``.
+    A saved model that isn't in the curated list is preserved as ``current``
+    so re-running the wizard never silently drops a user's prior pick, and an
+    "Enter custom model ID" escape hatch is always available.
+    """
+    resolved_default = (default or "").strip()
     if not provider.models:
-        return resolved_default
-    choices = [Choice(value=opt.value, label=opt.label) for opt in provider.models]
-    default_choice = (
-        resolved_default
-        if any(c.value == resolved_default for c in choices)
-        else provider.default_model
-    )
-    if not any(c.value == default_choice for c in choices):
-        default_choice = choices[0].value
+        return resolved_default or provider.default_model
+
     _step("Model")
-    return _choose(
+
+    curated_values = {option.value for option in provider.models}
+    curated_choices: list[Choice] = [
+        Choice(value=option.value, label=option.label) for option in provider.models
+    ]
+
+    extra_choices: list[Choice] = []
+    if resolved_default and resolved_default not in curated_values:
+        extra_choices.append(Choice(value=resolved_default, label=resolved_default, hint="current"))
+
+    custom_choice = Choice(
+        value=_CUSTOM_MODEL_SENTINEL,
+        label="Enter custom model ID",
+        hint="type any model identifier",
+    )
+
+    choices = curated_choices + extra_choices + [custom_choice]
+    default_value = resolved_default or provider.default_model
+    if default_value and not any(c.value == default_value for c in choices):
+        default_value = curated_choices[0].value if curated_choices else _CUSTOM_MODEL_SENTINEL
+
+    selection = _choose(
         f"Choose {provider.label} model",
         choices,
-        default=default_choice,
+        default=default_value or None,
+    )
+
+    if selection != _CUSTOM_MODEL_SENTINEL:
+        return selection
+
+    return _prompt_value(
+        f"Custom {provider.label} model ID ({provider.model_env})",
+        default=resolved_default,
+        allow_empty=False,
     )
 
 
