@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import stat
 
+import keyring
 import pytest
 
 from app.cli.wizard.config import PROVIDER_BY_VALUE
@@ -13,6 +14,7 @@ from app.cli.wizard.env_sync import (
     sync_provider_env,
 )
 from app.llm_credentials import resolve_env_credential
+from tests.shared.keyring_backend import MemoryKeyring
 
 _SKIP_AS_ROOT = not hasattr(os, "getuid") or os.getuid() == 0
 
@@ -362,24 +364,28 @@ def test_sync_env_values_rejects_sensitive_keys(tmp_path) -> None:
 def test_sync_env_values_routes_secrets_to_keyring(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("GITLAB_ACCESS_TOKEN", raising=False)
     monkeypatch.delenv("OPENSRE_DISABLE_KEYRING", raising=False)
-    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "tests.shared.keyring_backend.MemoryKeyring")
 
-    env_path = tmp_path / ".env"
-    env_path.write_text(
-        "GITLAB_BASE_URL=https://gitlab.example.com\nGITLAB_ACCESS_TOKEN=legacy-plaintext\n",
-        encoding="utf-8",
-    )
+    previous_backend = keyring.get_keyring()
+    keyring.set_keyring(MemoryKeyring())
+    try:
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "GITLAB_BASE_URL=https://gitlab.example.com\nGITLAB_ACCESS_TOKEN=legacy-plaintext\n",
+            encoding="utf-8",
+        )
 
-    sync_env_secret("GITLAB_ACCESS_TOKEN", "gl-secret-token")
-    sync_env_values(
-        {"GITLAB_BASE_URL": "https://gitlab.corp.com"},
-        env_path=env_path,
-    )
+        sync_env_secret("GITLAB_ACCESS_TOKEN", "gl-secret-token")
+        sync_env_values(
+            {"GITLAB_BASE_URL": "https://gitlab.corp.com"},
+            env_path=env_path,
+        )
 
-    content = env_path.read_text(encoding="utf-8")
-    assert "GITLAB_BASE_URL=https://gitlab.corp.com\n" in content
-    assert "GITLAB_ACCESS_TOKEN=" not in content
-    assert resolve_env_credential("GITLAB_ACCESS_TOKEN") == "gl-secret-token"
+        content = env_path.read_text(encoding="utf-8")
+        assert "GITLAB_BASE_URL=https://gitlab.corp.com\n" in content
+        assert "GITLAB_ACCESS_TOKEN=" not in content
+        assert resolve_env_credential("GITLAB_ACCESS_TOKEN") == "gl-secret-token"
+    finally:
+        keyring.set_keyring(previous_backend)
 
 
 @pytest.mark.skipif(_SKIP_AS_ROOT, reason="root bypasses file permission checks")
