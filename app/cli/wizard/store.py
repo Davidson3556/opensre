@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime
 from pathlib import Path
@@ -112,11 +113,10 @@ def describe_remote_url_source(url: str, path: Path | None = None) -> str | None
     updated_at = active_remote.get("updated_at") if isinstance(active_remote, dict) else None
     saved_phrase = "saved"
     if isinstance(updated_at, str):
-        try:
+        # Fall back to the generic "saved" phrasing when the timestamp is malformed.
+        with suppress(ValueError):
             saved_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
             saved_phrase = f"saved on {saved_dt.date().isoformat()}"
-        except ValueError:
-            pass
     return (
         f"This URL was {saved_phrase} in {store_path}. "
         "Pass --url to override or update the saved value via `opensre remote health <url>`."
