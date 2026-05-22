@@ -90,6 +90,39 @@ def save_remote_url(url: str, path: Path | None = None) -> None:
     store_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
+def describe_remote_url_source(url: str, path: Path | None = None) -> str | None:
+    """Return a one-line hint about where ``url`` was saved, or ``None``.
+
+    Used in error paths so users see that a timed-out URL was loaded from
+    disk rather than appearing as a mysterious default. Returns ``None``
+    when ``url`` does not match the persisted active remote URL.
+    """
+    if not url:
+        return None
+    data = _load_raw(path)
+    remote = data.get("remote", {})
+    if not isinstance(remote, dict) or remote.get("url") != url:
+        return None
+    store_path = path or get_store_path()
+    active_name = remote.get("active_name")
+    remotes = remote.get("remotes", {})
+    active_remote = (
+        remotes.get(active_name, {}) if active_name and isinstance(remotes, dict) else {}
+    )
+    updated_at = active_remote.get("updated_at") if isinstance(active_remote, dict) else None
+    saved_phrase = "saved"
+    if isinstance(updated_at, str):
+        try:
+            saved_dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+            saved_phrase = f"saved on {saved_dt.date().isoformat()}"
+        except ValueError:
+            pass
+    return (
+        f"This URL was {saved_phrase} in {store_path}. "
+        "Pass --url to override or update the saved value via `opensre remote health <url>`."
+    )
+
+
 def load_named_remotes(path: Path | None = None) -> dict[str, str]:
     """Return all named remotes as ``{name: url}``."""
     data = _load_raw(path)

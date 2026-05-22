@@ -4,6 +4,7 @@ import json
 
 from app.cli.wizard.store import (
     delete_named_remote,
+    describe_remote_url_source,
     load_local_config,
     load_named_remotes,
     load_remote_ops_config,
@@ -74,6 +75,31 @@ def test_save_named_remote_persists_url(tmp_path) -> None:
 
     assert load_remote_url(store_path) == "http://1.2.3.4:8080"
     assert load_named_remotes(store_path) == {"ec2": "http://1.2.3.4:8080"}
+
+
+def test_describe_remote_url_source_returns_dated_hint_for_saved_active_url(tmp_path) -> None:
+    store_path = tmp_path / "opensre.json"
+    save_named_remote("ec2", "http://1.2.3.4:8080", set_active=True, source="ec2", path=store_path)
+
+    hint = describe_remote_url_source("http://1.2.3.4:8080", store_path)
+
+    assert hint is not None
+    assert "saved on " in hint
+    assert str(store_path) in hint
+    assert "Pass --url to override" in hint
+
+
+def test_describe_remote_url_source_returns_none_for_unsaved_url(tmp_path) -> None:
+    store_path = tmp_path / "opensre.json"
+    save_named_remote("ec2", "http://1.2.3.4:8080", set_active=True, source="ec2", path=store_path)
+
+    assert describe_remote_url_source("http://5.6.7.8:9090", store_path) is None
+
+
+def test_describe_remote_url_source_returns_none_when_no_url_saved(tmp_path) -> None:
+    store_path = tmp_path / "opensre.json"
+
+    assert describe_remote_url_source("http://1.2.3.4:8080", store_path) is None
 
 
 def test_delete_named_remote_removes_entry_and_clears_active_url(tmp_path) -> None:

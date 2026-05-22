@@ -107,12 +107,38 @@ def test_remote_health_reports_timeout_cleanly() -> None:
     client.base_url = "http://10.0.0.1:2024"
     client.probe_health.side_effect = httpx.TimeoutException("timed out")
 
-    with patch("app.remote.client.RemoteAgentClient", return_value=client):
+    with (
+        patch("app.remote.client.RemoteAgentClient", return_value=client),
+        patch("app.cli.wizard.store.describe_remote_url_source", return_value=None),
+    ):
         result = runner.invoke(cli, ["remote", "--url", "10.0.0.1", "health"])
 
     assert result.exit_code == 1
     assert "Connection timed out reaching http://10.0.0.1:2024." in result.output
     assert "Instance may still be starting" in result.output
+
+
+def test_remote_health_timeout_annotates_saved_url_source() -> None:
+    runner = CliRunner()
+    client = MagicMock()
+    client.base_url = "http://10.0.0.1:2024"
+    client.probe_health.side_effect = httpx.TimeoutException("timed out")
+    saved_hint = (
+        "This URL was saved on 2026-05-12 in /Users/test/.config/opensre/opensre.json. "
+        "Pass --url to override or update the saved value via `opensre remote health <url>`."
+    )
+
+    with (
+        patch("app.remote.client.RemoteAgentClient", return_value=client),
+        patch("app.cli.wizard.store.describe_remote_url_source", return_value=saved_hint),
+        patch("app.cli.wizard.store.load_remote_url", return_value="http://10.0.0.1:2024"),
+    ):
+        result = runner.invoke(cli, ["remote", "health"])
+
+    assert result.exit_code == 1
+    assert "Connection timed out reaching http://10.0.0.1:2024." in result.output
+    assert "saved on 2026-05-12" in result.output
+    assert "Pass --url to override" in result.output
 
 
 def test_remote_health_json_output() -> None:
@@ -138,12 +164,37 @@ def test_remote_health_connect_error_is_actionable() -> None:
     client.base_url = "http://10.0.0.1:2024"
     client.probe_health.side_effect = httpx.ConnectError("refused")
 
-    with patch("app.remote.client.RemoteAgentClient", return_value=client):
+    with (
+        patch("app.remote.client.RemoteAgentClient", return_value=client),
+        patch("app.cli.wizard.store.describe_remote_url_source", return_value=None),
+    ):
         result = runner.invoke(cli, ["remote", "--url", "10.0.0.1", "health"])
 
     assert result.exit_code == 1
     assert "Could not connect to http://10.0.0.1:2024." in result.output
     assert "systemctl status opensre" in result.output
+
+
+def test_remote_health_connect_error_annotates_saved_url_source() -> None:
+    runner = CliRunner()
+    client = MagicMock()
+    client.base_url = "http://10.0.0.1:2024"
+    client.probe_health.side_effect = httpx.ConnectError("refused")
+    saved_hint = (
+        "This URL was saved on 2026-05-12 in /Users/test/.config/opensre/opensre.json. "
+        "Pass --url to override or update the saved value via `opensre remote health <url>`."
+    )
+
+    with (
+        patch("app.remote.client.RemoteAgentClient", return_value=client),
+        patch("app.cli.wizard.store.describe_remote_url_source", return_value=saved_hint),
+        patch("app.cli.wizard.store.load_remote_url", return_value="http://10.0.0.1:2024"),
+    ):
+        result = runner.invoke(cli, ["remote", "health"])
+
+    assert result.exit_code == 1
+    assert "Could not connect to http://10.0.0.1:2024." in result.output
+    assert "saved on 2026-05-12" in result.output
 
 
 def test_remote_group_passes_api_key_to_client() -> None:

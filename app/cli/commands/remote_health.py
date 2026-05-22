@@ -138,17 +138,29 @@ def run_remote_health_check(
         if save_url:
             _save_remote_base_url(resolved_client)
     except httpx.TimeoutException as exc:
-        raise click.ClickException(
+        from app.cli.wizard.store import describe_remote_url_source
+
+        message = (
             "Connection timed out reaching "
             f"{resolved_client.base_url}. Instance may still be starting. Retry in 30s "
             "or check AWS console/system logs."
-        ) from exc
+        )
+        source_hint = describe_remote_url_source(resolved_client.base_url)
+        if source_hint:
+            message = f"{message}\n{source_hint}"
+        raise click.ClickException(message) from exc
     except httpx.ConnectError as exc:
-        raise click.ClickException(
+        from app.cli.wizard.store import describe_remote_url_source
+
+        message = (
             "Could not connect to "
             f"{resolved_client.base_url}. The server process may not be running. "
             "SSH into the instance and check: `systemctl status opensre` and "
             "`cat /var/log/opensre-remote.log`."
-        ) from exc
+        )
+        source_hint = describe_remote_url_source(resolved_client.base_url)
+        if source_hint:
+            message = f"{message}\n{source_hint}"
+        raise click.ClickException(message) from exc
     except Exception as exc:
         raise click.ClickException(f"Health check failed: {exc}") from exc
