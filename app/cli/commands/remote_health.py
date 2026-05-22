@@ -117,6 +117,7 @@ def run_remote_health_check(
     import httpx
     from rich.console import Console
 
+    from app.cli.wizard.store import describe_remote_url_source
     from app.version import get_version
 
     resolved_client = client
@@ -138,8 +139,6 @@ def run_remote_health_check(
         if save_url:
             _save_remote_base_url(resolved_client)
     except httpx.TimeoutException as exc:
-        from app.cli.wizard.store import describe_remote_url_source
-
         message = (
             "Connection timed out reaching "
             f"{resolved_client.base_url}. Instance may still be starting. Retry in 30s "
@@ -150,8 +149,6 @@ def run_remote_health_check(
             message = f"{message}\n{source_hint}"
         raise click.ClickException(message) from exc
     except httpx.ConnectError as exc:
-        from app.cli.wizard.store import describe_remote_url_source
-
         message = (
             "Could not connect to "
             f"{resolved_client.base_url}. The server process may not be running. "
