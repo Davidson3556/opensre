@@ -1518,6 +1518,42 @@ class TestRunCliCommand:
         ]
         assert buf.getvalue() == "\n\n"
 
+    def test_capture_output_replays_stdout_through_console_without_timeout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``capture_output=True`` must route child stdout through ``console`` even
+        when no timeout is set, so non-interactive slash commands like ``/tests
+        list`` do not lose their output to the parent stdout FD.
+        """
+        from app.cli.interactive_shell.command_registry import cli_parity as m
+
+        def _fake_run(
+            cmd: list[str],
+            *,
+            check: bool,
+            timeout: float | None,
+            capture_output: bool,
+            text: bool,
+            encoding: str,
+            errors: str,
+        ) -> subprocess.CompletedProcess[str]:
+            del check, text, encoding, errors
+            assert capture_output is True
+            assert timeout is None
+            return subprocess.CompletedProcess(
+                cmd,
+                0,
+                stdout="catalog row one\ncatalog row two\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(m.subprocess, "run", _fake_run)
+        console, buf = _capture()
+        assert m.run_cli_command(console, ["tests", "list"], capture_output=True) is True
+        assert "catalog row one" in buf.getvalue()
+        assert "catalog row two" in buf.getvalue()
+
     def test_timeout_replays_decoded_partial_output(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1603,6 +1639,25 @@ class TestCliDelegatedCommands:
         dispatch_slash("/onboard", session, console)
 
         assert captured == [["onboard"]], "run_cli_command must be called with onboard args"
+
+    def test_slash_tests_subcommand_opts_into_output_capture(self, monkeypatch: object) -> None:
+        """``/tests <subcommand>`` must call ``run_cli_command`` with
+        ``capture_output=True`` so the delegated CLI output is replayed
+        through the REPL console instead of vanishing onto the parent
+        process's stdout FD.
+        """
+        from app.cli.interactive_shell.command_registry import cli_parity as m
+
+        captured_kwargs: list[dict[str, object]] = []
+
+        def _fake_run_cli_command(_console: Console, _args: list[str], **kwargs: object) -> bool:
+            captured_kwargs.append(kwargs)
+            return True
+
+        monkeypatch.setattr(m, "run_cli_command", _fake_run_cli_command)
+        dispatch_slash("/tests list", ReplSession(), Console())
+
+        assert captured_kwargs == [{"capture_output": True}]
 
     def test_slash_onboard_with_args_forwards_them_to_subprocess(self, monkeypatch: object) -> None:
         """Args passed to ``/onboard`` must be forwarded to the subprocess."""
