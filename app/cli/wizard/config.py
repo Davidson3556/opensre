@@ -233,10 +233,6 @@ GEMINI_CLI_MODELS = (
         label="gemini-3.1-pro-preview — newest frontier (preview)",
     ),
     ModelOption(
-        value="gemini-3-pro-preview",
-        label="gemini-3-pro-preview — frontier (preview)",
-    ),
-    ModelOption(
         value="gemini-3-flash-preview",
         label="gemini-3-flash-preview — fast (preview)",
     ),
@@ -268,10 +264,6 @@ OPENCODE_MODELS = (
         label="CLI default (no -m; use OpenCode configured model)",
     ),
     ModelOption(value="opencode/gpt-5.5", label="GPT-5.5 (OpenCode Zen) — frontier"),
-    ModelOption(
-        value="opencode/gpt-5.5-pro",
-        label="GPT-5.5 Pro (OpenCode Zen) — frontier deep reasoning",
-    ),
     ModelOption(value="opencode/gpt-5.4", label="GPT-5.4 (OpenCode Zen)"),
     ModelOption(value="opencode/gpt-5.4-mini", label="GPT-5.4 mini (OpenCode Zen) — fast"),
     ModelOption(
