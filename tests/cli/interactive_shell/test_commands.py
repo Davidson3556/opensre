@@ -1640,11 +1640,15 @@ class TestCliDelegatedCommands:
 
         assert captured == [["onboard"]], "run_cli_command must be called with onboard args"
 
-    def test_slash_tests_subcommand_opts_into_output_capture(self, monkeypatch: object) -> None:
-        """``/tests <subcommand>`` must call ``run_cli_command`` with
-        ``capture_output=True`` so the delegated CLI output is replayed
-        through the REPL console instead of vanishing onto the parent
-        process's stdout FD.
+    @pytest.mark.parametrize("slash_input", ["/tests list", "/tests --help"])
+    def test_slash_tests_subcommand_opts_into_output_capture(
+        self, monkeypatch: object, slash_input: str
+    ) -> None:
+        """Both the known-subcommand fall-through (e.g. ``/tests list``) and
+        the flag-style branch (e.g. ``/tests --help``) must call
+        ``run_cli_command`` with ``capture_output=True`` so the delegated CLI
+        output is replayed through the REPL console instead of vanishing onto
+        the parent process's stdout FD.
         """
         from app.cli.interactive_shell.command_registry import cli_parity as m
 
@@ -1655,7 +1659,7 @@ class TestCliDelegatedCommands:
             return True
 
         monkeypatch.setattr(m, "run_cli_command", _fake_run_cli_command)
-        dispatch_slash("/tests list", ReplSession(), Console())
+        dispatch_slash(slash_input, ReplSession(), Console())
 
         assert captured_kwargs == [{"capture_output": True}]
 
