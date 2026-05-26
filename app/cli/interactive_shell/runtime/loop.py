@@ -102,22 +102,20 @@ def _build_prompt_message(
 ) -> ANSI:
     """Build the prompt message shown above the cursor line each refresh.
 
-    The first row is one of three things, in priority order:
+    The first row is one of four things, in priority order:
 
     1. The pending confirmation question — replaces the prefix when the runtime
        is awaiting a y/N answer.
     2. The streaming spinner (``pondering…``) — drawn while the REPL owns the
        footer for an ordinary turn.
-    3. The idle hint (``/ for commands  ·  ↑↓ history``) — drawn only when no
+    3. A blank row — drawn when a dispatch is in flight but the spinner has
+       been suppressed because a nested renderer (the Rich Live investigation
+       footer or the append-only progress display) now owns the bottom of the
+       terminal.  Keeping the slot empty stops the prompt from redrawing
+       shortcut text on every refresh cycle, which otherwise fights the
+       investigation footer for the same row and produces a visible flash.
+    4. The idle hint (``/ for commands  ·  ↑↓ history``) — drawn only when no
        dispatch is in flight.
-
-    During an in-flight dispatch where the spinner has been suppressed (because
-    a nested renderer such as the Rich Live investigation footer or the
-    append-only progress display now owns the bottom of the terminal) the row
-    is left blank rather than falling back to the idle hint.  Keeping the slot
-    empty stops the prompt from redrawing shortcut text on every refresh
-    cycle, which otherwise fights the investigation footer for the same row
-    and produces a visible flash.
     """
     base = _prompt_surface._prompt_message(session).value
     if state.is_awaiting_confirmation():
@@ -430,4 +428,4 @@ async def run_interactive(
             log.debug("Alert watcher shutdown raised exception: %s", exc)
 
 
-__all__ = ["StreamingConsole", "_build_prompt_message", "run_interactive"]
+__all__ = ["StreamingConsole", "run_interactive"]
