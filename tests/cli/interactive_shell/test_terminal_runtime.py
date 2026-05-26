@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import re
 import threading
@@ -901,6 +902,132 @@ def _extract_glyph(ansi_text: str, frames: tuple[str, ...]) -> str:
         if g in plain:
             return g
     return ""
+
+
+# ── Prompt-message composition tests ─────────────────────────────────────────
+
+
+class TestBuildPromptMessage:
+    """``_build_prompt_message`` decides the prefix row shown above the prompt
+    rule on every prompt-toolkit refresh.  When a nested live renderer (the
+    Rich Live investigation footer or the append-only progress display) owns
+    the bottom of the terminal during a dispatch, the prefix must stay blank
+    so the prompt does not flash shortcut text against the footer on every
+    refresh cycle.  Regression cover for #2116.
+    """
+
+    def _build(
+        self,
+        *,
+        streaming: bool = False,
+        dispatch_running: bool = False,
+        awaiting_confirmation: bool = False,
+        confirm_text: str = "",
+    ) -> str:
+        spinner = loop_state.SpinnerState()
+        if streaming:
+            spinner.start()
+        state = loop_state.ReplState()
+        if dispatch_running:
+
+            async def _scenario() -> str:
+                async def _slow() -> None:
+                    await asyncio.sleep(0.5)
+
+                state.current_task = asyncio.create_task(_slow())
+                try:
+                    if awaiting_confirmation:
+                        state.begin_confirmation(threading.Event(), confirm_text)
+                    rendered = loop_module._build_prompt_message(
+                        session=ReplSession(),
+                        state=state,
+                        spinner=spinner,
+                    ).value
+                finally:
+                    state.current_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await state.current_task
+                return rendered
+
+            return asyncio.run(_scenario())
+        if awaiting_confirmation:
+            state.begin_confirmation(threading.Event(), confirm_text)
+        return loop_module._build_prompt_message(
+            session=ReplSession(),
+            state=state,
+            spinner=spinner,
+        ).value
+
+    def test_idle_shows_idle_hint_prefix(self) -> None:
+        rendered = self._build()
+        assert "/ for commands" in _strip_ansi(rendered)
+
+    def test_streaming_shows_spinner_prefix(self) -> None:
+        rendered = self._build(streaming=True)
+        plain = _strip_ansi(rendered)
+        # The verb varies per turn — accept any.
+        assert any(f"{verb}…" in plain for verb in loop_state.SpinnerState._THINKING_VERBS)
+        # Idle hint must not leak into the streaming prefix.
+        assert "/ for commands" not in plain
+
+    def test_dispatch_running_with_spinner_keeps_spinner(self) -> None:
+        """While a dispatch owns the spinner (no nested live renderer has
+        suppressed it yet), the prefix continues to animate the verb."""
+        rendered = self._build(streaming=True, dispatch_running=True)
+        plain = _strip_ansi(rendered)
+        assert any(f"{verb}…" in plain for verb in loop_state.SpinnerState._THINKING_VERBS)
+
+    def test_dispatch_running_with_suppressed_spinner_uses_blank_prefix(self) -> None:
+        """Regression for #2116: when ``suppress_prompt_spinner`` has stopped
+        the REPL spinner because a nested live renderer now owns the footer,
+        the idle hint must NOT come back — it would flash against the
+        investigation footer on every prompt refresh.  The prefix slot is
+        kept blank instead, while the rule + cursor line stay where the user
+        expects them.
+        """
+        rendered = self._build(streaming=False, dispatch_running=True)
+        plain = _strip_ansi(rendered)
+        # The shortcut hint is the specific thing that would flash; ensure
+        # it's gone from the prefix slot.
+        assert "/ for commands" not in plain
+        assert "↑↓ history" not in plain
+        # Streaming spinner verbs must not appear either — the spinner is
+        # suppressed in this state, and falling back to it would re-introduce
+        # the same flashing footer overlap that the suppression was meant to
+        # prevent.
+        assert not any(f"{verb}…" in plain for verb in loop_state.SpinnerState._THINKING_VERBS)
+        # Cursor row + rule should still be there so the user can type.
+        assert "❯" in plain
+
+    def test_confirmation_takes_priority_over_dispatch_blank(self) -> None:
+        """The y/N confirmation banner must still appear even while a
+        dispatch is running — otherwise the user has no way to see what
+        they're confirming.
+        """
+        rendered = self._build(
+            dispatch_running=True,
+            awaiting_confirmation=True,
+            confirm_text="Confirm run RCA investigation",
+        )
+        plain = _strip_ansi(rendered)
+        assert "Confirm run RCA investigation" in plain
+
+    def test_prefix_row_height_is_constant(self) -> None:
+        """prompt_toolkit's cursor management relies on the prefix slot being
+        exactly one row tall.  All states — idle, streaming, dispatch with
+        suppressed spinner — must keep the prefix to a single line above the
+        rule + cursor row.
+        """
+        cases: tuple[tuple[str, str], ...] = (
+            ("idle", self._build()),
+            ("streaming", self._build(streaming=True)),
+            ("dispatch-suppressed", self._build(dispatch_running=True)),
+        )
+        for label, rendered in cases:
+            prefix = rendered.split("\n", 1)[0]
+            assert "\n" not in prefix, (
+                f"prefix slot must be one row tall in state {label!r}, got: {prefix!r}"
+            )
 
 
 # ── Streaming-console adapter tests ──────────────────────────────────────────

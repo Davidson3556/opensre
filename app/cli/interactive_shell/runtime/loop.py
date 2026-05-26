@@ -94,6 +94,43 @@ def _contains_cpr_sequence(text: str | None) -> bool:
     return bool(text and _CPR_SEQUENCE_RE.search(text))
 
 
+def _build_prompt_message(
+    *,
+    session: ReplSession,
+    state: ReplState,
+    spinner: SpinnerState,
+) -> ANSI:
+    """Build the prompt message shown above the cursor line each refresh.
+
+    The first row is one of three things, in priority order:
+
+    1. The pending confirmation question — replaces the prefix when the runtime
+       is awaiting a y/N answer.
+    2. The streaming spinner (``pondering…``) — drawn while the REPL owns the
+       footer for an ordinary turn.
+    3. The idle hint (``/ for commands  ·  ↑↓ history``) — drawn only when no
+       dispatch is in flight.
+
+    During an in-flight dispatch where the spinner has been suppressed (because
+    a nested renderer such as the Rich Live investigation footer or the
+    append-only progress display now owns the bottom of the terminal) the row
+    is left blank rather than falling back to the idle hint.  Keeping the slot
+    empty stops the prompt from redrawing shortcut text on every refresh
+    cycle, which otherwise fights the investigation footer for the same row
+    and produces a visible flash.
+    """
+    base = _prompt_surface._prompt_message(session).value
+    if state.is_awaiting_confirmation():
+        return ANSI(f"{state.confirm_prompt_text}\n{base}")
+    if spinner.streaming:
+        prefix = spinner.inline_spinner_ansi()
+    elif state.is_dispatch_running():
+        prefix = ""
+    else:
+        prefix = spinner.idle_hint_ansi()
+    return ANSI(f"{prefix}\n{base}")
+
+
 class StreamingConsole(Console):
     """Console adapter for streaming progress + cancellation checks."""
 
@@ -286,12 +323,7 @@ async def run_interactive(
             state.queue.task_done()
 
     def _message_with_spinner() -> ANSI:
-        base = _prompt_surface._prompt_message(session).value
-        if state.is_awaiting_confirmation():
-            confirm_text = state.confirm_prompt_text
-            return ANSI(f"{confirm_text}\n{base}")
-        prefix = spinner.inline_spinner_ansi() or spinner.idle_hint_ansi()
-        return ANSI(f"{prefix}\n{base}")
+        return _build_prompt_message(session=session, state=state, spinner=spinner)
 
     processor_task = asyncio.create_task(_processor())
     alert_watcher_task = asyncio.create_task(_alert_watcher())
@@ -398,4 +430,4 @@ async def run_interactive(
             log.debug("Alert watcher shutdown raised exception: %s", exc)
 
 
-__all__ = ["StreamingConsole", "run_interactive"]
+__all__ = ["StreamingConsole", "_build_prompt_message", "run_interactive"]
