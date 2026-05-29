@@ -6,30 +6,12 @@
 - Run **`uv run opensre …`** from the repo root while developing — preferred approach, uses this checkout even if another `opensre` is on your `PATH`.
 - Use **`uv run python …`** for any Python commands.
 
-## Lint & Format
-
-- Lint: `make lint` (or fix: `ruff check app/ tests/ --fix`)
-- Format check: `make format-check`
-- Auto-format locally: `make format`
-- Type check: `make typecheck`
-- One-shot quality gate: `make check`
-
-## Testing
-
-- Test: `make test-cov`
-- Test real alerts: `make test-rca`
-
 ## Code Style
 
 - Use strict typing, follow DRY principle
 - One clear purpose per file (separation of concerns)
 
-### Before Push
-
-Before any push or PR creation, follow the mandatory checklist in [CI.md](CI.md).
-
-- `CI.md` is the source of truth for push/PR readiness.
-- Do not skip required checks.
+Before any push or PR creation follow **[CI.md](CI.md)** — lint, format, typecheck, and test commands all live there.
 
 ## 1. Repo Map
 
@@ -47,6 +29,7 @@ Before any push or PR creation, follow the mandatory checklist in [CI.md](CI.md)
 | `docs/investigation-tool-calling.md` | Investigation ReAct tool schemas, LLM invoke payloads, and message shapes (all providers). |
 | `SETUP.md`            | Machine setup (all platforms, Windows, MCP/OpenClaw, troubleshooting).                             |
 | `CI.md`               | Mandatory pre-push checklist: lint, format, typecheck, tests — agents MUST follow before pushing. |
+| `TESTING.md`          | `ReplDriver` reference: API, usage patterns, wait-time guide, and limitations.                    |
 | `CONTRIBUTING.md`     | Contribution workflow, branch/PR guidance, and quality expectations.                               |
 
 `app/` one level deeper:
@@ -73,18 +56,6 @@ Before any push or PR creation, follow the mandatory checklist in [CI.md](CI.md)
 - `app/utils/` — Cross-cutting utility helpers used across the app and test harnesses.
 - `app/watch_dog/` — Watchdog feature: per-threshold Telegram alarm dispatch with cooldown, sitting on top of `app/utils/telegram_delivery.py`.
 - `app/webapp.py` — Web-facing application entrypoint; the `opensre` CLI is `app/cli/__main__.py`.
-
-`tests/` is organized by capability boundary rather than by framework:
-
-- `tests/tools/` — Tool behavior, registry, and helper coverage.
-- `tests/integrations/` — Integration config, verification, store, selector, and client tests.
-- `tests/e2e/` — Live end-to-end scenarios against real services and infrastructure.
-- `tests/synthetic/` — Fixture-driven synthetic RCA scenarios with no live infrastructure.
-- `tests/deployment/` — Deployment validation and infrastructure lifecycle tests.
-- `tests/chaos_engineering/` — Chaos lab and experiment orchestration tests and assets.
-- `tests/cli/` — CLI-specific behavior, smoke tests, and command wiring.
-- `tests/utils/` — Shared test utilities, fixtures, and local helpers.
-- `tests/nodes/`, `tests/services/`, `tests/remote/`, `tests/sandbox/`, `tests/guardrails/`, `tests/entrypoints/` — Feature-specific coverage for the corresponding app layers.
 
 ## 2. Entry Points
 
@@ -170,28 +141,12 @@ Basic steps:
 - If adding new tests -> always place them in `tests/`, never in `app/` (no inline tests).
 - If CI-only tests are added -> mark them with the right pytest marker or place them in the appropriate e2e/synthetic/chaos folder so they do not run in the default local suite.
 - If investigation branching or loop behavior changes -> update `app/pipeline/pipeline.py` and the tests for that path.
+- If adding or changing interactive REPL behavior (slash commands, session management, display output) -> use `ReplDriver` from `tests/utils/repl_driver.py` for live verification alongside unit tests; see [TESTING.md](TESTING.md).
 - If pushing or creating a PR -> follow the full pre-push checklist in [CI.md](CI.md).
 
 ## 4. Testing
 
-### Commands
-
-- Unit tests: `make test-cov`
-- Integration tests: `make verify-integrations`
-- E2E tests: `make test-rca` or `make test-full`
-- Synthetic (no live infra): `make test-synthetic`
-- Single RCA test: `make test-rca FILE=<name>`
-- Lint: `make lint`
-- Type check: `make typecheck`
-- Routing live tests: always run with live coverage enabled by default. Do not use deselection
-  filters like `-k "not live_llm"` for routing scenario runs.
-- Do not make routing scenario tests pass by forcing deterministic shortcuts or bypassing live
-  planner behavior. Fix failures by improving planner/tool correctness or updating fixtures only
-  when behavior changes are explicitly intended and approved.
-
-### Fast Local Testing
-
-The fastest local loop is `make test-cov`, which exercises the non-live unit suite and skips the heavier live-infra paths. When you need a specific RCA scenario, use `make test-rca FILE=<fixture>` with one of the bundled alert fixtures under `tests/e2e/rca/`.
+Test commands, routing rules, CI-only paths: **[CI.md](CI.md)**. Live REPL testing with `ReplDriver`: **[TESTING.md](TESTING.md)**.
 
 ## 5. Footguns (common mistakes to avoid)
 
@@ -213,5 +168,4 @@ When adding a new integration, a PR is only ready when:
 - Docs added under `docs/` and registered in `docs/docs.json` `pages`
 - Screenshot or demo GIF showing the integration working
 - E2E or synthetic test added
-- `make verify-integrations` passes
-- `make lint` and `make typecheck` pass
+- CI checks pass (see [CI.md](CI.md))
