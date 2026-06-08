@@ -3,9 +3,13 @@
 These tests don't probe any integration. They enforce the static contract
 between :mod:`app.integrations.registry` and the CLI dispatch in
 :mod:`app.integrations.cli`. Each invariant prevents a class of drift that has
-already shipped to ``main`` at least once: duplicate orders, missing handlers,
-verifier without a positional route. Failing here on PR catches the regression
-before users hit it via ``opensre integrations setup/verify <svc>``.
+already shipped to ``main`` at least once: duplicate orders, orphan handlers
+(handler without a registry spec), verifier without a positional route.
+Failing here on PR catches the regression before users hit it via
+``opensre integrations setup/verify <svc>``.
+
+The forward direction (registry → handler, "missing handler") is covered by
+``test_every_setup_spec_has_handler`` in ``tests/integrations/test_registry.py``.
 """
 
 from __future__ import annotations
@@ -64,17 +68,6 @@ def test_verify_orders_are_unique() -> None:
         raise AssertionError(
             f"Duplicate verify_order values in INTEGRATION_SPECS: {offenders}. "
             "Pick a unique order per service so `integrations verify` ordering is deterministic."
-        )
-
-
-def test_every_setup_service_has_a_cli_handler() -> None:
-    missing = [svc for svc in SUPPORTED_SETUP_SERVICES if svc not in _HANDLERS]
-    if missing:
-        raise AssertionError(
-            f"Registry declares setup_order for {missing} but no _HANDLERS entry "
-            "in app/integrations/cli.py. These services are silently dropped from "
-            "_SETUP_SERVICES, so `opensre integrations setup <svc>` will reject them "
-            "with the 'Usage: setup <service>' error."
         )
 
 
