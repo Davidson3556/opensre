@@ -21,8 +21,8 @@ from app.integrations.registry import (
 )
 
 
-def _duplicates(values: list[int]) -> dict[int, int]:
-    return {value: count for value, count in Counter(values).items() if count > 1}
+def _duplicates(values: list[int]) -> set[int]:
+    return {value for value, count in Counter(values).items() if count > 1}
 
 
 @pytest.mark.xfail(
@@ -72,7 +72,9 @@ def test_every_setup_service_has_a_cli_handler() -> None:
     if missing:
         raise AssertionError(
             f"Registry declares setup_order for {missing} but no _HANDLERS entry "
-            "in app/integrations/cli.py. Click accepts these positionally, then dispatch fails."
+            "in app/integrations/cli.py. These services are silently dropped from "
+            "_SETUP_SERVICES, so `opensre integrations setup <svc>` will reject them "
+            "with the 'Usage: setup <service>' error."
         )
 
 
@@ -80,8 +82,10 @@ def test_every_cli_handler_is_registered_in_registry() -> None:
     orphans = [svc for svc in _HANDLERS if svc not in SUPPORTED_SETUP_SERVICES]
     if orphans:
         raise AssertionError(
-            f"app/integrations/cli.py defines _HANDLERS for {orphans} but registry has "
-            "no setup_order for them. Click's Choice list rejects them positionally."
+            f"app/integrations/cli.py defines _HANDLERS for {orphans} but registry "
+            "has no setup_order for them. These handlers are unreachable: "
+            "_SETUP_SERVICES only includes services that appear in both "
+            "SUPPORTED_SETUP_SERVICES and _HANDLERS, so the wizard will never offer them."
         )
 
 
