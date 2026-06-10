@@ -18,7 +18,7 @@ _LANDING_EXAMPLES: tuple[tuple[str, str], ...] = (
     ),
     ("opensre onboard", "Configure LLM provider and integrations"),
     ("opensre investigate -i alert.json", "Run RCA against an alert payload"),
-    ("opensre deploy ec2", "Deploy investigation server on AWS EC2"),
+    ("opensre investigate --service <name>", "Run RCA on a deployed remote service"),
     ("opensre remote --url <ip> health", "Check a remote deployed agent"),
     ("opensre remote ops status", "Inspect hosted service status (Railway)"),
     ("opensre tests", "Browse and run inventoried tests"),
