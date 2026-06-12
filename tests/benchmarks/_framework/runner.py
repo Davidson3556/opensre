@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -57,6 +58,7 @@ from tests.benchmarks._framework.cost import CostBudgetExceeded, CostTracker, Un
 from tests.benchmarks._framework.integrity import (
     BenchmarkReport,
     IntegrityGuard,
+    IntegrityViolation,
     make_baseline_report,
 )
 from tests.benchmarks._framework.llm_dispatch import (
@@ -140,6 +142,23 @@ class BenchmarkRunner:
     def run(self) -> RunOutcome:
         """Production entry point: enforces all integrity gates."""
         self.integrity.pre_flight(self.config, self.adapter)
+        # Reject promotable runs whose opensre_sha is not a verifiable git
+        # SHA. Two failure modes the gate must catch:
+        #
+        # 1. ``(no-git)`` / ``(unknown)`` / empty — the 2026-06-11 partial
+        #    full-N's failure mode. Fargate container had no .git directory,
+        #    OPENSRE_SHA was not stamped, the runner reported (no-git), and
+        #    no integrity check rejected it.
+        # 2. Arbitrary non-SHA strings like ``hotfix-june`` or ``v1.0``.
+        #    Possible when a manual image build sets OPENSRE_SHA from a
+        #    user-supplied tag instead of the real commit SHA. Such values
+        #    pass the ``not (no-git)`` check but are unverifiable — you
+        #    cannot ``git checkout hotfix-june`` and reproduce the run.
+        #
+        # A valid git SHA is 7-40 lowercase hex characters (short or full
+        # form). Anything else is rejected. ``run_without_integrity`` is
+        # the explicit escape hatch for exploratory runs.
+        _validate_promotable_sha(self._opensre_sha)
         return self._run_inner(dev_mode=False)
 
     def run_without_integrity(self) -> RunOutcome:
@@ -661,8 +680,56 @@ def _hash_config(config: BenchmarkConfig) -> str:
     return hashlib.sha256(serialized.encode()).hexdigest()[:16]
 
 
+_SHA_SHAPE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _validate_promotable_sha(sha: str | None) -> None:
+    """Raise IntegrityViolation if ``sha`` is not a verifiable git SHA.
+
+    A real git SHA is 7-40 hex characters (lowercase). Anything else —
+    ``(no-git)``, ``(unknown)``, empty, or arbitrary tags like
+    ``hotfix-june`` / ``v1.0`` — cannot be checked out and therefore
+    breaks the reproducibility contract the promotable cycle depends on.
+    """
+    sha_str = (sha or "").strip()
+    if sha_str and _SHA_SHAPE.fullmatch(sha_str):
+        return
+    raise IntegrityViolation(
+        [
+            f"opensre_sha={sha!r} is not a verifiable git SHA (expected 7-40 "
+            f"lowercase hex characters). The promotable run path requires a "
+            f"real commit SHA so the artifacts can be reproduced. Resolution "
+            f"sources, in order: the OPENSRE_SHA env var stamped by the bench "
+            f"image build workflow (.github/workflows/benchmark-image.yml — "
+            f"set from github.sha, NOT the user-supplied image tag), or "
+            f"git rev-parse from a checked-out source tree. Use "
+            f"run_without_integrity() for exploratory runs that don't need "
+            f"a verifiable SHA."
+        ]
+    )
+
+
 def _git_sha() -> str:
-    """opensre git SHA for the running code. Used in RunResult for reproducibility."""
+    """opensre git SHA for the running code. Used in RunResult for reproducibility.
+
+    Resolution order:
+      1. ``OPENSRE_SHA`` environment variable — set by the bench image build
+         workflow (.github/workflows/benchmark-image.yml) so Fargate runs,
+         which have no ``.git`` directory, can still stamp the real SHA.
+      2. ``git rev-parse HEAD`` — used by local developer runs.
+      3. ``(no-git)`` — fallback when neither is available.
+
+    The env-var path is required because the bench image is built from a
+    checked-out source tree but the resulting container ships only the
+    runtime code (no .git). Without OPENSRE_SHA, every Fargate run stamps
+    ``(no-git)``, which the integrity gate then rejects for promotable
+    cycles. The build workflow must export OPENSRE_SHA at image-build time
+    (e.g. ``ENV OPENSRE_SHA=${GITHUB_SHA::7}`` in the Dockerfile, or pass
+    as an ECS container override).
+    """
+    env_sha = os.environ.get("OPENSRE_SHA", "").strip()
+    if env_sha:
+        return env_sha
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
