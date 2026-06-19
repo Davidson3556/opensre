@@ -14,6 +14,8 @@ from collections.abc import Callable
 from typing import Any
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
@@ -48,12 +50,24 @@ from app.fleet_monitoring.sampler import start_sampler
 
 log = logging.getLogger(__name__)
 
-_CPR_SEQUENCE_RE = re.compile(
-    r"(?:\x1b\[|\x9b)\d{1,4};\d{1,4}R"  # ESC [ row ; col R
-    r"|\[\d{1,4};\d{1,4}R"  # [row;colR without ESC (leaked into input)
-    r"|\d{1,4};\d{1,4}R"  # row;colR without ESC or [
-    r"|\d{1,4}R(?=[\[\d])"  # trailing rowR before another CPR fragment
-)
+# A leaked CPR reply is a maximal run drawn only from the CPR alphabet:
+# an optional ESC/CSI introducer, then digits, ';', '[' and 'R'. Matching the
+# whole run (rather than one well-formed reply) lets us also clear the
+# fragmented bursts that high-frequency streaming redraws produce, where the
+# ESC is dropped and partial 'row;colR' pieces and collapsed 'RRRR' runs
+# concatenate, e.g. '[34;1R57R38;57R'.
+_CPR_RUN_RE = re.compile(r"(?:\x1b|\x9b)?[\[0-9;R]+")
+
+
+def _looks_like_cpr_run(run: str) -> bool:
+    """Whether a CPR-alphabet run is a real cursor reply rather than user text.
+
+    Every CPR reply and every fragment of one pairs at least one digit with the
+    terminating ``R``. Requiring both lets us strip leaked replies while leaving
+    ordinary words that merely contain ``R`` (``Restart``) or a digit (``[1]``)
+    untouched.
+    """
+    return "R" in run and any(ch.isdigit() for ch in run)
 
 
 def _drain_stale_cpr_bytes() -> None:
@@ -85,14 +99,50 @@ def _drain_stale_cpr_bytes() -> None:
 
 
 def _strip_cpr_sequences(text: str | None) -> str:
-    """Remove terminal cursor-position replies that leaked into submitted text."""
+    """Remove terminal cursor-position replies that leaked into text.
+
+    Handles both intact replies (``ESC[row;colR``) and the fragmented bursts a
+    streaming redraw produces (``[34;1R57R38;57R``)."""
     if not text:
         return ""
-    return _CPR_SEQUENCE_RE.sub("", text)
+    return _CPR_RUN_RE.sub(lambda m: "" if _looks_like_cpr_run(m.group(0)) else m.group(0), text)
 
 
 def _contains_cpr_sequence(text: str | None) -> bool:
-    return bool(text and _CPR_SEQUENCE_RE.search(text))
+    return bool(text) and _strip_cpr_sequences(text) != text
+
+
+def _install_cpr_buffer_scrubber(pt_session: PromptSession[str]) -> None:
+    """Strip leaked CPR replies out of the live input buffer as they arrive.
+
+    During a streaming dispatch the spinner ticker invalidates the prompt ~10x/s.
+    Each redraw under ``patch_stdout(raw=True)`` can trigger a CPR (``ESC[6n``)
+    query whose reply lands while the prompt's input reader is active, so the
+    bytes are parsed as keystrokes and inserted into the buffer. The
+    between-prompt drain (`_drain_stale_cpr_bytes`) cannot help mid-prompt and
+    the submit-time strip only fires on Enter, so the garbage is visible in the
+    field while the investigation runs. This removes it in place the moment it
+    appears, preserving the cursor position relative to the user's real text.
+    """
+    buffer = pt_session.default_buffer
+    scrubbing = False
+
+    def _scrub(_buffer: Buffer) -> None:
+        nonlocal scrubbing
+        if scrubbing:
+            return
+        text = buffer.text
+        if not _contains_cpr_sequence(text):
+            return
+        cleaned_before = _strip_cpr_sequences(text[: buffer.cursor_position])
+        cleaned_text = _strip_cpr_sequences(text)
+        scrubbing = True
+        try:
+            buffer.document = Document(cleaned_text, cursor_position=len(cleaned_before))
+        finally:
+            scrubbing = False
+
+    buffer.on_text_changed += _scrub
 
 
 class StreamingConsole(Console):
@@ -169,6 +219,7 @@ async def run_interactive(
 
     cancel_kb = build_cancel_key_bindings(state)
     install_session_key_bindings(pt_session, cancel_kb)
+    _install_cpr_buffer_scrubber(pt_session)
 
     pt_app = pt_session.app
     main_loop = asyncio.get_running_loop()

@@ -62,6 +62,12 @@ def test_streaming_console_status_does_not_recurse(monkeypatch) -> None:
         ("before \x1b[12;80R after", "before  after"),
         ("7R[25;57R23;57R", ""),
         ("25;57R", ""),
+        # Fragmented streaming-flood burst (lost ESC, partial rows, collapsed Rs).
+        ("[34;1R57R38;57R57R8;57R[38;57R57R57R;57RR[38;57RRRRR38;57R38;57R", ""),
+        # Real text typed/queued during a turn must survive intact.
+        ("Restart the pod", "Restart the pod"),
+        ("give me 3 reasons", "give me 3 reasons"),
+        ("check error [1] in logs", "check error [1] in logs"),
     ],
 )
 def test_strip_cpr_sequences_removes_terminal_cursor_replies(
@@ -69,6 +75,28 @@ def test_strip_cpr_sequences_removes_terminal_cursor_replies(
     expected: str,
 ) -> None:
     assert loop_module._strip_cpr_sequences(text) == expected
+
+
+def test_cpr_buffer_scrubber_removes_leaked_replies_live() -> None:
+    """Leaked CPR bytes inserted mid-prompt are scrubbed from the live buffer."""
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.default_buffer = Buffer()
+
+    session = _FakeSession()
+    loop_module._install_cpr_buffer_scrubber(session)  # type: ignore[arg-type]
+    buffer = session.default_buffer
+
+    # Simulate a streaming flood landing in the field as keystrokes.
+    buffer.insert_text("[34;1R57R38;57R")
+    assert buffer.text == ""
+
+    # User's real text is preserved; trailing CPR bytes are stripped.
+    buffer.insert_text("scale up")
+    buffer.insert_text("25;57R")
+    assert buffer.text == "scale up"
+    assert buffer.cursor_position == len("scale up")
 
 
 def test_repl_input_lexer_highlights_first_slash_token() -> None:

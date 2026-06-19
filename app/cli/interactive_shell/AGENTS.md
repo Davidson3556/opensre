@@ -110,6 +110,14 @@ owning area rather than adding more logic to the caller.
   - **How to check:** after adding a command, run it in the REPL and type a few
     characters in the next prompt. If no `^[[…R` garbage appears, the registration
     is correct.
+  - **Mid-prompt leaks during streaming:** while an investigation streams, the
+    spinner ticker invalidates the prompt ~10x/s, and CPR replies can arrive
+    *while* the input reader is active (not just at teardown), so they appear as
+    fragmented garbage like `[34;1R57R38;57R` in the field. The between-prompt
+    drain cannot catch those; `_install_cpr_buffer_scrubber` in `runtime/loop.py`
+    hooks the buffer's `on_text_changed` and strips CPR runs in place. CPR runs
+    are identified as runs over `[`, digits, `;`, `R` that pair a digit with an
+    `R`, so ordinary words (`Restart`) and `[1]`-style text are left intact.
   - **Agent-planned (LLM) interactive commands:** `_EXCLUSIVE_STDIN_MENU_COMMANDS`
     only reserves stdin for *deterministically-typed* commands
     (`deterministic_command_text` returns the slash). When free text like
