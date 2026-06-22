@@ -99,6 +99,36 @@ def test_cpr_buffer_scrubber_removes_leaked_replies_live() -> None:
     assert buffer.cursor_position == len("scale up")
 
 
+def test_cpr_buffer_scrubber_is_noop_when_inactive() -> None:
+    """When no turn is dispatching, the scrubber must not touch the buffer.
+
+    Guarantees the idle prompt is never rewritten (no spurious redraws); leaked
+    bytes there are owned by the between-prompt drain instead.
+    """
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.default_buffer = Buffer()
+
+    session = _FakeSession()
+    active = False
+    loop_module._install_cpr_buffer_scrubber(
+        session,  # type: ignore[arg-type]
+        is_active=lambda: active,
+    )
+    buffer = session.default_buffer
+
+    # Inactive: leaked bytes are left untouched (drain handles them elsewhere).
+    buffer.insert_text("[34;1R")
+    assert buffer.text == "[34;1R"
+
+    # Active: the same flood is scrubbed in place.
+    active = True
+    buffer.reset()
+    buffer.insert_text("[34;1R")
+    assert buffer.text == ""
+
+
 def test_repl_input_lexer_highlights_first_slash_token() -> None:
     lexer = ReplInputLexer()
     get_line = lexer.lex_document(Document("/model show", len("/model")))

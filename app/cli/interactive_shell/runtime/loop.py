@@ -112,7 +112,10 @@ def _contains_cpr_sequence(text: str | None) -> bool:
     return bool(text) and _strip_cpr_sequences(text) != text
 
 
-def _install_cpr_buffer_scrubber(pt_session: PromptSession[str]) -> None:
+def _install_cpr_buffer_scrubber(
+    pt_session: PromptSession[str],
+    is_active: Callable[[], bool] | None = None,
+) -> None:
     """Strip leaked CPR replies out of the live input buffer as they arrive.
 
     During a streaming dispatch the spinner ticker invalidates the prompt ~10x/s.
@@ -123,6 +126,12 @@ def _install_cpr_buffer_scrubber(pt_session: PromptSession[str]) -> None:
     the submit-time strip only fires on Enter, so the garbage is visible in the
     field while the investigation runs. This removes it in place the moment it
     appears, preserving the cursor position relative to the user's real text.
+
+    ``is_active`` scopes the scrubber to exactly the window where the flood can
+    happen (a turn is dispatching). Outside that window the handler is a strict
+    no-op, so it never rewrites the buffer document at the idle prompt — the
+    between-prompt drain owns that case. When omitted, the scrubber is always
+    active (used by tests).
     """
     buffer = pt_session.default_buffer
     scrubbing = False
@@ -130,6 +139,8 @@ def _install_cpr_buffer_scrubber(pt_session: PromptSession[str]) -> None:
     def _scrub(_buffer: Buffer) -> None:
         nonlocal scrubbing
         if scrubbing:
+            return
+        if is_active is not None and not is_active():
             return
         text = buffer.text
         if not _contains_cpr_sequence(text):
@@ -219,7 +230,7 @@ async def run_interactive(
 
     cancel_kb = build_cancel_key_bindings(state)
     install_session_key_bindings(pt_session, cancel_kb)
-    _install_cpr_buffer_scrubber(pt_session)
+    _install_cpr_buffer_scrubber(pt_session, is_active=state.is_dispatch_running)
 
     pt_app = pt_session.app
     main_loop = asyncio.get_running_loop()
