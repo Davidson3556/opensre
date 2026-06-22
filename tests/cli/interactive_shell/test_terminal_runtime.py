@@ -63,12 +63,17 @@ def test_streaming_console_status_does_not_recurse(monkeypatch) -> None:
         ("7R[25;57R23;57R", ""),
         ("25;57R", ""),
         # Regression (issue #2942): CPR-shaped substrings embedded in ordinary
-        # input must NOT be stripped. A bare ``rowR`` followed by a normal digit
-        # or a bare ``row;colR`` trailed by a word is real user text, not a leak.
+        # input must NOT be stripped. A bare ``rowR``/``row;colR`` followed by a
+        # lone digit, or trailed by a word, is real user text, not a leak — only a
+        # full ``row;colR`` continuation counts as a CPR fragment.
         ("retry 5R3 times", "retry 5R3 times"),
         ("ranges 12;34R okay", "ranges 12;34R okay"),
         ("use r5.xlarge", "use r5.xlarge"),
         ("scale to 16RAM nodes", "scale to 16RAM nodes"),
+        ("scale 12;34R5 nodes", "scale 12;34R5 nodes"),
+        # Consecutive bare fragments (no introducer) are a real leaked burst and
+        # must still strip fully.
+        ("25;57R12;80R", ""),
     ],
 )
 def test_strip_cpr_sequences_removes_terminal_cursor_replies(

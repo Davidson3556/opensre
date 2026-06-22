@@ -52,16 +52,19 @@ from app.fleet_monitoring.sampler import start_sampler
 log = logging.getLogger(__name__)
 
 # A leaked cursor-position reply is ``ESC[row;colR`` (8-bit CSI ``\x9b`` too); when it
-# leaks into the input stream the ESC and/or ``[`` introducer can be lost. The two
-# introducer-less branches below are deliberately constrained so they only fire when the
-# ``row;colR`` shape is *not* embedded in ordinary text — otherwise they silently strip
-# legitimate input such as ``5R3`` or ``12;34R okay`` (see issue #2942). A real bare
-# fragment is either standalone/at a boundary or butts up against another CPR fragment.
+# leaks into the input stream the ESC and/or ``[`` introducer can be lost. The
+# introducer-less branches below are constrained so they only fire on genuine CPR
+# context — a bare ``row;colR``/``rowR`` either butts up against another CPR fragment or
+# sits alone at the end of the line. Without that constraint they would silently strip
+# legitimate input such as ``5R3``, ``12;34R okay`` or ``12;34R5 nodes`` (issue #2942).
+# A following fragment must be a full ``row;colR`` (or an introducer); a lone trailing
+# digit is ordinary text, not a continuation.
 _CPR_SEQUENCE_RE = re.compile(
     r"(?:\x1b\[|\x9b)\d{1,4};\d{1,4}R"  # ESC [ row ; col R (introducer present)
     r"|\[\d{1,4};\d{1,4}R"  # [row;colR without ESC (leaked into input)
-    r"|\d{1,4};\d{1,4}R(?=$|[\[\d\x1b\x9b])"  # bare row;colR — only when not trailed by a word
-    r"|\d{1,4}R(?=\[|\x1b|\x9b|\d{1,4};\d{1,4}R)"  # bare rowR — only before another CPR fragment
+    r"|\d{1,4};\d{1,4}R(?=[\[\x1b\x9b]|\d{1,4};\d{1,4}R)"  # bare row;colR before another fragment
+    r"|\d{1,4}R(?=\[|\x1b|\x9b|\d{1,4};\d{1,4}R)"  # bare rowR before another fragment
+    r"|\d{1,4};\d{1,4}R$"  # bare row;colR alone at end of the line
 )
 
 
