@@ -50,24 +50,15 @@ from app.fleet_monitoring.sampler import start_sampler
 
 log = logging.getLogger(__name__)
 
-# A leaked CPR reply is a maximal run drawn only from the CPR alphabet:
-# an optional ESC/CSI introducer, then digits, ';', '[' and 'R'. Matching the
-# whole run (rather than one well-formed reply) lets us also clear the
-# fragmented bursts that high-frequency streaming redraws produce, where the
-# ESC is dropped and partial 'row;colR' pieces and collapsed 'RRRR' runs
-# concatenate, e.g. '[34;1R57R38;57R'.
-_CPR_RUN_RE = re.compile(r"(?:\x1b|\x9b)?[\[0-9;R]+")
-
-
-def _looks_like_cpr_run(run: str) -> bool:
-    """Whether a CPR-alphabet run is a real cursor reply rather than user text.
-
-    Every CPR reply and every fragment of one pairs at least one digit with the
-    terminating ``R``. Requiring both lets us strip leaked replies while leaving
-    ordinary words that merely contain ``R`` (``Restart``) or a digit (``[1]``)
-    untouched.
-    """
-    return "R" in run and any(ch.isdigit() for ch in run)
+# A leaked CPR reply (and every fragment of one) is ``digits ; digits`` terminated
+# by ``R`` — the digits always come *before* the ``R``: ``ESC[34;1R``, ``[34;1R``,
+# ``38;57R``, the bare tail ``57R``, and collapsed ``...57RRRR`` runs.  Requiring at
+# least one digit immediately before the terminating ``R+`` (with an optional ESC/CSI
+# introducer and ``[``) lets us clear the fragmented streaming bursts while leaving
+# real input untouched.  Critically, this does NOT match tokens where ``R`` precedes
+# the digit — e.g. AWS R-series instance names (``R5``, ``R6g``, ``r5.xlarge``) that
+# SREs type during an active investigation, exactly when the scrubber is live.
+_CPR_RUN_RE = re.compile(r"(?:\x1b|\x9b)?\[?[0-9;]*[0-9]R+")
 
 
 def _drain_stale_cpr_bytes() -> None:
@@ -105,7 +96,7 @@ def _strip_cpr_sequences(text: str | None) -> str:
     streaming redraw produces (``[34;1R57R38;57R``)."""
     if not text:
         return ""
-    return _CPR_RUN_RE.sub(lambda m: "" if _looks_like_cpr_run(m.group(0)) else m.group(0), text)
+    return _CPR_RUN_RE.sub("", text)
 
 
 def _contains_cpr_sequence(text: str | None) -> bool:
@@ -133,10 +124,9 @@ def _install_cpr_buffer_scrubber(
     between-prompt drain owns that case. When omitted, the scrubber is always
     active (used by tests).
     """
-    buffer = pt_session.default_buffer
     scrubbing = False
 
-    def _scrub(_buffer: Buffer) -> None:
+    def _scrub(buffer: Buffer) -> None:
         nonlocal scrubbing
         if scrubbing:
             return
@@ -145,15 +135,20 @@ def _install_cpr_buffer_scrubber(
         text = buffer.text
         if not _contains_cpr_sequence(text):
             return
-        cleaned_before = _strip_cpr_sequences(text[: buffer.cursor_position])
         cleaned_text = _strip_cpr_sequences(text)
+        # Keep the cursor where the user's text is. When the cursor sits inside a
+        # half-typed run, the prefix may strip to a different length than the full
+        # text, so clamp to avoid overshooting cleaned_text (which prompt_toolkit
+        # would otherwise silently pull back to the end).
+        cleaned_before = _strip_cpr_sequences(text[: buffer.cursor_position])
+        cursor = min(len(cleaned_before), len(cleaned_text))
         scrubbing = True
         try:
-            buffer.document = Document(cleaned_text, cursor_position=len(cleaned_before))
+            buffer.document = Document(cleaned_text, cursor_position=cursor)
         finally:
             scrubbing = False
 
-    buffer.on_text_changed += _scrub
+    pt_session.default_buffer.on_text_changed += _scrub
 
 
 class StreamingConsole(Console):

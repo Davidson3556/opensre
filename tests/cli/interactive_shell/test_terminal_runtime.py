@@ -68,6 +68,13 @@ def test_streaming_console_status_does_not_recurse(monkeypatch) -> None:
         ("Restart the pod", "Restart the pod"),
         ("give me 3 reasons", "give me 3 reasons"),
         ("check error [1] in logs", "check error [1] in logs"),
+        # AWS R-series instance names (R before the digit) must NOT be stripped —
+        # they are typed constantly during investigations, while the scrubber is live.
+        ("R3 instances", "R3 instances"),
+        ("check R5 capacity", "check R5 capacity"),
+        ("scale the R6g nodes", "scale the R6g nodes"),
+        ("use m5.large and r5.2xlarge", "use m5.large and r5.2xlarge"),
+        ("R6i", "R6i"),
     ],
 )
 def test_strip_cpr_sequences_removes_terminal_cursor_replies(
@@ -97,6 +104,30 @@ def test_cpr_buffer_scrubber_removes_leaked_replies_live() -> None:
     buffer.insert_text("25;57R")
     assert buffer.text == "scale up"
     assert buffer.cursor_position == len("scale up")
+
+
+def test_cpr_buffer_scrubber_clamps_cursor_inside_partial_run() -> None:
+    """Cursor sitting inside a half-typed CPR run must not overshoot cleaned text.
+
+    The prefix before the cursor can strip to a different length than the full
+    text (the run's terminating ``R`` may be past the cursor), so the cursor is
+    clamped to len(cleaned_text) rather than left to overshoot.
+    """
+
+    class _FakeSession:
+        def __init__(self) -> None:
+            self.default_buffer = Buffer()
+
+    session = _FakeSession()
+    loop_module._install_cpr_buffer_scrubber(session)  # type: ignore[arg-type]
+    buffer = session.default_buffer
+
+    # Cursor sits inside the run ("38;|57R"): the prefix "38;" does not strip
+    # (no terminating R) while the full run strips to "", so an unclamped cursor
+    # would land at position 3 in a 0-length buffer.
+    buffer.document = Document("38;57R", cursor_position=3)
+    assert buffer.text == ""
+    assert 0 <= buffer.cursor_position <= len(buffer.text)
 
 
 def test_cpr_buffer_scrubber_is_noop_when_inactive() -> None:

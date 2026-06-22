@@ -115,9 +115,13 @@ owning area rather than adding more logic to the caller.
     *while* the input reader is active (not just at teardown), so they appear as
     fragmented garbage like `[34;1R57R38;57R` in the field. The between-prompt
     drain cannot catch those; `_install_cpr_buffer_scrubber` in `runtime/loop.py`
-    hooks the buffer's `on_text_changed` and strips CPR runs in place. CPR runs
-    are identified as runs over `[`, digits, `;`, `R` that pair a digit with an
-    `R`, so ordinary words (`Restart`) and `[1]`-style text are left intact.
+    hooks the buffer's `on_text_changed` (only while a turn is dispatching) and
+    strips CPR runs in place. A CPR run is `digits;digits` terminated by `R`, so
+    the matcher requires the digit(s) to come *before* the `R` (`34;1R`, `57R`).
+    That deliberately leaves text where `R` precedes the digit untouched — most
+    importantly AWS R-series instance names (`R5`, `R6g`, `r5.xlarge`) that SREs
+    type during an investigation, exactly when the scrubber is live — as well as
+    ordinary words (`Restart`) and `[1]`-style text.
   - **Agent-planned (LLM) interactive commands:** `_EXCLUSIVE_STDIN_MENU_COMMANDS`
     only reserves stdin for *deterministically-typed* commands
     (`deterministic_command_text` returns the slash). When free text like
