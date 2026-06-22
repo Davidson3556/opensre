@@ -62,6 +62,13 @@ def test_streaming_console_status_does_not_recurse(monkeypatch) -> None:
         ("before \x1b[12;80R after", "before  after"),
         ("7R[25;57R23;57R", ""),
         ("25;57R", ""),
+        # Regression (issue #2942): CPR-shaped substrings embedded in ordinary
+        # input must NOT be stripped. A bare ``rowR`` followed by a normal digit
+        # or a bare ``row;colR`` trailed by a word is real user text, not a leak.
+        ("retry 5R3 times", "retry 5R3 times"),
+        ("ranges 12;34R okay", "ranges 12;34R okay"),
+        ("use r5.xlarge", "use r5.xlarge"),
+        ("scale to 16RAM nodes", "scale to 16RAM nodes"),
     ],
 )
 def test_strip_cpr_sequences_removes_terminal_cursor_replies(
@@ -75,9 +82,9 @@ def test_repl_input_lexer_highlights_first_slash_token() -> None:
     lexer = ReplInputLexer()
     get_line = lexer.lex_document(Document("/model show", len("/model")))
     fragments = get_line(0)
-    cmd_frags = [(s, t) for s, t in fragments if s == "class:repl-slash-command"]
+    cmd_frags = [(frag[0], frag[1]) for frag in fragments if frag[0] == "class:repl-slash-command"]
     assert cmd_frags == [("class:repl-slash-command", "/model")]
-    rest = "".join(t for s, t in fragments if s == "")
+    rest = "".join(frag[1] for frag in fragments if frag[0] == "")
     assert " show" in rest or rest.endswith(" show")
 
 
