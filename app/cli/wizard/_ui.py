@@ -44,12 +44,18 @@ _STYLE = questionary.Style(
         ("pointer", f"fg:{HIGHLIGHT} bold"),
         ("highlighted", f"fg:{TEXT} bg:{HIGHLIGHT} bold"),
         ("selected", f"fg:{TEXT} bg:default bold"),
+        ("group-header", f"fg:{HIGHLIGHT} bold"),
         ("separator", f"fg:{DIM}"),
         ("text", f"fg:{TEXT} bg:default"),
         ("disabled", f"fg:{SECONDARY} bg:default italic"),
         ("instruction", f"fg:{SECONDARY} italic"),
     ]
 )
+
+
+def _group_header_label(group: str) -> str:
+    """Format a category label for grouped wizard pickers."""
+    return f"── {group} ──"
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,41 @@ def _questionary_choice(choice: Choice) -> questionary.Choice:
     )
 
 
+def _grouped_questionary_choices(
+    choices: list[Choice],
+    *,
+    group_order: tuple[str, ...],
+    trailing_choices: list[Choice] | None = None,
+) -> list[questionary.Choice | questionary.Separator]:
+    """Render selectable choices with non-selectable category separators."""
+    grouped: dict[str, list[Choice]] = {group: [] for group in group_order}
+    ungrouped: list[Choice] = []
+
+    for choice in choices:
+        if choice.group is None or choice.group not in grouped:
+            ungrouped.append(choice)
+            continue
+        grouped[choice.group].append(choice)
+
+    rendered: list[questionary.Choice | questionary.Separator] = []
+    for group in group_order:
+        group_choices = grouped[group]
+        if not group_choices:
+            continue
+        rendered.append(questionary.Separator(_group_header_label(group)))
+        rendered.extend(_questionary_choice(choice) for choice in group_choices)
+
+    if ungrouped:
+        rendered.append(questionary.Separator(_group_header_label("Other")))
+        rendered.extend(_questionary_choice(choice) for choice in ungrouped)
+
+    if trailing_choices:
+        rendered.append(questionary.Separator())
+        rendered.extend(_questionary_choice(choice) for choice in trailing_choices)
+
+    return rendered
+
+
 _CUSTOM_MODEL_SENTINEL = "__custom__"
 
 
@@ -204,8 +245,25 @@ def _choose_model(provider: ProviderOption, *, default: str | None) -> str:
     )
 
 
-def _choose(prompt: str, choices: list[Choice], *, default: str | None = None) -> str:
-    q_choices = [_questionary_choice(choice) for choice in choices]
+def _choose(
+    prompt: str,
+    choices: list[Choice],
+    *,
+    default: str | None = None,
+    group_order: tuple[str, ...] | None = None,
+    trailing_choices: list[Choice] | None = None,
+) -> str:
+    if group_order is not None:
+        q_choices = _grouped_questionary_choices(
+            choices,
+            group_order=group_order,
+            trailing_choices=trailing_choices,
+        )
+    else:
+        q_choices = [_questionary_choice(choice) for choice in choices]
+        if trailing_choices:
+            q_choices.append(questionary.Separator())
+            q_choices.extend(_questionary_choice(choice) for choice in trailing_choices)
 
     result = select_prompt(
         prompt,
