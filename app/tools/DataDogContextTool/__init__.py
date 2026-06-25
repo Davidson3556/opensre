@@ -27,23 +27,45 @@ def _run_in_thread(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+# Kubernetes tag keys read out of a Datadog log's ``tags`` list.
+_POD_TAG_KEYS = frozenset(
+    {
+        "pod_name",
+        "container_name",
+        "kube_namespace",
+        "exit_code",
+        "kube_job",
+        "cluster",
+        "node_name",
+        "node_ip",
+    }
+)
+
+
+def _parse_log_tags(log: dict, keys: frozenset[str]) -> dict[str, str]:
+    """Parse a Datadog log's ``tags`` list into a ``{key: value}`` map.
+
+    Only keys in ``keys`` are kept. When a key appears more than once the last
+    occurrence wins, matching the original sequential-assignment behavior.
+    """
+    parsed: dict[str, str] = {}
+    for tag in log.get("tags", []):
+        if not isinstance(tag, str) or ":" not in tag:
+            continue
+        k, _, v = tag.partition(":")
+        if k in keys:
+            parsed[k] = v
+    return parsed
+
+
 def _extract_pod_from_logs(logs: list[dict]) -> tuple[str | None, str | None, str | None]:
     for log in logs:
         if not isinstance(log, dict):
             continue
-        pod_name = container_name = kube_namespace = None
-        for tag in log.get("tags", []):
-            if not isinstance(tag, str) or ":" not in tag:
-                continue
-            k, _, v = tag.partition(":")
-            if k == "pod_name":
-                pod_name = v
-            elif k == "container_name":
-                container_name = v
-            elif k == "kube_namespace":
-                kube_namespace = v
+        tags = _parse_log_tags(log, _POD_TAG_KEYS)
+        pod_name = tags.get("pod_name")
         if pod_name:
-            return pod_name, container_name, kube_namespace
+            return pod_name, tags.get("container_name"), tags.get("kube_namespace")
     return None, None, None
 
 
@@ -70,37 +92,17 @@ def _collect_failed_pods(logs: list[dict]) -> list[dict]:
     for log in logs:
         if not isinstance(log, dict):
             continue
-        pod_name = container_name = kube_namespace = exit_code = kube_job = cluster = None
-        node_name = node_ip = None
-        for tag in log.get("tags", []):
-            if not isinstance(tag, str) or ":" not in tag:
-                continue
-            k, _, v = tag.partition(":")
-            if k == "pod_name":
-                pod_name = v
-            elif k == "container_name":
-                container_name = v
-            elif k == "kube_namespace":
-                kube_namespace = v
-            elif k == "exit_code":
-                exit_code = v
-            elif k == "kube_job":
-                kube_job = v
-            elif k == "cluster":
-                cluster = v
-            elif k == "node_name":
-                node_name = v
-            elif k == "node_ip":
-                node_ip = v
-        pod_name = pod_name or log.get("pod_name")
-        container_name = container_name or log.get("container_name")
-        kube_namespace = kube_namespace or log.get("kube_namespace")
+        tags = _parse_log_tags(log, _POD_TAG_KEYS)
+        pod_name = tags.get("pod_name") or log.get("pod_name")
+        container_name = tags.get("container_name") or log.get("container_name")
+        kube_namespace = tags.get("kube_namespace") or log.get("kube_namespace")
+        exit_code = tags.get("exit_code")
         if exit_code is None and log.get("exit_code") is not None:
             exit_code = str(log["exit_code"])
-        kube_job = kube_job or log.get("kube_job")
-        cluster = cluster or log.get("cluster")
-        node_name = node_name or log.get("node_name")
-        node_ip = node_ip or log.get("node_ip")
+        kube_job = tags.get("kube_job") or log.get("kube_job")
+        cluster = tags.get("cluster") or log.get("cluster")
+        node_name = tags.get("node_name") or log.get("node_name")
+        node_ip = tags.get("node_ip") or log.get("node_ip")
         if pod_name and pod_name not in seen:
             seen.add(pod_name)
             entry: dict[str, Any] = {
