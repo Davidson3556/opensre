@@ -13,7 +13,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Final, Literal, Protocol
 
 if TYPE_CHECKING:
     from app.integrations.llm_cli.registry import CLIProviderRegistration
@@ -1303,7 +1303,7 @@ class _OpenAICompatibleProvider:
 # logic, differing only in base URL, API-key env var, and (for MiniMax)
 # temperature. Adding one is a single row here instead of another near-duplicate
 # branch in ``_create_llm_client``.
-_OPENAI_COMPATIBLE_PROVIDERS: dict[str, _OpenAICompatibleProvider] = {
+_OPENAI_COMPATIBLE_PROVIDERS: Final[dict[str, _OpenAICompatibleProvider]] = {
     "openrouter": _OpenAICompatibleProvider(
         OPENROUTER_LLM_CONFIG, OPENROUTER_BASE_URL, "OPENROUTER_API_KEY"
     ),

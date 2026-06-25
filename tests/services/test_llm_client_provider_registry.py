@@ -50,6 +50,9 @@ def test_create_llm_client_dispatches_registry_provider(
 
     client = _create_llm_client("toolcall")
 
+    # OpenAILLMClient exposes no public getters for these construction params, so
+    # we deliberately read the private attributes to pin that the registry wired
+    # each provider correctly. A rename surfaces loudly as an AttributeError here.
     assert isinstance(client, OpenAILLMClient)
     assert client._base_url == spec.base_url
     assert client._api_key_env == spec.api_key_env
