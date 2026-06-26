@@ -51,6 +51,7 @@ from tools.fleet_monitoring.sampler import start_sampler
 
 log = logging.getLogger(__name__)
 
+
 async def run_interactive(
     session: ReplSession,
     pt_session: PromptSession[str] | None = None,
