@@ -25,6 +25,7 @@ def test_release_paths_resolve_from_moved_infra_location() -> None:
 @pytest.mark.parametrize(
     ("raw_value", "expected"),
     [
+        ("v0.1.2026.6.26", "0.1.2026.6.26"),
         ("v2026.4.13", "2026.4.13"),
         ("2026.4.13", "2026.4.13"),
         ("v0.1", "0.1"),
