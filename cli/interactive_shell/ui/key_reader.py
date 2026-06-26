@@ -93,6 +93,14 @@ def read_key_unix(*, also_cancel: tuple[bytes, ...] = ()) -> str:
                         return "right"
                     if arr == b"D":
                         return "left"
+                    # Not an arrow key — drain the rest of the CSI sequence so
+                    # bytes like "0;1R" from a CPR (ESC[row;colR) don't leak into
+                    # the next read or the prompt buffer as literal characters.
+                    # The VT/xterm spec defines 0x40–0x7E as valid CSI final bytes.
+                    while arr and not (0x40 <= arr[0] <= 0x7E):
+                        if not _sel.select([fd], [], [], 0)[0]:
+                            break
+                        arr = os.read(fd, 1)
             return "cancel"
         return "ignore"
     finally:
