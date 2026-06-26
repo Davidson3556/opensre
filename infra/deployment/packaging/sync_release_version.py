@@ -10,8 +10,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 PYPROJECT_PATH = ROOT / "pyproject.toml"
 APP_CONSTANTS_OPENSRE_PATH = ROOT / "config" / "constants" / "opensre.py"
-# Dated stable tags carry the v0.1 line prefix, e.g. v0.1.2026.6.26.
-PREFIXED_CALENDAR_VERSION_PATTERN = re.compile(r"v?(?P<version>\d+\.\d+\.\d{4}\.\d{1,2}\.\d{1,2})")
+# Dated stable tags carry the v0.1 line prefix, e.g. v0.1.2026.6.26. Month and
+# day are bounded (1-12, 1-31) so a malformed dispatch tag fails here rather
+# than producing a nonsensical version string.
+PREFIXED_CALENDAR_VERSION_PATTERN = re.compile(
+    r"v?(?P<version>\d+\.\d+\.\d{4}\.(?:1[0-2]|[1-9])\.(?:3[01]|[12]\d|[1-9]))"
+)
 CALENDAR_VERSION_PATTERN = re.compile(r"v?(?P<version>\d{4}\.\d{1,2}\.\d{1,2})")
 SEMVER_VERSION_PATTERN = re.compile(r"v?(?P<version>\d+\.\d+(?:\.\d+)?)")
 
