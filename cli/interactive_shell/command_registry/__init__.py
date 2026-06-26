@@ -46,6 +46,7 @@ from cli.interactive_shell.command_registry.settings_cmds import (
 from cli.interactive_shell.command_registry.suggestions import closest_choice
 from cli.interactive_shell.command_registry.system import COMMANDS as SYSTEM_COMMANDS
 from cli.interactive_shell.command_registry.tasks_cmds import COMMANDS as TASK_COMMANDS
+from cli.interactive_shell.command_registry.theme import COMMANDS as THEME_COMMANDS
 from cli.interactive_shell.command_registry.tools_cmds import COMMANDS as TOOLS_COMMANDS
 from cli.interactive_shell.command_registry.types import SlashCommand
 from cli.interactive_shell.command_registry.watch_cmds import COMMANDS as WATCH_COMMANDS
@@ -61,6 +62,7 @@ _MERGED_SEQUENCE = tuple(
     chain(
         HELP_COMMANDS,
         SESSION_COMMANDS,
+        THEME_COMMANDS,
         BACKGROUND_COMMANDS,
         SETTINGS_COMMANDS,
         DIAGNOSTICS_COMMANDS,

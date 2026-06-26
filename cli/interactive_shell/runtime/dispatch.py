@@ -134,6 +134,8 @@ def dispatch_needs_exclusive_stdin(text: str, _session: ReplSession) -> bool:
 
     if name in _WAIT_FOR_COMPLETION_COMMANDS:
         return True
+    if name == "/theme":
+        return True
     if name in _EXCLUSIVE_STDIN_MENU_COMMANDS and not args:
         return True
     if name == "/tests" and not args:
