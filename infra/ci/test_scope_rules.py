@@ -36,6 +36,7 @@ RULES: tuple[PathRule, ...] = (
     PathRule("integrations/", ("tests/integrations/",)),
     PathRule("tools/fleet_monitoring/", ("tests/agent/", "tests/fleet_monitoring/")),
     PathRule("cli/", ("tests/cli/",)),
+    PathRule("interactive_shell/", ("tests/interactive_shell/",)),
     PathRule("tools/watch_dog/", ("tests/watch_dog/",)),
     PathRule("tools/", ("tests/tools/",)),
     PathRule("platform/analytics/", ("tests/analytics/",)),
@@ -63,8 +64,6 @@ def _matches(path: str, prefix: str) -> bool:
 
 def _area_key(prefix: str) -> str:
     parts = prefix.split("/")
-    if len(parts) > 1 and parts[0] == "app":
-        return parts[1]
     if parts[0] == "deployment" or parts[:2] == ["infra", "deployment"]:
         return "deployment"
     return prefix
@@ -93,12 +92,8 @@ def classify(changed: list[str]) -> tuple[bool, list[str], list[str]]:
                         targets.append(target)
             break
 
-        if not matched:
-            if path.startswith("tests/"):
-                if path not in targets:
-                    targets.append(path)
-            elif path.startswith("app/"):
-                escalate = True
+        if not matched and path.startswith("tests/") and path not in targets:
+            targets.append(path)
 
     if len(areas) >= ESCALATION_AREA_THRESHOLD:
         escalate = True
