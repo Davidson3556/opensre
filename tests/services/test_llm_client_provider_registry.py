@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-import app.services.llm_client as llm_client
-from app.services.llm_client import (
+import services.llm_client as llm_client
+from services.llm_client import (
     _OPENAI_COMPATIBLE_PROVIDERS,
     OpenAILLMClient,
     _create_llm_client,
