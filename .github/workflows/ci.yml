@@ -9,6 +9,7 @@ on:
       - "core/**"
       - "infra/deployment/**"
       - "integrations/**"
+      - "interactive_shell/**"
       - "platform/**"
       - "tools/**"
       - "tests/**"
@@ -30,6 +31,7 @@ on:
       - "core/**"
       - "infra/deployment/**"
       - "integrations/**"
+      - "interactive_shell/**"
       - "platform/**"
       - "tools/**"
       - "tests/**"
@@ -238,6 +240,7 @@ jobs:
           --cov=core
           --cov=infra.deployment
           --cov=integrations
+          --cov=interactive_shell
           --cov=platform
           --cov=tools
           --cov-report=
