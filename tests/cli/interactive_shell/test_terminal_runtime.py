@@ -20,8 +20,8 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
-from app.cli.interactive_shell.prompting import prompt_surface
-from app.cli.interactive_shell.prompting.prompt_surface import (
+from cli.interactive_shell.prompting import prompt_surface
+from cli.interactive_shell.prompting.prompt_surface import (
     _SHIFT_ENTER_SEQUENCE,
     ReplInputLexer,
     ShellCompleter,
@@ -29,19 +29,20 @@ from app.cli.interactive_shell.prompting.prompt_surface import (
     _build_prompt_style,
     _tab_expand_or_menu,
 )
-from app.cli.interactive_shell.runtime import dispatch as loop_dispatch
-from app.cli.interactive_shell.runtime import execution as loop_execution
-from app.cli.interactive_shell.runtime import loop as loop_module
-from app.cli.interactive_shell.runtime import state as loop_state
-from app.cli.interactive_shell.runtime.session import ReplSession
-from app.cli.interactive_shell.ui.streaming import _CHARS_PER_TOKEN
-from app.cli.interactive_shell.ui.theme import ANSI_RESET, PROMPT_ACCENT_ANSI
+from cli.interactive_shell.runtime import dispatch as loop_dispatch
+from cli.interactive_shell.runtime import execution as loop_execution
+from cli.interactive_shell.runtime import state as loop_state
+from cli.interactive_shell.runtime.cpr_stdin import strip_cpr_sequences
+from cli.interactive_shell.runtime.session import ReplSession
+from cli.interactive_shell.runtime.streaming_console import StreamingConsole
+from cli.interactive_shell.ui.streaming import _CHARS_PER_TOKEN
+from cli.interactive_shell.ui.theme import ANSI_RESET, PROMPT_ACCENT_ANSI
 
 
 def test_streaming_console_status_does_not_recurse(monkeypatch) -> None:
     """Regression: overriding Console.print broke Rich's status spinner."""
     spinner = loop_state.SpinnerState()
-    console = loop_module.StreamingConsole(
+    console = StreamingConsole(
         spinner,
         threading.Event(),
         file=io.StringIO(),
@@ -68,7 +69,7 @@ def test_strip_cpr_sequences_removes_terminal_cursor_replies(
     text: str,
     expected: str,
 ) -> None:
-    assert loop_module._strip_cpr_sequences(text) == expected
+    assert strip_cpr_sequences(text) == expected
 
 
 def test_repl_input_lexer_highlights_first_slash_token() -> None:
@@ -92,7 +93,7 @@ def test_build_prompt_session_uses_persistent_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.constants as const_module
+    import config.constants as const_module
 
     monkeypatch.setattr(const_module, "OPENSRE_HOME_DIR", tmp_path)
 
@@ -112,7 +113,7 @@ def test_build_prompt_session_falls_back_to_memory_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.constants as const_module
+    import config.constants as const_module
 
     blocked_home = tmp_path / "not-a-directory"
     blocked_home.write_text("", encoding="utf-8")
@@ -128,7 +129,7 @@ def test_repl_session_prompt_history_backend_matches_prompt_toolkit_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.constants as const_module
+    import config.constants as const_module
 
     monkeypatch.setattr(const_module, "OPENSRE_HOME_DIR", tmp_path)
     with create_app_session(input=DummyInput(), output=DummyOutput()):
@@ -150,7 +151,7 @@ def test_shift_enter_inserts_newline_before_submit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import app.constants as const_module
+    import config.constants as const_module
 
     monkeypatch.setattr(const_module, "OPENSRE_HOME_DIR", tmp_path)
 
@@ -310,7 +311,7 @@ def test_completion_includes_tab_navigation() -> None:
 
 
 def test_completion_menu_current_item_uses_highlight_style() -> None:
-    from app.cli.interactive_shell.ui.theme import BG, HIGHLIGHT
+    from cli.interactive_shell.ui.theme import BG, HIGHLIGHT
 
     style = _build_prompt_style()
     attrs = style.get_attrs_for_style_str("class:repl-slash-command")
@@ -365,7 +366,7 @@ def test_run_text_investigation_uses_background_launcher_when_mode_enabled(
 ) -> None:
     from rich.console import Console
 
-    from app.cli.interactive_shell.routing.handle_message_with_agent.orchestration.action_executor.investigation_runner import (
+    from cli.interactive_shell.routing.handle_message_with_agent.orchestration.action_executor.investigation_runner import (
         run_text_investigation,
     )
 
@@ -383,7 +384,7 @@ def test_run_text_investigation_uses_background_launcher_when_mode_enabled(
         return "bg123"
 
     monkeypatch.setattr(
-        "app.cli.interactive_shell.runtime.background_runner.start_background_text_investigation",
+        "cli.interactive_shell.runtime.background_runner.start_background_text_investigation",
         _fake_start_background_text_investigation,
     )
 
@@ -409,11 +410,11 @@ def test_dispatch_one_turn_reports_slash_dispatch_error(
         raise RuntimeError("handler crashed")
 
     monkeypatch.setattr(
-        "app.cli.interactive_shell.runtime.execution.dispatch_slash",
+        "cli.interactive_shell.runtime.execution.dispatch_slash",
         _boom,
     )
     monkeypatch.setattr(
-        "app.cli.interactive_shell.error_handling.exception_reporting.capture_exception",
+        "cli.interactive_shell.error_handling.exception_reporting.capture_exception",
         lambda exc, **_kwargs: captured_errors.append(exc),
     )
     session = ReplSession()
@@ -441,7 +442,7 @@ def test_dispatch_one_turn_calls_on_exit_when_slash_returns_false(
     from rich.console import Console
 
     monkeypatch.setattr(
-        "app.cli.interactive_shell.runtime.execution.dispatch_slash",
+        "cli.interactive_shell.runtime.execution.dispatch_slash",
         lambda *_args, **_kwargs: False,
     )
 
@@ -885,7 +886,7 @@ class TestStreamingConsole:
         spinner = loop_state.SpinnerState()
         spinner.start()
         cancel = _threading.Event()
-        console = loop_module.StreamingConsole(
+        console = StreamingConsole(
             spinner,
             cancel,
             highlight=False,
@@ -900,7 +901,7 @@ class TestStreamingConsole:
 
         spinner = loop_state.SpinnerState()
         cancel = _threading.Event()
-        console = loop_module.StreamingConsole(
+        console = StreamingConsole(
             spinner,
             cancel,
             highlight=False,
@@ -920,7 +921,7 @@ class TestStreamingConsole:
         import threading as _threading
 
         spinner = loop_state.SpinnerState()
-        console = loop_module.StreamingConsole(
+        console = StreamingConsole(
             spinner,
             _threading.Event(),
             file=io.StringIO(),
@@ -930,11 +931,11 @@ class TestStreamingConsole:
 
         calls: list[str] = []
         monkeypatch.setattr(
-            "app.cli.interactive_shell.ui.choice_menu.ensure_tty_column_zero",
+            "cli.interactive_shell.ui.choice_menu.ensure_tty_column_zero",
             lambda: calls.append("ensure"),
         )
         monkeypatch.setattr(
-            "app.cli.interactive_shell.ui.choice_menu.prepare_repl_output_line",
+            "cli.interactive_shell.ui.choice_menu.prepare_repl_output_line",
             lambda: calls.append("prepare"),
         )
 
@@ -1439,7 +1440,7 @@ class TestExecutionAllowedRespectsDispatchCancelled:
     ) -> None:
         from rich.console import Console
 
-        from app.cli.interactive_shell.routing.handle_message_with_agent.orchestration.execution_policy import (
+        from cli.interactive_shell.routing.handle_message_with_agent.orchestration.execution_policy import (
             ExecutionPolicyResult,
             execution_allowed,
         )
@@ -1481,7 +1482,7 @@ class TestExecutionAllowedRespectsDispatchCancelled:
         """
         from rich.console import Console
 
-        from app.cli.interactive_shell.routing.handle_message_with_agent.orchestration.execution_policy import (
+        from cli.interactive_shell.routing.handle_message_with_agent.orchestration.execution_policy import (
             ExecutionPolicyResult,
             execution_allowed,
         )
