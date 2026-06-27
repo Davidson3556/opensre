@@ -389,6 +389,13 @@ def test_extract_retry_after_reads_gemini_retry_in_message() -> None:
     assert llm_retry.extract_retry_after_seconds(err) == 8.5
 
 
+def test_extract_retry_after_tolerates_null_details() -> None:
+    # A body with "details": null must not raise (no hint -> None).
+    err = RuntimeError("rate limited")
+    err.body = {"error": {"details": None}}  # type: ignore[attr-defined]
+    assert llm_retry.extract_retry_after_seconds(err) is None
+
+
 def test_extract_retry_after_skips_http_date_format() -> None:
     """HTTP-date Retry-After is allowed by RFC 7231 but rare. We don't parse
     it — fall through to body text or None."""

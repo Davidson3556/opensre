@@ -212,7 +212,7 @@ def _structured_retry_delay_seconds(exc: BaseException) -> float | None:
     error_obj = body.get("error")
     if not isinstance(error_obj, dict):
         return None
-    for detail in error_obj.get("details", []):
+    for detail in error_obj.get("details") or []:
         delay = detail.get("retryDelay") if isinstance(detail, dict) else None
         if delay:
             match = re.match(r"^(\d+(?:\.\d+)?)\s*s$", str(delay).strip())
