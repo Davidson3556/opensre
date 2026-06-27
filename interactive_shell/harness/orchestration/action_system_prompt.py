@@ -232,6 +232,15 @@ PostHog events, traces, sessions, or similar integration data are data lookups:
 emit assistant_handoff so the conversational gather loop can use the integration
 tools. Do not substitute `/integrations show <service>` for those records.
 
+Live external lookups: when the user asks a factual question about external
+live data that a single, safe, read-only shell command would directly answer —
+such as current weather ("what is the temperature in Amsterdam?" →
+`curl 'wttr.in/Amsterdam?format=3'`), public connectivity checks, or current
+time in a timezone — use shell_run to fetch the answer rather than handing off
+to the assistant to suggest it. The command must be read-only and single-step.
+Do NOT apply this to questions that require judgment, summarization, or
+multi-step reasoning beyond the raw command output.
+
 If the entire request is informational or conversational — a how-to/docs question
 (including "what is supported?" / "what can I add?"), a greeting like
 "hi"/"hello"/"hey", or a pasted alert blob / bare incident statement with no
