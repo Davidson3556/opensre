@@ -22,38 +22,34 @@ from interactive_shell.ui import input_prompt as _input_prompt
 from tools.fleet_monitoring.sweep import run_startup_sweep
 
 log = logging.getLogger(__name__)
+_console = Console(highlight=False, force_terminal=True, color_system="truecolor", legacy_windows=False)
 
 
 @contextmanager
 def _alert_listener(cfg: ReplConfig) -> Iterator[_alert_inbox.AlertInbox | None]:
-    alert_listener_handle: _alert_inbox.AlertListenerHandle | None = None
+    if not cfg.alert_listener_enabled:
+        yield None
+        return
+
     inbox: _alert_inbox.AlertInbox | None = None
-    if cfg.alert_listener_enabled:
-        try:
-            inbox = _alert_inbox.AlertInbox()
-            alert_listener_handle = _alert_inbox.start_alert_listener(
-                inbox,
-                host=cfg.alert_listener_host,
-                port=cfg.alert_listener_port,
-                token=cfg.alert_listener_token,
-            )
-            _alert_inbox.set_current_inbox(inbox)
-            console = Console(
-                highlight=False,
-                force_terminal=True,
-                color_system="truecolor",
-                legacy_windows=False,
-            )
-            console.print(
-                f"[{DIM}]listening for alerts on http://{alert_listener_handle.bound_address}/alerts[/]"
-            )
-        except Exception as exc:
-            log.warning("Alert listener could not start: %s — continuing without it.", exc)
+    handle: _alert_inbox.AlertListenerHandle | None = None
+    try:
+        inbox = _alert_inbox.AlertInbox()
+        handle = _alert_inbox.start_alert_listener(
+            inbox,
+            host=cfg.alert_listener_host,
+            port=cfg.alert_listener_port,
+            token=cfg.alert_listener_token,
+        )
+        _alert_inbox.set_current_inbox(inbox)
+        _console.print(f"[{DIM}]listening for alerts on http://{handle.bound_address}/alerts[/]")
+    except Exception as exc:
+        log.warning("Alert listener could not start: %s — continuing without it.", exc)
     try:
         yield inbox
     finally:
-        if alert_listener_handle is not None:
-            alert_listener_handle.stop()
+        if handle is not None:
+            handle.stop()
             _alert_inbox.set_current_inbox(None)
 
 
@@ -93,14 +89,8 @@ def run_repl(initial_input: str | None = None, config: ReplConfig | None = None)
     run_startup_sweep()
 
     if not initial_input:
-        real_console = Console(
-            highlight=False,
-            force_terminal=True,
-            color_system="truecolor",
-            legacy_windows=False,
-        )
-        render_banner(real_console)
-        if not require_startup_github_login(real_console):
+        render_banner(_console)
+        if not require_startup_github_login(_console):
             return 0
 
     try:
