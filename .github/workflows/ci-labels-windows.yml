@@ -101,7 +101,7 @@ jobs:
       - name: Run full tests
         run: >-
           uv run python -m pytest -n auto -v
-          --cov=cli --cov=config --cov=core --cov=infra/deployment --cov=integrations --cov=interactive_shell --cov=platform --cov=tools
+          --cov=cli --cov=config --cov=core --cov=infra.deployment --cov=integrations --cov=interactive_shell --cov=platform --cov=tools
           --cov-report=term-missing
           --cov-report=html
           --ignore=tests/e2e/kubernetes_local_alert_simulation
