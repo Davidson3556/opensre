@@ -19,8 +19,8 @@ recurring source of precedence drift.
 1. There is no regex/keyword intent inference. Non-command turns are
    selected entirely by the shell action agent via native tool-calling.
 2. Tool selection is driven by the action-agent system prompt
-   (`.../orchestration/action_system_prompt.py`) and the per-tool descriptions
-   in the tool catalog (`.../orchestration/tools/*`). Keep both precise — they
+   (`.../llm_context/system_prompt.py`) and the per-tool descriptions
+   in the tool catalog (`interactive_shell/tools/*`). Keep both precise — they
    are the only selection signal.
 3. The action path does not post-hoc rewrite the model's tool calls. Tool calls
    execute as first-class `AgentTool`s through the shared `core.runtime`
@@ -30,10 +30,11 @@ recurring source of precedence drift.
    through to a conversational reply rather than guessing an action. When the
    action-agent LLM itself is unavailable, the REPL renders and persists a
    failed assistant turn so `/resume` can show the outage.
-5. `command_dispatch/detection.py` remains terminal-UI policy only: spinner
-   suppression and exclusive-stdin gating for literal command text. It must
-   never infer intent from natural language and must not become an action
-   execution shortcut.
+5. The runtime's literal-`/slash` detection
+   (`runtime/utils/input_policy._literal_slash_command_text`) is terminal-UI
+   policy only: spinner suppression and exclusive-stdin gating for literal
+   `/slash` command text. It must never infer intent from natural language and
+   must not become an action execution shortcut.
 
 ## What this means for changes
 - To change how a phrasing maps to a tool, edit the action-agent system prompt and/or
@@ -67,19 +68,18 @@ answered without adding keyword/regex rules. Two complementary mechanisms:
    `configured_integration_services()` helper in `integrations/catalog.py`
    (the same source the welcome banner uses, so they never diverge). The chat
    assistant prompt (`_build_environment_block` in
-   `interactive_shell/chat/cli_agent.py`) lists the configured set as
+   `interactive_shell/harness/agent.py`) lists the configured set as
    facts, letting the model answer directly when state is already known.
 2. LLM-driven discovery. The action-agent system prompt
-   (`.../orchestration/action_system_prompt.py`) lets the model, at its own
+   (`.../llm_context/system_prompt.py`) lets the model, at its own
    discretion, emit a read-only discovery action (for example
    `slash_invoke("/integrations", ["list"])` or `["verify"]`) to discover the
    answer instead of deflecting. There is no keyword mapping for this — the LLM
-   decides. Safety is provided by the existing execution-tier policy in
-   `execution_policy.py` (`resolve_slash_execution_tier`): `/integrations`
-   (list/show) is `SAFE` and auto-runs, while `/integrations verify` is
-   `ELEVATED` and prompts for confirmation. No fail-closed regex rule is
-   involved; the action agent decides whether to emit a discovery action and the
-   execution tier governs safety.
+   decides. Under the alpha allow-all policy every discovery action runs without
+   confirmation (`execution_policy.allow_tool("slash")` returns `allow`); the
+   former `ExecutionTier`/`resolve_slash_execution_tier` classification was
+   removed because it gated nothing. No fail-closed regex rule is involved; the
+   action agent decides whether to emit a discovery action.
 
 ### Observe→answer summary loop
 
@@ -164,5 +164,40 @@ them; the fixture `policy` block now carries a single `executes_terminal_action`
 `boolean` (true only when a shell action AgentTool is expected to run).
 
 If write/mutating actions are introduced later, gate them with the
-execution-stage confirmation policy (`orchestration/execution_policy.py`), **not**
+execution-stage confirmation policy (`interactive_shell/tools/shared/execution_policy.py`), **not**
 an action-selection denial.
+
+### Removal of the shell-command safety policy (alpha)
+
+Addendum — Jun 27, 2026.
+
+**Decision:** while OpenSRE is in **alpha**, the interactive REPL runs **every**
+shell command with **no guardrails**. The shell-command safety policy — the
+read-only / mutating / restricted classification, the command allowlist, and the
+hard `deny` floor — has been removed. This is a deliberate trade-off: alpha
+prioritizes developer velocity over command sandboxing, and the REPL already
+runs on the developer's own machine with their own privileges.
+
+What changed:
+
+- `shell_policy.py` (classification, allowlists, `classify_command`,
+  `evaluate_policy`, `PolicyDecision`) was deleted. The pure parsing helpers it
+  also contained moved to `tools/shell/parsing.py` (`parse_shell_command`,
+  `argv_for_repl_builtin_detection`, `ParsedShellCommand`), alongside the shell
+  execution policy in `tools/shell/policy.py`.
+- `tools.shell.policy.evaluate_shell_from_parsed` now returns `allow` for every
+  command — read-only, mutating, `restricted` (`sudo`, `systemctl`, `kill`,
+  `dd`, …), shell operators (`| && ; > <`), and command substitution
+  (`` ` ``/`$(...)`). Commands that need a shell run through one automatically;
+  the `!` prefix is still honored but no longer required to escape the old
+  operator block.
+- The **only** remaining non-execution outcome is genuinely empty input (a bare
+  `!` or whitespace), which is rejected as input validation, not as a guardrail.
+
+The `ask`/confirmation machinery (`trust_mode` plus the confirmation UX) is
+retained as an unused hook, split across two layers: the pure decision lives in
+`interactive_shell/tools/shared/execution_policy.py` (`resolve_confirmation`), and the terminal
+interaction (`execution_allowed` — console output, the `Proceed? [Y/n]` prompt,
+analytics) lives in `interactive_shell/ui/execution_confirm.py`. If command
+guardrails are reintroduced after alpha, gate them here at the execution stage —
+never with an action-selection denial in the planner.

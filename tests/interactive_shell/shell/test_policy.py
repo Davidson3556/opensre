@@ -1,146 +1,45 @@
-"""Tests for interactive-shell command safety policy."""
+"""Tests for shell-specific execution policy.
+
+Alpha mode allows every shell command (read-only, mutating, restricted,
+operators, substitution) and only rejects genuinely empty input.
+"""
 
 from __future__ import annotations
 
-from interactive_shell.harness.orchestration.shell_policy import (
-    argv_for_repl_builtin_detection,
-    classify_command,
-    evaluate_policy,
-    parse_shell_command,
-)
+from interactive_shell.tools.shell.policy import evaluate_shell_command
 
 
-def test_parse_shell_command_detects_passthrough_prefix() -> None:
-    parsed = parse_shell_command("!echo hello", is_windows=False)
-
-    assert parsed.passthrough is True
-    assert parsed.command == "echo hello"
-    assert parsed.argv is None
-    assert parsed.parse_error is None
+def test_read_only_shell_is_allow() -> None:
+    r = evaluate_shell_command("pwd")
+    assert r.verdict == "allow"
+    assert r.tool_type == "shell"
 
 
-def test_argv_for_repl_builtin_detection_splits_passthrough_for_cd_pwd() -> None:
-    parsed = parse_shell_command("!cd /tmp", is_windows=False)
-    assert argv_for_repl_builtin_detection(parsed=parsed, is_windows=False) == ["cd", "/tmp"]
+def test_restricted_shell_is_allow() -> None:
+    """Alpha mode removed the restricted deny floor; ``sudo`` now runs."""
+    r = evaluate_shell_command("sudo ls /")
+    assert r.verdict == "allow"
+    assert r.shell_classification == "unrestricted"
 
 
-def test_argv_for_repl_builtin_detection_returns_safe_mode_argv() -> None:
-    parsed = parse_shell_command("pwd", is_windows=False)
-    assert argv_for_repl_builtin_detection(parsed=parsed, is_windows=False) == ["pwd"]
+def test_operator_shell_is_allow() -> None:
+    """Shell operators run through a shell instead of being blocked."""
+    r = evaluate_shell_command("ls | grep x")
+    assert r.verdict == "allow"
 
 
-def test_parse_shell_command_rejects_operators_in_safe_mode() -> None:
-    parsed = parse_shell_command("ls | wc -l", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert "shell operators" in (decision.reason or "")
+def test_mutating_shell_is_allow() -> None:
+    r = evaluate_shell_command("rm -rf /tmp/x")
+    assert r.verdict == "allow"
+    assert r.shell_classification == "unrestricted"
 
 
-def test_classify_command_handles_git_read_only_and_mutating() -> None:
-    assert classify_command(["git", "status"]) == "read_only"
-    assert classify_command(["git", "commit", "-m", "x"]) == "mutating"
+def test_passthrough_shell_is_allow() -> None:
+    r = evaluate_shell_command("!echo hi")
+    assert r.verdict == "allow"
 
 
-def test_evaluate_policy_blocks_unknown_command_by_default() -> None:
-    parsed = parse_shell_command("mycustomcmd --check", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert decision.classification == "unknown"
-    assert "allowlist" in (decision.reason or "")
-
-
-def test_find_exec_wrapper_is_blocked() -> None:
-    """find -exec can spawn arbitrary child processes; must be blocked in safe mode."""
-    parsed = parse_shell_command("find /tmp -exec rm -rf {} +", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert decision.classification == "mutating"
-    assert decision.reason == "mutating commands are blocked in safe mode."
-
-
-def test_env_exec_wrapper_is_blocked() -> None:
-    """env <cmd> execs arbitrary programs; must be blocked in safe mode."""
-    parsed = parse_shell_command("env rm /tmp/foo", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert decision.classification == "mutating"
-    assert decision.reason == "mutating commands are blocked in safe mode."
-
-
-def test_classify_command_marks_find_and_env_as_mutating() -> None:
-    assert classify_command(["find", "/tmp", "-name", "*.log"]) == "mutating"
-    assert classify_command(["env", "MY_VAR=1", "echo", "hello"]) == "mutating"
-
-
-def test_evaluate_policy_blocks_restricted_command_sudo() -> None:
-    parsed = parse_shell_command("sudo ls /tmp", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert decision.classification == "restricted"
-    assert decision.reason == "Not allowed for assistant-run shell."
-
-
-def test_evaluate_policy_blocks_restricted_command_dd() -> None:
-    parsed = parse_shell_command("dd if=/dev/zero of=/dev/null count=1", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert decision.classification == "restricted"
-    assert decision.reason == "Not allowed for assistant-run shell."
-
-
-def test_classify_command_aws_ec2_describe_instances() -> None:
-    assert classify_command(["aws", "ec2", "describe-instances"]) == "read_only"
-
-
-def test_classify_command_aws_s3_ls() -> None:
-    assert classify_command(["aws", "s3", "ls"]) == "read_only"
-
-
-def test_classify_command_aws_global_flags_then_describe() -> None:
-    assert (
-        classify_command(
-            ["aws", "--region", "us-east-1", "ec2", "describe-instances"],
-        )
-        == "read_only"
-    )
-
-
-def test_classify_command_aws_s3_cp_mutating() -> None:
-    assert classify_command(["aws", "s3", "cp", "s3://b/a", "./a"]) == "mutating"
-
-
-def test_classify_command_aws_configure_is_mutating() -> None:
-    assert classify_command(["aws", "configure"]) == "mutating"
-
-
-def test_aws_cli_positional_handles_double_dash_equals_form() -> None:
-    parsed = parse_shell_command(
-        "aws ec2 describe-instances --output json --query Reservations",
-        is_windows=False,
-    )
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is True
-    assert decision.classification == "read_only"
-
-
-def test_classify_command_sort_is_mutating_for_file_output_flags() -> None:
-    assert classify_command(["sort", "-o", "/etc/cron.d/out", "in.txt"]) == "mutating"
-
-
-def test_aws_no_sign_request_preserves_s3_ls_positional_pair() -> None:
-    assert classify_command(["aws", "--no-sign-request", "s3", "ls"]) == "read_only"
-
-
-def test_evaluate_policy_blocks_sort_even_without_shell_redirection() -> None:
-    parsed = parse_shell_command("sort -o /tmp/out /tmp/in", is_windows=False)
-    decision = evaluate_policy(parsed=parsed)
-
-    assert decision.allow is False
-    assert decision.classification == "mutating"
+def test_empty_shell_input_is_deny() -> None:
+    """Only genuinely empty input is rejected (input validation, not a guardrail)."""
+    r = evaluate_shell_command("!")
+    assert r.verdict == "deny"

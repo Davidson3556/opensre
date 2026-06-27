@@ -178,7 +178,7 @@ Test commands, turn-handling rules, CI-only paths: **[CI.md](CI.md)**. Live REPL
 
 ## 5. Footguns (common mistakes to avoid)
 
-- No planning-stage fail-closed safeguard (v0.1): the interactive-shell action planner never denies a turn with "I couldn't safely decide actions". All terminal actions are read-only, so unmatched/ambiguous/chatty clauses run what they can and fall through to the assistant. Do **not** reintroduce a planner denial, the `mark_unhandled` tool, or the `UNHANDLED:` convention. Rationale and details: `interactive_shell/harness/AGENTS.md` and `docs/interactive-shell-action-policy.md`. If mutating actions are ever added, gate them at the execution stage (`interactive_shell/harness/orchestration/execution_policy.py`), not the planner.
+- No planning-stage fail-closed safeguard (v0.1): the interactive-shell action planner never denies a turn with "I couldn't safely decide actions". All terminal actions are read-only, so unmatched/ambiguous/chatty clauses run what they can and fall through to the assistant. Do **not** reintroduce a planner denial, the `mark_unhandled` tool, or the `UNHANDLED:` convention. Rationale and details: `interactive_shell/harness/AGENTS.md` and `docs/interactive-shell-action-policy.md`. If mutating actions are ever added, gate them at the execution stage (`interactive_shell/tools/shared/execution_policy.py`), not the planner.
 - Vendored deps: No obvious vendored third-party dependencies are present. Python dependencies are managed in `pyproject.toml`, and the docs site has its own `docs/package.json` and `docs/pnpm-lock.yaml`. Do not vendor new libraries unless there is a strong reason.
 - Secrets: Never commit `.env` - always use `.env.example` as the template. Use read-only credentials for production integrations.
 - CI-only tests: Some e2e tests, including Kubernetes, EKS, and chaos engineering paths, require live infrastructure and are excluded from `make test-cov`. Do not expect them to pass locally without that environment.
@@ -192,8 +192,9 @@ Test commands, turn-handling rules, CI-only paths: **[CI.md](CI.md)**. Live REPL
 - Interactive-shell action selection: do not implement regex/keyword/fuzzy
   intent routing, literal slash-command shortcuts, or deterministic action
   bypasses around the action-agent AgentTool path. Engineers have been fired
-  before for implementing this exact shortcut. `deterministic_command_text` is
-  terminal UI policy only, not an execution path.
+  before for implementing this exact shortcut. The runtime's literal-`/slash`
+  detection (`input_policy._literal_slash_command_text`) is terminal UI policy
+  only (spinner/stdin gating), not an execution path.
 
 ## 6. New Integration Checklist
 

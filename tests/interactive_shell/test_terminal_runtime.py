@@ -20,11 +20,11 @@ from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
 
-from interactive_shell import controller as controller_runtime
 from interactive_shell.command_registry import SLASH_COMMANDS, dispatch_slash
+from interactive_shell.harness import agent as controller_runtime
+from interactive_shell.harness.llm_context.session import ReplSession
 from interactive_shell.runtime.core import state as loop_state
 from interactive_shell.runtime.core import turn_detection as loop_turn_detection
-from interactive_shell.runtime.core.session import ReplSession
 from interactive_shell.runtime.startup import initial_input as startup_initial_input
 from interactive_shell.ui import input_prompt
 from interactive_shell.ui.components.cpr_stdin import (
@@ -120,13 +120,6 @@ def test_repl_input_lexer_highlights_first_slash_token() -> None:
     assert cmd_frags == [("class:repl-slash-command", "/model")]
     rest = "".join(frag[1] for frag in fragments if frag[0] == "")
     assert " show" in rest or rest.endswith(" show")
-
-
-def test_repl_input_lexer_highlights_bare_help_alias() -> None:
-    lexer = ReplInputLexer()
-    get_line = lexer.lex_document(Document("help", 4))
-    fragments = get_line(0)
-    assert ("class:repl-slash-command", "help") in fragments
 
 
 def test_build_prompt_session_uses_persistent_history(
@@ -297,13 +290,6 @@ def test_tab_applies_unique_slash_command_completion() -> None:
     assert buff.text == "/model"
 
 
-def test_tab_applies_unique_bareword_alias_completion() -> None:
-    buff = Buffer(completer=ShellCompleter())
-    buff.insert_text("hel")
-    _tab_expand_or_menu(buff)
-    assert buff.text == "help"
-
-
 def test_tab_with_open_completion_menu_applies_current_item() -> None:
     from prompt_toolkit.buffer import CompletionState
     from prompt_toolkit.completion import Completion
@@ -448,7 +434,7 @@ def test_run_text_investigation_uses_background_launcher_when_mode_enabled(
 ) -> None:
     from rich.console import Console
 
-    from interactive_shell.harness.orchestration.action_executor.investigation_runner import (
+    from interactive_shell.tools.investigation_tool import (
         run_text_investigation,
     )
 
@@ -964,6 +950,74 @@ class TestReplState:
         # No active dispatch → no cancel event parked.
         assert state.current_cancel_event is None
         assert state.queue.empty()
+        assert state.phase is loop_state.TurnPhase.IDLE
+
+    def test_phase_transitions_dispatch_to_idle(self) -> None:
+        async def _scenario() -> None:
+            state = loop_state.ReplState()
+
+            async def _noop() -> None:
+                return None
+
+            task = asyncio.create_task(_noop())
+            cancel = threading.Event()
+            state.start_dispatch(task=task, cancel_event=cancel)
+            assert state.phase is loop_state.TurnPhase.DISPATCHING
+            await task
+            state.finish_dispatch(cancel)
+            assert state.phase is loop_state.TurnPhase.IDLE
+            state.clear_current_task()
+            assert state.phase is loop_state.TurnPhase.IDLE
+
+        asyncio.run(_scenario())
+
+    def test_confirmation_phase_round_trips_to_dispatching(self) -> None:
+        async def _scenario() -> None:
+            state = loop_state.ReplState()
+
+            async def _waits() -> None:
+                await asyncio.sleep(1.0)
+
+            task = asyncio.create_task(_waits())
+            state.start_dispatch(task=task, cancel_event=threading.Event())
+            state.begin_confirmation(threading.Event(), "Proceed? ")
+            assert state.is_awaiting_confirmation() is True
+            assert state.phase is loop_state.TurnPhase.AWAITING_CONFIRMATION
+            # A normal confirmation completion returns to dispatching (task alive).
+            state.clear_confirmation()
+            assert state.is_awaiting_confirmation() is False
+            assert state.phase is loop_state.TurnPhase.DISPATCHING
+            task.cancel()
+
+        asyncio.run(_scenario())
+
+    def test_clear_confirmation_returns_to_idle_without_active_task(self) -> None:
+        state = loop_state.ReplState()
+        state.begin_confirmation(threading.Event(), "Proceed? ")
+        assert state.phase is loop_state.TurnPhase.AWAITING_CONFIRMATION
+        state.clear_confirmation()
+        assert state.phase is loop_state.TurnPhase.IDLE
+
+    def test_cancel_sets_cancelling_phase(self) -> None:
+        state = loop_state.ReplState()
+        state.current_cancel_event = threading.Event()
+        state.cancel_current_dispatch()
+        assert state.phase is loop_state.TurnPhase.CANCELLING
+
+    def test_cancel_during_confirmation_keeps_cancelling_phase(self) -> None:
+        state = loop_state.ReplState()
+        state.current_cancel_event = threading.Event()
+        state.begin_confirmation(threading.Event(), "Proceed? ")
+        state.cancel_current_dispatch()
+        assert state.phase is loop_state.TurnPhase.CANCELLING
+        # The confirmation cleanup must NOT downgrade an in-progress cancel.
+        state.clear_confirmation()
+        assert state.phase is loop_state.TurnPhase.CANCELLING
+
+    def test_idle_cancel_does_not_set_cancelling_phase(self) -> None:
+        state = loop_state.ReplState()
+        state.cancel_current_dispatch()
+        assert state.phase is loop_state.TurnPhase.IDLE
 
     def test_is_dispatch_running_tracks_task_lifecycle(self) -> None:
         async def _scenario() -> None:
@@ -1208,7 +1262,7 @@ class TestRequestConfirmationViaPrompt:
         """
         state = loop_state.ReplState()
         # Active dispatch must have a cancel event parked; in production
-        # ``InteractiveShellController._run_queued_turn`` allocates this before invoking the
+        # ``interactive_shell.harness.agent.AgentTurnRunner.run_agent_turn`` allocates this before invoking the
         # confirm_fn. Never set in this test.
         state.current_cancel_event = threading.Event()
 
@@ -1436,7 +1490,7 @@ class TestExecutionAllowedRespectsDispatchCancelled:
     new contract: the confirm callable raises ``DispatchCancelled`` and
     the exception propagates out of ``execution_allowed`` *without*
     silently confirming the action. The action loop in
-    ``execute_cli_actions`` therefore exits via the exception, the
+    ``run_tool_calling_turn`` therefore exits via the exception, the
     in-flight action never runs, and any further actions in the same
     plan are skipped.
     """
@@ -1446,10 +1500,10 @@ class TestExecutionAllowedRespectsDispatchCancelled:
     ) -> None:
         from rich.console import Console
 
-        from interactive_shell.harness.orchestration.execution_policy import (
+        from interactive_shell.tools.shared import (
             ExecutionPolicyResult,
-            execution_allowed,
         )
+        from interactive_shell.ui.execution_confirm import execution_allowed
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         session = ReplSession()
@@ -1460,7 +1514,7 @@ class TestExecutionAllowedRespectsDispatchCancelled:
 
         policy = ExecutionPolicyResult(
             verdict="ask",
-            action_type="opensre_cli",
+            tool_type="opensre_cli",
             reason="this opensre subcommand may change local config or infrastructure",
         )
 
@@ -1488,10 +1542,10 @@ class TestExecutionAllowedRespectsDispatchCancelled:
         """
         from rich.console import Console
 
-        from interactive_shell.harness.orchestration.execution_policy import (
+        from interactive_shell.tools.shared import (
             ExecutionPolicyResult,
-            execution_allowed,
         )
+        from interactive_shell.ui.execution_confirm import execution_allowed
 
         monkeypatch.setattr("sys.stdin.isatty", lambda: True)
         session = ReplSession()
@@ -1499,7 +1553,7 @@ class TestExecutionAllowedRespectsDispatchCancelled:
 
         policy = ExecutionPolicyResult(
             verdict="ask",
-            action_type="opensre_cli",
+            tool_type="opensre_cli",
             reason="this opensre subcommand may change local config or infrastructure",
         )
 

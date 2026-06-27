@@ -19,7 +19,6 @@ from config.config import (
 from config.grafana_cloud import load_env
 from config.platform_bootstrap import ensure_project_platform_package
 from interactive_shell.harness.tests._ci_gates import (
-    is_allowed_live_llm_skip_in_ci,
     running_in_github_actions,
 )
 
@@ -40,6 +39,34 @@ _TURN_TEST_DEFAULT_ENV = {
     "OPENSRE_NO_TELEMETRY": "1",
     "OPENSRE_INVESTIGATION_SOURCE": "test",
 }
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register opt-in selection flags for the live turn scenario suite.
+
+    These shrink the suite for fast LOCAL iteration only. Default is the full
+    sharded suite; CI must not set them (see CI.md section 6).
+    """
+    group = parser.getgroup("turn scenarios")
+    group.addoption(
+        "--turn-select",
+        action="store",
+        default=None,
+        help=(
+            "Run a subset of live turn scenarios for fast local iteration. "
+            "Format '<mode>:<n>' where mode is 'complex' (most complex) or "
+            "'sample' (random), and n is a count, a fraction, or a percentage "
+            "(e.g. 'complex:5', 'sample:0.1', 'sample:10' followed by a percent "
+            "sign). Defaults to the full sharded suite; also settable via the "
+            "TURN_SELECT env var."
+        ),
+    )
+    group.addoption(
+        "--turn-select-seed",
+        action="store",
+        default=None,
+        help="Random seed for '--turn-select=sample:*' (default: TURN_SELECT_SEED or 1337).",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:  # noqa: ARG001
@@ -101,7 +128,7 @@ def _resolve_live_llm_configuration(
 def _repl_execution_policy_auto_yes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Elevated REPL actions prompt for confirmation; stdin is non-TTY under pytest."""
     monkeypatch.setattr(
-        "interactive_shell.harness.orchestration.execution_policy.DEFAULT_CONFIRM_FN",
+        "interactive_shell.ui.execution_confirm.DEFAULT_CONFIRM_FN",
         lambda _prompt: "y",
     )
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
@@ -122,8 +149,6 @@ def pytest_runtest_logreport(report: pytest.TestReport) -> None:
     if report.when != "call" or not report.skipped:
         return
     if "live_llm" not in report.keywords:
-        return
-    if is_allowed_live_llm_skip_in_ci(report.longrepr):
         return
     _LIVE_LLM_SKIPS_IN_CI.append(f"{report.nodeid}: {report.longrepr}")
 

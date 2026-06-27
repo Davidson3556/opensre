@@ -1,9 +1,10 @@
-"""Canonical turn scenario tests (deterministic + live LLM)."""
+"""Canonical turn scenario tests (live LLM planning and oracle)."""
 
 from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
 from typing import Any, NotRequired, TypedDict, cast
 
@@ -13,27 +14,11 @@ from rich.console import Console
 from core.runtime import Agent, AgentTool, AgentToolContext
 from core.runtime.llm.agent_llm_client import ToolCall
 from interactive_shell.command_registry import SLASH_COMMANDS
-from interactive_shell.harness.orchestration.action_prompt import (
+from interactive_shell.harness.llm_context import (
     build_action_system_prompt,
     build_action_user_message,
 )
-from interactive_shell.harness.orchestration.command_dispatch import (
-    deterministic_command_text,
-)
-from interactive_shell.harness.orchestration.feature_flags import (
-    investigation_loop_enabled,
-)
-from interactive_shell.harness.orchestration.interaction_models import (
-    ActionKind,
-    default_target_surface,
-)
-from interactive_shell.harness.orchestration.tool_contracts import ToolContext
-from interactive_shell.harness.orchestration.tool_registry import (
-    ACTION_KIND_TO_TOOL,
-    REGISTRY,
-)
 from interactive_shell.harness.tests._ci_gates import (
-    skip_investigation_loop_disabled,
     skip_or_fail,
 )
 from interactive_shell.harness.tests._oracle_normalize import cli_command_payload_matches
@@ -45,11 +30,19 @@ from interactive_shell.harness.tests._oracle_runtime import (
     run_oracle_once,
     session_capabilities,
 )
+from interactive_shell.harness.tests._planned_action import default_target_surface
 from interactive_shell.harness.tests.scenario_loader import (
     ScenarioCase,
     iter_scenarios_for_shard,
     load_all_scenarios,
     read_shard_config,
+    select_cases,
+)
+from interactive_shell.tools.tool_contracts import ToolContext
+from interactive_shell.tools.tool_registry import (
+    REGISTRY,
+    TOOL_KIND_TO_NAME,
+    ToolKind,
 )
 
 
@@ -67,37 +60,13 @@ class ExpectedAction(TypedDict):
 
 
 _ALL_CASES = load_all_scenarios()
-_DETERMINISTIC_CASES = [
-    case for case in _ALL_CASES if case.scenario.intent_class == "deterministic"
-]
-_LIVE_CASES = iter_scenarios_for_shard(
-    [case for case in _ALL_CASES if case.scenario.intent_class != "deterministic"]
-)
-_TOOL_TO_ACTION_KIND = {tool: kind for kind, tool in ACTION_KIND_TO_TOOL.items()}
+_LIVE_CASES = iter_scenarios_for_shard(_ALL_CASES)
+_NAME_TO_TOOL_KIND = {tool: kind for kind, tool in TOOL_KIND_TO_NAME.items()}
 _LIVE_PLANNING_MAX_ITERATIONS = 3
 
 
 def _slash_content(command: str, args: list[str]) -> str:
     return " ".join([command, *args]) if args else command
-
-
-def _expects_investigation(case: ScenarioCase) -> bool:
-    """True when a scenario expects the planner to dispatch a natural-language
-    investigation (``investigation_start``).
-
-    The investigation loop can be disabled in the interactive shell via
-    ``feature_flags.INTERACTIVE_SHELL_INVESTIGATION_ENABLED``. When it is off the
-    planner is not offered ``investigation_start``, so these scenarios no longer
-    apply and are skipped rather than asserted against the old behavior. Sample
-    alerts and synthetic runs are unaffected.
-    """
-    actions = (*case.answer.planned_actions, *case.answer.executed_actions)
-    return any(str(action.get("kind", "")).strip() == "investigation" for action in actions)
-
-
-def _skip_if_investigation_disabled(case: ScenarioCase) -> None:
-    if not investigation_loop_enabled() and _expects_investigation(case):
-        skip_investigation_loop_disabled()
 
 
 def _skip_if_live_integrations_unavailable(case: ScenarioCase) -> None:
@@ -128,11 +97,11 @@ def _skip_if_live_integrations_unavailable(case: ScenarioCase) -> None:
 
 
 def _build_actual_action(action: ToolCall) -> ExpectedAction:
-    kind = _TOOL_TO_ACTION_KIND.get(action.name)
+    kind = _NAME_TO_TOOL_KIND.get(action.name)
     if kind is None:
         msg = f"Unexpected action tool call: {action.name!r}"
         raise AssertionError(msg)
-    typed_kind = cast(ActionKind, kind)
+    typed_kind = cast(ToolKind, kind)
     content = _content_from_tool_call(typed_kind, action.input)
     expected: ExpectedAction = {
         "kind": typed_kind,
@@ -193,7 +162,7 @@ def _planning_probe_tool(tool: AgentTool) -> AgentTool:
     )
 
 
-def _content_from_tool_call(kind: ActionKind, args: dict[str, object]) -> str:
+def _content_from_tool_call(kind: ToolKind, args: dict[str, object]) -> str:
     if kind == "slash":
         command = str(args.get("command", "")).strip()
         raw_args = args.get("args", [])
@@ -358,25 +327,30 @@ def test_planning_match_collapses_handoff_only_retries() -> None:
     assert _planning_actions_for_match(actual, handoff_expected) == actual[:1]
 
 
+def _resolve_selected_cases(config: pytest.Config) -> list[ScenarioCase]:
+    """Apply the opt-in ``--turn-select`` / ``TURN_SELECT`` subset to the shard.
+
+    Defaults to the full sharded suite (``_LIVE_CASES``) so CI and unflagged
+    local runs are unchanged; the flag/env only narrows it for fast iteration.
+    """
+    spec = config.getoption("--turn-select", default=None) or os.getenv("TURN_SELECT")
+    seed_raw = config.getoption("--turn-select-seed", default=None) or os.getenv("TURN_SELECT_SEED")
+    seed = int(str(seed_raw)) if seed_raw else 1337
+    spec_text = str(spec) if spec else None
+    return select_cases(_LIVE_CASES, spec=spec_text, seed=seed)
+
+
 def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
-    if "deterministic_case" in metafunc.fixturenames:
-        metafunc.parametrize(
-            "deterministic_case",
-            _DETERMINISTIC_CASES,
-            ids=[case.scenario.id for case in _DETERMINISTIC_CASES],
-        )
-    if "live_planning_case" in metafunc.fixturenames:
-        metafunc.parametrize(
-            "live_planning_case",
-            _LIVE_CASES,
-            ids=[case.scenario.id for case in _LIVE_CASES],
-        )
-    if "live_oracle_case" in metafunc.fixturenames:
-        metafunc.parametrize(
-            "live_oracle_case",
-            _LIVE_CASES,
-            ids=[case.scenario.id for case in _LIVE_CASES],
-        )
+    wants_planning = "live_planning_case" in metafunc.fixturenames
+    wants_oracle = "live_oracle_case" in metafunc.fixturenames
+    if not (wants_planning or wants_oracle):
+        return
+    selected = _resolve_selected_cases(metafunc.config)
+    ids = [case.scenario.id for case in selected]
+    if wants_planning:
+        metafunc.parametrize("live_planning_case", selected, ids=ids)
+    if wants_oracle:
+        metafunc.parametrize("live_oracle_case", selected, ids=ids)
 
 
 def test_shard_selection_is_non_empty() -> None:
@@ -384,19 +358,6 @@ def test_shard_selection_is_non_empty() -> None:
         return
     total, index = read_shard_config()
     skip_or_fail(f"No turn cases selected for shard {index}/{total}.")
-
-
-def test_deterministic_command_text_matches_scenario(deterministic_case: ScenarioCase) -> None:
-    prompt = deterministic_case.scenario.input.prompt
-    answer = deterministic_case.answer
-
-    # The literal-command detector must reproduce the normalized slash command
-    # the scenario expects for UI policy decisions.
-    assert deterministic_command_text(prompt) == answer.turn.expected_command_text
-
-
-def test_help_normalizes_to_slash_help_deterministically() -> None:
-    assert deterministic_command_text("/help") == "/help"
 
 
 def _assert_live_action_planning_once(case: ScenarioCase) -> None:
@@ -417,9 +378,11 @@ def _assert_live_action_planning_once(case: ScenarioCase) -> None:
     from core.runtime.llm import agent_llm_client
 
     llm = agent_llm_client.get_agent_llm()
+    from interactive_shell.harness.turn_context import TurnContext
+
     result = Agent(
         llm=llm,
-        system=build_action_system_prompt(session),
+        system=build_action_system_prompt(TurnContext.from_session(prompt, session)),
         tools=[_planning_probe_tool(tool) for tool in tools],
         resolved_integrations={},
         max_iterations=_LIVE_PLANNING_MAX_ITERATIONS,
@@ -470,7 +433,6 @@ def test_live_action_planning(
     here we only validate the planner's action list, with majority voting when a
     fixture sets ``runs > 1`` (same flake tolerance as the execution oracle).
     """
-    _skip_if_investigation_disabled(live_planning_case)
     runs = max(1, live_planning_case.answer.runs)
     failures: list[str] = []
     passed_count = 0
@@ -507,7 +469,6 @@ def test_live_turn_execution_oracle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    _skip_if_investigation_disabled(live_oracle_case)
     _skip_if_live_integrations_unavailable(live_oracle_case)
     runs = max(1, live_oracle_case.answer.runs)
     run_results: list[OracleRunResult] = []

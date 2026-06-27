@@ -19,12 +19,8 @@ from rich.console import Console
 # cannot be resolved the scenario is skipped, never failed (env gap, not bug).
 LIVE_INTEGRATION_SENTINEL = "@live"
 
-from interactive_shell.harness.harness import handle_message_with_agent
-from interactive_shell.harness.orchestration.tool_contracts import ToolExecutor
-from interactive_shell.harness.orchestration.tool_registry import (
-    ACTION_KIND_TO_TOOL,
-    REGISTRY,
-)
+from interactive_shell.harness.agent import handle_message_with_agent
+from interactive_shell.harness.llm_context.session import ReplSession
 from interactive_shell.harness.tests._oracle_normalize import (
     normalize_history_entry,
     normalize_response_text,
@@ -35,7 +31,11 @@ from interactive_shell.harness.tests.scenario_loader import (
     ScenarioCapabilities,
     ScenarioCase,
 )
-from interactive_shell.runtime.core.session import ReplSession
+from interactive_shell.tools.tool_contracts import ToolExecutor
+from interactive_shell.tools.tool_registry import (
+    REGISTRY,
+    TOOL_KIND_TO_NAME,
+)
 from interactive_shell.utils.telemetry import PromptRecorder
 from platform.analytics.repl_context import bind_cli_session_id, reset_cli_session_id
 
@@ -333,7 +333,7 @@ def patch_execution_boundary(
         else:
             console.print(f"executed {kind}: {content}")
 
-    tool_to_kind = {tool: kind for kind, tool in ACTION_KIND_TO_TOOL.items()}
+    tool_to_kind = {tool: kind for kind, tool in TOOL_KIND_TO_NAME.items()}
 
     def _make_fake_execute(tool_name: str) -> ToolExecutor:
         def _fake_execute(args: dict[str, Any], ctx: Any) -> bool:
@@ -378,7 +378,7 @@ def run_oracle_once(case: ScenarioCase, monkeypatch: pytest.MonkeyPatch) -> Orac
     patch_execution_boundary(monkeypatch, executed)
 
     # Record which registered tools fire during the conversational
-    # gather_tool_evidence pass. Both gather_tool_evidence and ShellActionHarness
+    # gather_tool_evidence pass. Both gather_tool_evidence and the action agent
     # create Agent instances and call .run(), so patch Agent.run on the class
     # and ignore the interactive-shell action-agent tool surface.
     import core.runtime.agent as _agent_mod

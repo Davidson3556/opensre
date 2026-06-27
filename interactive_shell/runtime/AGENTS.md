@@ -25,11 +25,14 @@ In simple terms:
   completion notification delivery.
 - `core/` holds the core runtime engine:
   - `state.py` — shared runtime state (`ReplState`, `SpinnerState`)
-  - `session.py` — per-REPL-process `ReplSession`
   - `token_accounting.py` — LLM token usage and run metadata
   - `turn_detection.py` — pure text classifiers for cancel, confirm, and correction detection
 - `core/tasks.py` owns the cross-session task registry surfaced via `/tasks` and
   `/cancel`.
+- Per-REPL-process session state (`ReplSession`) and runtime context assembly
+  (`ReplRuntimeContext`, `create_repl_runtime_context`) live in the
+  `interactive_shell/harness/llm_context/session/` package, not in `core/`. `runtime/__init__.py`
+  lazily re-exports those names (see compatibility surface policy below).
 
 These instructions apply to `interactive_shell/runtime/` and all
 subdirectories. Parent `AGENTS.md` files still apply.
@@ -41,6 +44,9 @@ The runtime package is intentionally split into focused concerns:
 - `core/state.py` — runtime state and transition helpers only.
 - `core/turn_detection.py` — pure prompt text classification only.
 - `utils/input_policy.py` — terminal stdin/spinner gating decisions only.
+- `agent_presentation.py` — terminal presentation for the agent turn only (agent
+  lifecycle events, presentation-state reducer/renderer, `ConsoleAgentEventSink`,
+  JSON-like assistant response rendering).
 - `../controller.py` — stable async entrypoint and async prompt runtime/event loop
   orchestration, submitted prompt handling, queued-turn consumption,
   prompt-mediated confirmation waits, turn telemetry, one-turn pipeline
@@ -55,7 +61,6 @@ The runtime package is intentionally split into focused concerns:
 - `../entrypoint.py` — process/bootstrap boundary only.
 - `startup/initial_input.py` — scripted initial-input replay only.
 - `startup/first_launch_github.py` — first-launch GitHub sign-in gate only.
-- `core/session.py` — session-scoped REPL state only.
 - `core/tasks.py` — task registry + persistence only.
 - `core/token_accounting.py` — session-scoped LLM token accounting and run metadata only.
 
@@ -71,7 +76,16 @@ The interactive runtime must keep this shape:
 3. `InteractiveShellController.start_interactive_shell` owns prompt lifecycle,
    submitted input handling, queued-turn consumption, and per-turn task
    scheduling.
-4. `InteractiveShellController._run_queued_turn` performs the one-turn shell pipeline handoff.
+4. The module-level `interactive_shell.controller.run_agent_turn_queue` runs each turn via an
+   injected `run_turn` callable, which in production is `AgentTurnRunner.run_agent_turn` (in
+   `harness/agent.py`). `AgentTurnRunner` holds the turn dependencies (`session`, `state`,
+   `spinner`, `invalidate_prompt`) directly; `run_agent_turn` owns shell presentation (console,
+   spinner, recorder, progress scope) and delegates to the module-level `_run_agent_turn_loop`
+   (dispatch state + lifecycle phases via `AgentEvent` emissions), which performs the one-turn
+   shell pipeline handoff through `_execute_agent_turn`. The terminal presentation for those
+   `AgentEvent` emissions lives in `runtime/agent_presentation.py` (`AgentEvent`, `AgentEventSink`,
+   `AgentPresentationState`, `_reduce_agent_presentation`, `_render_agent_presentation_transition`,
+   `ConsoleAgentEventSink`, `render_json_like_response`).
 
 Do not invert this dependency direction.
 
@@ -81,8 +95,10 @@ Do not invert this dependency direction.
 flowchart TD
   runRepl["interactive_shell.entrypoint.run_repl"] --> replMain["interactive_shell.entrypoint.repl_main"]
   replMain --> controller["interactive_shell.controller.InteractiveShellController"]
-  controller --> executeTurn["controller._run_queued_turn"]
-  executeTurn --> sideEffects["slash/help/agent/follow-up/investigation side effects"]
+  controller --> shellTurn["AgentTurnRunner.run_agent_turn"]
+  shellTurn --> executeTurn["_run_agent_turn_loop"]
+  executeTurn --> dispatchTurn["_execute_agent_turn"]
+  dispatchTurn --> sideEffects["slash/help/agent/follow-up/investigation side effects"]
   controller --> replState["core.state.ReplState"]
   controller --> spinnerState["core.state.SpinnerState"]
   controller --> inputReader["input.PromptInputReader"]
@@ -95,28 +111,64 @@ flowchart TD
   - cancellation event
   - confirmation event/response lifecycle
   - exit requests
-- Use `ReplState` helpers (`start_dispatch`, `finish_dispatch`,
-  `begin_confirmation`, `clear_confirmation`, `cancel_current_dispatch`) rather
-  than direct field mutation where possible.
+  - the explicit turn `phase` (`TurnPhase`: `IDLE`, `DISPATCHING`,
+    `AWAITING_CONFIRMATION`, `CANCELLING`)
+- Mutate turn state through the `ReplState` transition methods, never by poking
+  raw fields from other modules:
+  - `start_dispatch` / `attach_turn_task` / `attach_cancel_event` -> `DISPATCHING`
+  - `begin_confirmation` -> `AWAITING_CONFIRMATION`; `clear_confirmation` returns
+    to `DISPATCHING`/`IDLE` (and never clobbers an in-progress `CANCELLING`)
+  - `cancel_current_dispatch` -> `CANCELLING` (only when there is something to
+    cancel) then signals the cancel/confirm events and `task.cancel`
+  - `finish_dispatch` / `clear_current_task` -> `IDLE`
+- `phase` is authoritative for confirmation and cancelling. `is_dispatch_running()`
+  stays derived from the asyncio task (the runtime truth of the in-flight turn);
+  `is_awaiting_confirmation()` and `is_cancelling()` are derived from `phase`.
+- Do not reorder the signaling inside `cancel_current_dispatch` or move the
+  `confirm_response` reset after the `confirm_event` publish in
+  `begin_confirmation`; both orderings are load-bearing for cancellation and
+  confirmation race-safety.
 - `SpinnerState` owns spinner rendering state only; it must not depend on
   runtime task management.
 
 ## Turn execution rules
 
 - Do not reintroduce `dispatch.py` or any compatibility-only forwarding module.
-- `InteractiveShellController._run_queued_turn` owns turn telemetry and the handoff into
-  `handle_message_with_agent`.
+- The turn execution lives in `harness/agent.py`: `AgentTurnRunner.run_agent_turn` owns shell
+  presentation (StreamingConsole, spinner, recorder, progress scope) and constructs a
+  `ConsoleAgentEventSink`; the module-level `_run_agent_turn_loop` owns dispatch state and emits
+  `AgentEvent` objects; `_execute_agent_turn` owns the `handle_message_with_agent` handoff.
+  `AgentTurnRunner` holds its turn dependencies (`session`, `state`, `spinner`,
+  `invalidate_prompt`) directly. The module-level
+  `interactive_shell.controller.run_agent_turn_queue` takes an injected `run_turn` callable
+  (production: `AgentTurnRunner.run_agent_turn`). Keep terminal side effects (spinner, prompt
+  suppression, `console.print`, CPR drain) in `ConsoleAgentEventSink` — defined in
+  `runtime/agent_presentation.py`, its imperative shell routes each event through the pure
+  `_reduce_agent_presentation` and the effectful `_render_agent_presentation_transition` — not in
+  `_run_agent_turn_loop`. `harness/agent.py` imports the presentation surface (`AgentEvent`,
+  `AgentEventSink`, `ConsoleAgentEventSink`, `render_json_like_response`) from that module.
 - Put cancel/confirm/correction text classifiers in `core/turn_detection.py`.
 - Put stdin blocking and spinner decisions in `utils/input_policy.py`.
 - Keep prompt-mediated confirmation waiting in `controller.py`.
+- Turn accounting is consolidated behind `ShellTurnAccounting` in
+  `interactive_shell/turn_accounting.py` (alongside the `ToolCallingTurnResult`
+  and `ShellTurnResult` turn data model), invoked from `handle_message_with_agent`
+  in `harness/agent.py`. It owns action-agent analytics, terminal-turn aggregate
+  telemetry, prompt-recorder flush, conversational-turn persistence, and the final
+  assistant-intent stamp. `run_tool_calling_turn` (in `harness/tool_calling.py`)
+  returns facts only (`ToolCallingTurnResult` with `accounting_status` of
+  `completed` / `not_run`) and emits no analytics itself. Do not re-scatter
+  accounting back into `run_tool_calling_turn` or standalone `_record_*` helpers.
 
 ## Controller rules
 
 - `../controller.py` owns:
   - `InteractiveShellController`
   - `start_interactive_shell` shell lifecycle orchestration
-  - `_run_prompt_loop` — read and handle user input until exit
-  - `_run_turn_queue_loop` — consume queued turns until exit
+  - `run_input_loop` (module-level) — read and handle user input until exit
+  - `run_agent_turn_queue` (module-level) — consume queued turns until exit (runs an injected `run_turn`)
+  - `AgentTurnRunner` (in `harness/agent.py`) — holds turn dependencies directly; `run_agent_turn` drives presentation and delegates to module-level `_run_agent_turn_loop` / `_execute_agent_turn`
+  - `ConsoleAgentEventSink` (in `runtime/agent_presentation.py`) — terminal presentation for agent lifecycle events over `_reduce_agent_presentation` / `_render_agent_presentation_transition`
   - prompt input acceptance until exit
   - submitted prompt rendering and cancel/confirm/queue handling
   - queued turn consumption
@@ -157,6 +209,14 @@ flowchart TD
 
 - `runtime/__init__.py` should be a thin export layer.
 - Do not duplicate business logic in `__init__.py`.
+- `runtime/__init__.py` lazily re-exports the session surface
+  (`ReplSession`, `ReplRuntimeContext`, `create_repl_runtime_context`, …) from
+  `interactive_shell.harness.llm_context.session` via `__getattr__` (PEP 562). This is the one
+  sanctioned indirection — it exists to avoid an import cycle
+  (`session.context` depends on `runtime.core.state`). New code should import
+  these names directly from `interactive_shell.harness.llm_context.session`; the re-export only
+  keeps existing `from interactive_shell.runtime import ReplSession` callers
+  working.
 - Do not re-add `_xxx` underscore aliases or wrapper functions for
   compatibility. Tests and callers should import canonical names from their
   owning submodule.
@@ -177,5 +237,8 @@ flowchart TD
   `runtime/` refactors.
 - Keep interruption semantics unchanged:
   - Esc or bare cancel commands interrupt active dispatch
-  - confirmation prompts are cancel-safe and never silently auto-confirm
+  - cancellation moves the turn to `TurnPhase.CANCELLING` and signals both the
+    cancel event and any pending confirmation event before `task.cancel`
+  - confirmation prompts are cancel-safe and never silently auto-confirm; a
+    cancel during confirmation must not be downgraded back to `DISPATCHING`
 - Preserve observability semantics (turn telemetry and turn summaries).

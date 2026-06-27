@@ -19,14 +19,16 @@ should be predictable, interruptible, explainable, and safe by default.
 | --- | --- | --- |
 | `controller.py` | top-level REPL wiring | feature-specific business logic or compatibility-only forwarding |
 | `entrypoint.py` | process/bootstrap boundary for starting the REPL | per-turn dispatch/runtime logic |
+| `turn_accounting.py` | turn-result data model (`ToolCallingTurnResult`, `ShellTurnResult`) and `ShellTurnAccounting` (analytics, telemetry, recorder flush, turn persistence, intent stamp) | turn-flow control (owned by `harness/agent.py`) or tool-calling turn execution (owned by `harness/tool_calling.py`) |
 | `command_registry/` | slash-command definitions, argument validation, command dispatch | long-running implementation details better placed in services/runtime modules |
-| `runtime/` | `ReplSession`, background tasks, lifecycle state | UI rendering and prompt text |
-| `orchestration/` | action planning, execution policy, action executor, deterministic command detection, and interaction models | raw UI formatting |
-| `shell/` | shell command parsing, allow/deny policy, subprocess execution | slash-command execution |
-| `chat/` | assistant/help/follow-up answer surfaces and shared LLM prompt rules | direct mutation of runtime state outside the action executor |
+| `session/` | `ReplSession`, runtime context assembly, and session persistence (storage backends + cross-session repo) | UI rendering, prompt text, and runtime task scheduling |
+| `runtime/` | background tasks, lifecycle/`ReplState`, controller/entrypoint support modules (lazily re-exports the `session/` surface for back-compat) | UI rendering, prompt text, and session persistence |
+| `orchestration/` | action planning, execution policy, subprocess runner, deterministic command detection, and interaction models | raw UI formatting |
+| `tools/shell/` | shell command parsing, shell execution policy, subprocess execution, and the `run_shell_command`/`run_cd`/`run_pwd` runner (next to the `shell_run` tool in `tools/shell_tool.py`) | slash-command execution |
+| `harness/agent.py` | conversational assistant turn (`answer_cli_agent`), action-plan parsing, and capability validation | direct mutation of runtime state outside the subprocess runner |
 | `references/` | CLI/docs/source/AGENTS reference loading and caching | generated model prose |
 | `config/` | interactive-shell config loading and tool catalog metadata | global app config unrelated to the REPL |
-| `harness/state/` | conversation context helpers and shared state persistence | prompt rendering |
+| `harness/llm_context/` | LLM prompt + grounding context: action/assistant system prompts, the shared recent-conversation helper (`conversation_history.py`), the session-scoped grounding caches (`grounding/` CLI/docs/AGENTS.md, aggregated by `GroundingContext`), and prompt-toolkit input-history persistence + secret redaction (`prompt_history/`) | session persistence (owned by `session/`) |
 | `ui/` | Rich/prompt-toolkit rendering, theme, menus, streaming output, and domain views such as `incoming_alerts.py` (receiver/queue/listener lifecycle lives in `core.domain.alerts.inbox`) | business logic or network calls |
 
 When a change crosses these boundaries, prefer extracting a small helper in the
@@ -70,28 +72,28 @@ owning area rather than adding more logic to the caller.
     `usage` tuple.
   - **Verify before push:**
     `uv run python -m pytest tests/interactive_shell/command_registry/test_slash_catalog.py -q`
-- Always assign the correct `ExecutionTier`:
-  - `EXEMPT`: only meta commands that must never prompt, such as exit/trust
-    controls.
-  - `SAFE`: read-only, local, low-cost informational commands.
-  - `ELEVATED`: mutating, destructive, expensive, networked, verification, or
-    process-control commands.
 - Use `validate_args` for cheap pre-policy validation so bad arguments do not
   trigger confirmations or side effects.
 - Send command execution through the central dispatch and execution-policy
   helpers. Do not bypass `execution_policy.py` for new commands.
-- **Default-allow execution policy (current behavior):** the REPL is
-  default-allow. `execution_policy.py` resolves every action to `allow` with **no
-  confirmation prompt** — all slash/`opensre` commands (any tier, including
-  `ELEVATED`), investigations, synthetic tests, code-agent launches, LLM runtime
-  switches, and inferred shell commands (including `!` passthrough and mutating
-  commands such as `rm`/`mv`/`docker`) run immediately, in any context (TTY or
-  not, trust mode or not). The only hard `deny` floor that remains is
-  `restricted` shell commands (`sudo`, `systemctl`, `kill`, `dd`, …) and shell
-  input that cannot be safely parsed (operators `| && ; > <`, command
-  substitution). Keep assigning accurate `ExecutionTier` values anyway: the tier
-  still feeds analytics, help text, and any future opt-in stricter policy, and
-  `trust_mode` plus the `ask` confirmation UX are retained for that purpose.
+- **Alpha allow-all execution policy (current behavior):** the REPL runs with
+  **no command guardrails**. `execution_policy.py` resolves every action to
+  `allow` with **no confirmation prompt** — all slash/`opensre` commands,
+  investigations, synthetic tests, code-agent launches, LLM runtime switches, and
+  **all** shell commands run immediately, in any context (TTY or not, trust mode
+  or not). There is **no shell-command safety policy**: the
+  read-only/mutating/restricted classification and the `deny` floor were removed
+  (`shell_policy.py` deleted; parsing/policy/execution live under
+  `tools/shell/`). Mutating commands (`rm`/`mv`/`docker`), `restricted` commands
+  (`sudo`, `systemctl`, `kill`, `dd`, …), shell operators (`| && ; > <`), and
+  command substitution all run; the `!` prefix is honored but optional. The only
+  shell input still rejected is genuinely empty input (a bare `!` or whitespace).
+  Do **not** re-add a shell allowlist or deny floor while in alpha — see
+  `docs/interactive-shell-action-policy.md`. The former `ExecutionTier`
+  classification was removed because it gated nothing under default-allow; if an
+  opt-in stricter policy is reintroduced after alpha, gate it in
+  `execution_policy.py` (the `ask` verdict, confirmation UX, and `trust_mode` are
+  retained as the hook), not via a planner-stage denial.
 - Non-TTY behavior under default-allow: actions no longer fail closed on
   non-interactive stdin (there is nothing to confirm). The fail-closed path only
   applies if a verdict is explicitly `ask`, which the default policy does not
@@ -112,8 +114,8 @@ owning area rather than adding more logic to the caller.
     characters in the next prompt. If no `^[[…R` garbage appears, the registration
     is correct.
   - **Agent-selected interactive commands:** `_EXCLUSIVE_STDIN_MENU_COMMANDS`
-    only reserves stdin for literal command text that
-    `deterministic_command_text` can normalize. When free text like
+    only reserves stdin for literal `/slash` command text that
+    `_literal_slash_command_text` recognizes. When free text like
     "remove github" is resolved by the action agent into an inline-picker
     command (`/integrations remove`, `/integrations setup`, `/mcp connect`,
     `/mcp disconnect`, or a bare `/integrations` / `/mcp` menu), the loop has not
@@ -123,7 +125,7 @@ owning area rather than adding more logic to the caller.
     agent path runs it. New raw-stdin picker/wizard commands the action agent can emit
     must be added to
     `_INTERACTIVE_PICKER_MENUS` / `_INTERACTIVE_PICKER_SUBCOMMANDS` in
-    `orchestration/tools/slash_tool.py`.
+    `interactive_shell/tools/slash_tool.py`.
 
 ## Action Selection And Execution
 
@@ -142,7 +144,7 @@ owning area rather than adding more logic to the caller.
   question that embedded a quoted, list-style directive) with no safety upside.
   Details and rationale live in `interactive_shell/harness/AGENTS.md`. If
   mutating actions are ever introduced, gate them with the
-  execution-stage confirmation policy (`orchestration/execution_policy.py`), not a
+  execution-stage confirmation policy (`tools/shared/execution_policy.py`), not a
   planner-stage denial.
 - Keep deterministic command detection in `orchestration/` for terminal UI
   policy only; use the action agent for slash/tool action selection.
@@ -165,7 +167,7 @@ owning area rather than adding more logic to the caller.
   rather than inventing steps.
 - Do not include secrets in prompts. Redact or omit tokens, auth headers, env
   values, local credentials, and raw integration config.
-- Keep prompt rules reusable in `chat/` so chat/help/action surfaces use
+- Keep prompt rules reusable in `harness/llm_context/` so chat/help/action surfaces use
   consistent terminology and formatting.
 - Reference caches should be deterministic, invalidatable when source files
   change, and cheap to rebuild in tests.

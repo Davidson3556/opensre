@@ -8,10 +8,9 @@ from rich.console import Console
 from rich.markup import escape
 
 from interactive_shell.command_registry.types import (
-    ExecutionTier,
     SlashCommand,
 )
-from interactive_shell.harness.state.history import load_command_history_entries
+from interactive_shell.harness.llm_context.prompt_history import load_command_history_entries
 from interactive_shell.runtime import ReplSession, TaskKind, TaskRecord, TaskStatus
 from interactive_shell.ui import (
     BOLD_BRAND,
@@ -232,7 +231,6 @@ COMMANDS: list[SlashCommand] = [
         _cmd_cancel,
         usage=("/cancel <task_id>",),
         notes=("Use /tasks to list task ids.",),
-        execution_tier=ExecutionTier.ELEVATED,
         validate_args=_validate_cancel_args,
     ),
     SlashCommand(

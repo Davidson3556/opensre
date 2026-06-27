@@ -12,13 +12,11 @@ import io
 
 from rich.console import Console
 
-from interactive_shell.harness.harness import (
-    handle_message_with_agent,
+from interactive_shell.harness.agent import handle_message_with_agent
+from interactive_shell.harness.llm_context.session import ReplSession
+from interactive_shell.runtime.core.turn_accounting import (
+    ToolCallingTurnResult,
 )
-from interactive_shell.harness.orchestration.agent_actions import (
-    TerminalActionExecutionResult,
-)
-from interactive_shell.runtime.core.session import ReplSession
 from interactive_shell.utils.telemetry.recorder import LlmRunInfo
 
 _OBSERVATION = "Integration status from `/integrations`:\n- sentry: missing (Not configured.)"
@@ -35,12 +33,10 @@ def test_discovery_output_is_summarized_into_a_direct_answer() -> None:
         text: str,
         session: ReplSession,
         console: Console,
-        *,
-        confirm_fn=None,
-        is_tty=None,
-    ) -> TerminalActionExecutionResult:
+        **kwargs: object,
+    ) -> ToolCallingTurnResult:
         session.last_command_observation = _OBSERVATION
-        return TerminalActionExecutionResult(
+        return ToolCallingTurnResult(
             planned_count=1,
             executed_count=1,
             executed_success_count=1,
@@ -52,14 +48,9 @@ def test_discovery_output_is_summarized_into_a_direct_answer() -> None:
         text: str,
         session: ReplSession,
         console: Console,
-        *,
-        confirm_fn=None,
-        is_tty=None,
-        tool_observation: str | None = None,
-        tool_observation_on_screen: bool = True,
+        **kwargs: object,
     ) -> LlmRunInfo:
-        _ = text, session, console, confirm_fn, is_tty, tool_observation_on_screen
-        observed.append(tool_observation)
+        observed.append(kwargs.get("tool_observation"))  # type: ignore[arg-type]
         return LlmRunInfo(response_text="No — Sentry is not configured.")
 
     session = ReplSession()
@@ -84,12 +75,10 @@ def test_no_observation_keeps_silent_handled_turn() -> None:
         text: str,
         session: ReplSession,
         console: Console,
-        *,
-        confirm_fn=None,
-        is_tty=None,
-    ) -> TerminalActionExecutionResult:
+        **kwargs: object,
+    ) -> ToolCallingTurnResult:
         # No discovery observation recorded this turn.
-        return TerminalActionExecutionResult(
+        return ToolCallingTurnResult(
             planned_count=1,
             executed_count=1,
             executed_success_count=1,
@@ -123,12 +112,10 @@ def test_failed_discovery_is_not_summarized() -> None:
         text: str,
         session: ReplSession,
         console: Console,
-        *,
-        confirm_fn=None,
-        is_tty=None,
-    ) -> TerminalActionExecutionResult:
+        **kwargs: object,
+    ) -> ToolCallingTurnResult:
         session.last_command_observation = _OBSERVATION
-        return TerminalActionExecutionResult(
+        return ToolCallingTurnResult(
             planned_count=1,
             executed_count=1,
             executed_success_count=0,  # nothing succeeded
@@ -162,12 +149,10 @@ def test_observation_is_reset_each_turn() -> None:
         text: str,
         session: ReplSession,
         console: Console,
-        *,
-        confirm_fn=None,
-        is_tty=None,
-    ) -> TerminalActionExecutionResult:
+        **kwargs: object,
+    ) -> ToolCallingTurnResult:
         # Does not set an observation this turn.
-        return TerminalActionExecutionResult(
+        return ToolCallingTurnResult(
             planned_count=1,
             executed_count=1,
             executed_success_count=1,

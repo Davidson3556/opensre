@@ -8,21 +8,21 @@ import pytest
 from rich.console import Console
 
 from core.runtime.llm.agent_llm_client import AgentLLMResponse, ToolCall
-from interactive_shell.harness.harness import handle_message_with_agent
-from interactive_shell.harness.orchestration.agent_actions import (
-    TerminalActionExecutionResult,
-)
-from interactive_shell.harness.orchestration.tools import (
-    investigation_tool as _investigation_tool,
-)
-from interactive_shell.harness.orchestration.tools import (
-    slash_tool as _slash_tool,
-)
+from interactive_shell.harness.agent import handle_message_with_agent
+from interactive_shell.harness.llm_context.session import ReplSession
 from interactive_shell.harness.tests.orchestration.action_execution_test_harness import (
     FakeActionLLM,
 )
-from interactive_shell.runtime.core.session import ReplSession
+from interactive_shell.runtime.core.turn_accounting import (
+    ToolCallingTurnResult,
+)
 from interactive_shell.runtime.utils import input_policy as loop_input_policy
+from interactive_shell.tools import (
+    investigation_tool as _investigation_tool,
+)
+from interactive_shell.tools import (
+    slash_tool as _slash_tool,
+)
 
 
 def test_turn_needs_exclusive_stdin_for_bare_integration_menu(
@@ -32,7 +32,6 @@ def test_turn_needs_exclusive_stdin_for_bare_integration_menu(
     session = ReplSession()
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/integrations", session) is True
-    assert loop_input_policy.turn_needs_exclusive_stdin("integrations", session) is True
     assert loop_input_policy.turn_needs_exclusive_stdin("/investigate", session) is True
     assert loop_input_policy.turn_needs_exclusive_stdin("/mcp", session) is True
     assert loop_input_policy.turn_needs_exclusive_stdin("/model", session) is True
@@ -40,10 +39,13 @@ def test_turn_needs_exclusive_stdin_for_bare_integration_menu(
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/integrations list", session) is False
     assert loop_input_policy.turn_needs_exclusive_stdin("/theme blue", session) is True
-    assert loop_input_policy.turn_needs_exclusive_stdin("integrations list", session) is False
     assert loop_input_policy.turn_needs_exclusive_stdin("/verify", session) is True
-    assert loop_input_policy.turn_needs_exclusive_stdin("verify", session) is True
     assert loop_input_policy.turn_needs_exclusive_stdin("/verify datadog", session) is False
+
+    # Gating is literal-/slash only: bare command words are not recognized.
+    assert loop_input_policy.turn_needs_exclusive_stdin("integrations", session) is False
+    assert loop_input_policy.turn_needs_exclusive_stdin("integrations list", session) is False
+    assert loop_input_policy.turn_needs_exclusive_stdin("verify", session) is False
 
 
 def test_turn_needs_exclusive_stdin_false_for_investigate_with_target(
@@ -55,7 +57,6 @@ def test_turn_needs_exclusive_stdin_false_for_investigate_with_target(
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/investigate generic", session) is False
     assert loop_input_policy.turn_needs_exclusive_stdin("/investigate alert.json", session) is False
-    assert loop_input_policy.turn_needs_exclusive_stdin("investigate generic", session) is False
 
 
 def test_turn_needs_exclusive_stdin_for_exit_commands(
@@ -65,7 +66,9 @@ def test_turn_needs_exclusive_stdin_for_exit_commands(
     session = ReplSession()
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/exit", session) is True
-    assert loop_input_policy.turn_needs_exclusive_stdin("quit", session) is True
+    assert loop_input_policy.turn_needs_exclusive_stdin("/quit", session) is True
+    # Bare command words are not recognized under literal-/slash gating.
+    assert loop_input_policy.turn_needs_exclusive_stdin("quit", session) is False
 
 
 def test_turn_needs_exclusive_stdin_for_update(
@@ -76,7 +79,8 @@ def test_turn_needs_exclusive_stdin_for_update(
     session = ReplSession()
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/update", session) is True
-    assert loop_input_policy.turn_needs_exclusive_stdin("update", session) is True
+    # Bare command words are not recognized under literal-/slash gating.
+    assert loop_input_policy.turn_needs_exclusive_stdin("update", session) is False
 
 
 def test_turn_needs_exclusive_stdin_for_integration_setup(
@@ -86,10 +90,11 @@ def test_turn_needs_exclusive_stdin_for_integration_setup(
     session = ReplSession()
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/integrations setup", session) is True
-    assert (
-        loop_input_policy.turn_needs_exclusive_stdin("integrations setup datadog", session) is True
-    )
     assert loop_input_policy.turn_needs_exclusive_stdin("/mcp connect github", session) is True
+    # Bare command words are not recognized under literal-/slash gating.
+    assert (
+        loop_input_policy.turn_needs_exclusive_stdin("integrations setup datadog", session) is False
+    )
 
 
 def test_turn_needs_exclusive_stdin_for_integration_remove(
@@ -105,11 +110,12 @@ def test_turn_needs_exclusive_stdin_for_integration_remove(
     assert (
         loop_input_policy.turn_needs_exclusive_stdin("/integrations remove github", session) is True
     )
-    assert loop_input_policy.turn_needs_exclusive_stdin("integrations remove github", session) is (
-        True
-    )
     assert loop_input_policy.turn_needs_exclusive_stdin("/mcp disconnect", session) is True
     assert loop_input_policy.turn_needs_exclusive_stdin("/mcp disconnect github", session) is True
+    # Bare command words are not recognized under literal-/slash gating.
+    assert (
+        loop_input_policy.turn_needs_exclusive_stdin("integrations remove github", session) is False
+    )
 
 
 def test_turn_needs_exclusive_stdin_for_onboard(
@@ -123,9 +129,10 @@ def test_turn_needs_exclusive_stdin_for_onboard(
     session = ReplSession()
 
     assert loop_input_policy.turn_needs_exclusive_stdin("/onboard", session) is True
-    assert loop_input_policy.turn_needs_exclusive_stdin("onboard", session) is True
     # Args don't change the exclusive-stdin requirement.
     assert loop_input_policy.turn_needs_exclusive_stdin("/onboard local_llm", session) is True
+    # Bare command words are not recognized under literal-/slash gating.
+    assert loop_input_policy.turn_needs_exclusive_stdin("onboard", session) is False
 
 
 def test_turn_needs_exclusive_stdin_for_config(
@@ -162,12 +169,10 @@ def test_handle_message_with_agent_nitro_prompt_uses_cli_agent_actions(
         text: str,
         _session: ReplSession,
         _console: Console,
-        confirm_fn=None,
-        is_tty=None,
-    ) -> TerminalActionExecutionResult:
-        _ = confirm_fn, is_tty
+        **kwargs: object,
+    ) -> ToolCallingTurnResult:
         action_calls.append(text)
-        return TerminalActionExecutionResult(
+        return ToolCallingTurnResult(
             planned_count=2,
             executed_count=2,
             executed_success_count=2,
@@ -179,13 +184,8 @@ def test_handle_message_with_agent_nitro_prompt_uses_cli_agent_actions(
         text: str,
         _session: ReplSession,
         _console: Console,
-        *,
-        confirm_fn=None,
-        is_tty=None,
-        tool_observation: str | None = None,
-        tool_observation_on_screen: bool = True,
+        **kwargs: object,
     ) -> None:
-        _ = confirm_fn, is_tty, tool_observation, tool_observation_on_screen
         llm_calls.append(text)
 
     session = ReplSession()
@@ -234,7 +234,7 @@ def test_handle_message_with_agent_nitro_prompt_executes_remote_then_investigati
         call_order.append(f"investigation:{alert_text}")
 
     monkeypatch.setattr(
-        "interactive_shell.harness.orchestration.agent_actions._default_llm_factory",
+        "interactive_shell.harness.tool_calling._default_llm_factory",
         lambda: FakeActionLLM(
             [
                 AgentLLMResponse(
@@ -280,12 +280,6 @@ class TestDispatchSpinnerBehavior:
             "/history",
             "/tests",
             "/model show",
-            "tests",
-            "help",
-            # UI policy typo-corrects single-edit bare aliases before spinner gating.
-            "testts",
-            "hlep",
-            "opensre investigate -i alert.json",
         ],
     )
     def test_slash_dispatches_do_not_show_assistant_spinner(self, text: str) -> None:
@@ -296,6 +290,11 @@ class TestDispatchSpinnerBehavior:
         [
             "why did this fail?",
             "explain deploy",
+            # Bare command words and opensre passthrough are no longer treated as
+            # literal commands, so the spinner shows while the planner runs.
+            "tests",
+            "help",
+            "opensre investigate -i alert.json",
         ],
     )
     def test_non_slash_dispatches_show_assistant_spinner(self, text: str) -> None:

@@ -18,10 +18,14 @@ from typing import Any
 
 from rich.console import Console
 
-from interactive_shell.chat import cli_agent
-from interactive_shell.chat.action_plan import _parse_action_plan
-from interactive_shell.chat.cli_agent import answer_cli_agent
-from interactive_shell.chat.system_prompt import (
+from interactive_shell.harness import agent as cli_agent
+from interactive_shell.harness.agent import (
+    ActionPlanAction,
+    _parse_action_plan,
+    answer_cli_agent,
+)
+from interactive_shell.harness.llm_context import cli_agent_prompt
+from interactive_shell.harness.llm_context.assistant_system_prompt import (
     _ACTION_RULE,
     _MARKDOWN_RULE,
     _TERMINOLOGY_RULE,
@@ -29,7 +33,7 @@ from interactive_shell.chat.system_prompt import (
     _build_observation_block,
     _build_system_prompt,
 )
-from interactive_shell.runtime.core.session import ReplSession
+from interactive_shell.harness.llm_context.session import ReplSession
 
 
 def _capture() -> tuple[Console, io.StringIO]:
@@ -123,12 +127,7 @@ class TestSystemPromptTerminology:
 
 
 class TestSystemPromptAgentsMdGrounding:
-    """The conversational shell wires AGENTS.md repo-map content (#1442).
-
-    The strict reference_only docs-aware path (``cli_help._build_grounded_prompt``)
-    intentionally does NOT include AGENTS.md so it stays grounded only on the
-    public docs and CLI reference.
-    """
+    """The conversational shell wires AGENTS.md repo-map content (#1442)."""
 
     def test_section_present_in_conversational_prompt_when_agents_md_provided(self) -> None:
         prompt = _build_system_prompt(
@@ -145,18 +144,6 @@ class TestSystemPromptAgentsMdGrounding:
 
     def test_section_omitted_by_default_for_callers_that_dont_pass_it(self) -> None:
         prompt = _build_system_prompt(reference="(ref)", history="(hist)")
-        assert "--- Repo map (AGENTS.md) ---" not in prompt
-
-    def test_section_absent_in_reference_only_grounded_prompt(self) -> None:
-        from interactive_shell.chat.cli_help import _build_grounded_prompt
-
-        # The reference_only path stays strict — even if AGENTS.md grounding is
-        # available elsewhere in the shell, this prompt must not include it.
-        prompt = _build_grounded_prompt(
-            question="how do I configure datadog?",
-            cli_reference="(ref)",
-            docs_reference="(docs)",
-        )
         assert "--- Repo map (AGENTS.md) ---" not in prompt
 
 
@@ -181,16 +168,18 @@ class TestSystemPromptInvestigationFlowGrounding:
 
     def test_answer_cli_agent_injects_investigation_flow_reference(self, monkeypatch: Any) -> None:
         client = _patch_llm(monkeypatch, "Yes, I can describe the pipeline.")
-        monkeypatch.setattr(cli_agent, "build_cli_reference_text", lambda: "(ref)")
-        monkeypatch.setattr(cli_agent, "build_agents_md_reference_text", lambda: "")
         monkeypatch.setattr(
-            cli_agent,
+            cli_agent_prompt,
             "build_investigation_flow_reference_text",
             lambda: "resolve → extract → investigate → deliver",
         )
 
+        session = ReplSession()
+        monkeypatch.setattr(session.grounding.cli, "build_text", lambda: "(ref)")
+        monkeypatch.setattr(session.grounding.agents_md, "build_text", lambda: "")
+
         console, _ = _capture()
-        answer_cli_agent("Can you see how investigations are structured?", ReplSession(), console)
+        answer_cli_agent("Can you see how investigations are structured?", session, console)
 
         assert client.last_prompt is not None
         assert "--- Investigation flow reference ---" in client.last_prompt
@@ -224,11 +213,11 @@ class TestEnvironmentIntegrationGrounding:
 
     def test_answer_cli_agent_injects_configured_integrations(self, monkeypatch: Any) -> None:
         client = _patch_llm(monkeypatch, "No, Sentry is not configured.")
-        monkeypatch.setattr(cli_agent, "build_cli_reference_text", lambda: "(ref)")
-        monkeypatch.setattr(cli_agent, "build_agents_md_reference_text", lambda: "")
-        monkeypatch.setattr(cli_agent, "build_investigation_flow_reference_text", lambda: "")
+        monkeypatch.setattr(cli_agent_prompt, "build_investigation_flow_reference_text", lambda: "")
 
         session = ReplSession()
+        monkeypatch.setattr(session.grounding.cli, "build_text", lambda: "(ref)")
+        monkeypatch.setattr(session.grounding.agents_md, "build_text", lambda: "")
         session.configured_integrations_known = True
         session.configured_integrations = ("gitlab",)
         console, _ = _capture()
@@ -256,11 +245,11 @@ class TestObservationSummaryBlock:
 
     def test_answer_cli_agent_injects_observation(self, monkeypatch: Any) -> None:
         client = _patch_llm(monkeypatch, "No — Sentry is not configured.")
-        monkeypatch.setattr(cli_agent, "build_cli_reference_text", lambda: "(ref)")
-        monkeypatch.setattr(cli_agent, "build_agents_md_reference_text", lambda: "")
-        monkeypatch.setattr(cli_agent, "build_investigation_flow_reference_text", lambda: "")
+        monkeypatch.setattr(cli_agent_prompt, "build_investigation_flow_reference_text", lambda: "")
 
         session = ReplSession()
+        monkeypatch.setattr(session.grounding.cli, "build_text", lambda: "(ref)")
+        monkeypatch.setattr(session.grounding.agents_md, "build_text", lambda: "")
         console, _ = _capture()
         observation = (
             "Integration status from `/integrations`:\n- sentry: missing (Not configured.)"
@@ -286,7 +275,7 @@ class TestActionPlanParsing:
             """
         )
 
-        assert actions == [{"action": "switch_llm_provider", "provider": "anthropic", "model": ""}]
+        assert actions == (ActionPlanAction(kind="switch_llm_provider", provider="anthropic"),)
 
     def test_infers_provider_switch_action_when_action_field_is_missing(self) -> None:
         actions = _parse_action_plan(
@@ -300,7 +289,7 @@ class TestActionPlanParsing:
             """
         )
 
-        assert actions == [{"action": "switch_llm_provider", "provider": "anthropic", "model": ""}]
+        assert actions == (ActionPlanAction(kind="switch_llm_provider", provider="anthropic"),)
 
     def test_parses_single_action_object(self) -> None:
         actions = _parse_action_plan(
@@ -311,7 +300,7 @@ class TestActionPlanParsing:
             """
         )
 
-        assert actions == [{"action": "switch_llm_provider", "provider": "anthropic", "model": ""}]
+        assert actions == (ActionPlanAction(kind="switch_llm_provider", provider="anthropic"),)
 
 
 class TestAssistantOutputRendering:

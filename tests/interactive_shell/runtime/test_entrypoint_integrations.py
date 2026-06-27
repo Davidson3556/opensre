@@ -13,7 +13,7 @@ from typing import Any
 from rich.console import Console
 
 from interactive_shell import entrypoint
-from interactive_shell.runtime.core.session import ReplSession
+from interactive_shell.harness.llm_context.session import ReplSession
 from interactive_shell.runtime.startup import first_launch_github as flg
 
 

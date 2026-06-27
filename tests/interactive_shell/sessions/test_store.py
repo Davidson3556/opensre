@@ -10,8 +10,19 @@ from unittest.mock import patch
 
 import pytest
 
-from interactive_shell.harness.state.sessions.store import SessionStore, _sessions_dir
-from interactive_shell.runtime.core.session import ReplSession
+from interactive_shell.harness.llm_context.session import (
+    JsonlSessionRepo,
+    JsonlSessionStorage,
+    ReplSession,
+)
+from interactive_shell.harness.llm_context.session.paths import sessions_dir as _sessions_dir
+
+
+class _SessionStoreFacade(JsonlSessionStorage, JsonlSessionRepo):
+    """Test facade exposing both the storage and repo APIs on one object."""
+
+
+SessionStore = _SessionStoreFacade()
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -26,7 +37,7 @@ def _read_lines(path: Path) -> list[dict]:
 
 def _patch_dir(tmp_path: Path):
     return patch(
-        "interactive_shell.harness.state.sessions.store._sessions_dir", return_value=tmp_path
+        "interactive_shell.harness.llm_context.session.paths.sessions_dir", return_value=tmp_path
     )
 
 
@@ -67,7 +78,7 @@ def test_open_session_uses_session_id_as_filename(tmp_path: Path) -> None:
 def test_open_session_never_raises_on_bad_path() -> None:
     session = _make_session()
     with patch(
-        "interactive_shell.harness.state.sessions.store._sessions_dir",
+        "interactive_shell.harness.llm_context.session.paths.sessions_dir",
         return_value=Path("/nonexistent/cannot/write"),
     ):
         SessionStore.open_session(session)  # must not raise
@@ -244,7 +255,7 @@ def test_flush_counts_cli_agent_turns_as_chat(tmp_path: Path) -> None:
     with _patch_dir(tmp_path):
         SessionStore.open_session(session)
         SessionStore.append_turn(session, "cli_agent", "why is redis slow?")
-        SessionStore.append_turn(session, "cli_help", "how do I use /resume?")
+        SessionStore.append_turn(session, "chat", "how do I use /resume?")
         SessionStore.append_turn(session, "follow_up", "what else?")
         SessionStore.flush(session)
 
