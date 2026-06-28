@@ -40,7 +40,7 @@ def test_context_state_stays_dependency_light() -> None:
         "core.domain.alerts.normalization",
     )
     offenders: list[str] = []
-    for path in sorted((root / "context" / "state").rglob("*.py")):
+    for path in sorted((root / "core" / "context" / "state").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in ast.walk(tree):
             module_names: list[str] = []

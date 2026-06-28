@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from typing import Any, Literal
 
 MAX_CONVERSATION_TURNS = 12
 MAX_CONVERSATION_MESSAGES = MAX_CONVERSATION_TURNS * 2
 
 AgentMessageRole = Literal["user", "assistant", "system", "tool"]
 AgentRunStatus = Literal["idle", "running"]
-RuntimeTool: TypeAlias = Any
+type RuntimeTool = Any
 
 
 class AgentStateError(ValueError):
@@ -172,11 +173,8 @@ class MutableAgentState:
         self._subscribers.append(subscriber)
 
         def _unsubscribe() -> None:
-            try:
+            with contextlib.suppress(ValueError):
                 self._subscribers.remove(subscriber)
-            except ValueError:
-                # Subscriber was already removed; keep unsubscribe idempotent.
-                pass
 
         return _unsubscribe
 
@@ -334,9 +332,7 @@ class MutableAgentState:
         _validate_unique_tools(active_tools)
         available_names = {_tool_name(tool) for tool in available_tools}
         missing = sorted(
-            _tool_name(tool)
-            for tool in active_tools
-            if _tool_name(tool) not in available_names
+            _tool_name(tool) for tool in active_tools if _tool_name(tool) not in available_names
         )
         if missing:
             raise AgentStateError(f"active tools are not available: {', '.join(missing)}")

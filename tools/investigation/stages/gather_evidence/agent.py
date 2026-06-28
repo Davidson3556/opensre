@@ -6,8 +6,6 @@ import logging
 from typing import Any, cast
 
 from config.constants.investigation import MAX_INVESTIGATION_LOOPS
-from core.context.state import InvestigationState
-from core.context.state.evidence import EvidenceEntry
 from core import (
     LoopEventCallback,
     RuntimeEventCallback,
@@ -21,6 +19,8 @@ from core import (
     tool_source,
 )
 from core.agent import Agent
+from core.context.state import InvestigationState
+from core.context.state.evidence import EvidenceEntry
 from core.llm.agent_llm_client import ToolCall, get_agent_llm
 from core.llm_invoke_errors import classify_llm_invoke_failure
 from platform.observability import debug_print

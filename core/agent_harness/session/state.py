@@ -22,7 +22,6 @@ else:
 
 from config.llm_reasoning_effort import ReasoningEffortChoice
 from config.strict_config import StrictConfigModel
-from core.context.state import MutableAgentState
 from core.agent_harness.session.background import (
     BackgroundInvestigationRecord,
     BackgroundNotificationPreferences,
@@ -30,6 +29,7 @@ from core.agent_harness.session.background import (
 from core.agent_harness.session.storage.jsonl import JsonlSessionStorage
 from core.agent_harness.session.tasks import TaskRegistry
 from core.agent_harness.session.types import SessionStorage
+from core.context.state import MutableAgentState
 
 InterventionKind = Literal["ctrl_c", "correction"]
 

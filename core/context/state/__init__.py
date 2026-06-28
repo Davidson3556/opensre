@@ -7,6 +7,8 @@ runtime requests without exposing live mutable internals.
 from __future__ import annotations
 
 from core.context.state.agent_state import (
+    MAX_CONVERSATION_MESSAGES,
+    MAX_CONVERSATION_TURNS,
     AgentContextInput,
     AgentMessageRole,
     AgentModelInfo,
@@ -14,8 +16,6 @@ from core.context.state.agent_state import (
     AgentStateChange,
     AgentStateError,
     AgentStateSnapshot,
-    MAX_CONVERSATION_MESSAGES,
-    MAX_CONVERSATION_TURNS,
     MutableAgentState,
     create_mutable_agent_state,
 )

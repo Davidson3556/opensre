@@ -12,14 +12,15 @@ session state, CLI prompt grounding, or generic agent-runtime request assembly.
 
 - Investigation state slices and their Pydantic validation model.
 - Incident evidence entries, provenance, and evidence-envelope contracts.
-- Context budget, trimming, ranking, and summarization policies for incident evidence.
+- Context assembly, trimming, ranking, and summarization policies for incident evidence.
 - Provider-agnostic assembly logic that packages data from `core/`,
   `integrations/`, and `tools/` for investigation stages.
 
 ## Does Not Belong Here
 
 - Agent orchestration or stage sequencing; keep that in `tools/investigation/`.
-- The LLM/tool-calling loop and runtime request contracts; keep those in `core/`.
+- The LLM/tool-calling loop and runtime request contracts; keep those in sibling
+  `core/` runtime modules.
 - Terminal UI, REPL session state, prompt history, CLI help, AGENTS.md grounding,
   and slash commands; keep those in `interactive_shell/`.
 - External clients, config normalization, and verification; keep those in
