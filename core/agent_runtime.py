@@ -6,14 +6,13 @@ import logging
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from context.agent_context import AgentContext
-from core.runtime.context_budget import (
+from core.context_budget import (
     context_budget_ceiling_for_model,
     enforce_context_budget,
 )
-from core.runtime.events import (
+from core.events import (
     AgentEndEvent,
     AgentStartEvent,
     LegacyLoopEventCallback,
@@ -31,15 +30,15 @@ from core.runtime.events import (
     legacy_callback_payload,
     runtime_event_from_legacy,
 )
-from core.runtime.execution import (
+from core.execution import (
     ToolExecutionHooks,
     ToolExecutionRequest,
     ToolExecutionResult,
     execute_tool_calls,
     public_tool_input,
 )
-from core.runtime.llm.agent_llm_client import ToolCall
-from core.runtime.messages import (
+from core.llm.agent_llm_client import ToolCall
+from core.messages import (
     RuntimeMessage,
     RuntimeMessageLike,
     convert_to_llm_messages,
@@ -48,11 +47,14 @@ from core.runtime.messages import (
     runtime_tool_result_message,
     user_runtime_message,
 )
-from core.runtime.provider import ProviderHooks, ProviderRequest
-from core.runtime.types import RuntimeTool
+from core.provider import ProviderHooks, ProviderRequest
+from core.types import RuntimeTool
 from platform.observability.tool_trace import redact_sensitive
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from context.agent_context import AgentContext
 
 # Backward-compatible callback type: called with ``(event_kind, data_dict)``.
 LoopEventCallback = LegacyLoopEventCallback
