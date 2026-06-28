@@ -223,18 +223,22 @@ def get_llm_provider_api_key(provider: str | None = None) -> tuple[str | None, s
     return env_var, resolve_llm_api_key(env_var)
 
 
+def _llm_api_key_payload(provider: str) -> dict[str, str]:
+    """Resolve only the API key required by the provider being validated."""
+    env_var = get_llm_provider_api_key_env(provider)
+    if env_var is None:
+        return {}
+    provider_name = provider.strip().lower()
+    if provider_name not in LLM_PROVIDER_API_KEY_ENVS:
+        return {}
+    return {f"{provider_name}_api_key": resolve_llm_api_key(env_var)}
+
+
 def _llm_settings_env_payload(provider: str) -> dict[str, object]:
     """Build the raw env-backed payload used to validate LLM settings."""
     return {
         "provider": provider,
-        "anthropic_api_key": resolve_llm_api_key("ANTHROPIC_API_KEY"),
-        "openai_api_key": resolve_llm_api_key("OPENAI_API_KEY"),
-        "openrouter_api_key": resolve_llm_api_key("OPENROUTER_API_KEY"),
-        "deepseek_api_key": resolve_llm_api_key("DEEPSEEK_API_KEY"),
-        "gemini_api_key": resolve_llm_api_key("GEMINI_API_KEY"),
-        "nvidia_api_key": resolve_llm_api_key("NVIDIA_API_KEY"),
-        "minimax_api_key": resolve_llm_api_key("MINIMAX_API_KEY"),
-        "groq_api_key": resolve_llm_api_key("GROQ_API_KEY"),
+        **_llm_api_key_payload(provider),
         "anthropic_reasoning_model": os.getenv(
             "ANTHROPIC_REASONING_MODEL", ANTHROPIC_REASONING_MODEL
         ).strip()

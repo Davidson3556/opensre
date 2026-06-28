@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 from collections.abc import Mapping
 from typing import Final
 
@@ -20,6 +21,44 @@ _DISABLED_VALUES: Final = frozenset({"1", "true", "yes", "on"})
 
 def _keyring_is_disabled() -> bool:
     return os.getenv("OPENSRE_DISABLE_KEYRING", "").strip().lower() in _DISABLED_VALUES
+
+
+def _is_macos_keyring_backend() -> bool:
+    backend = keyring.get_keyring()
+    return backend.__class__.__module__.startswith("keyring.backends.macOS")
+
+
+def _macos_keychain_item_exists(username: str) -> bool | None:
+    """Return whether a macOS Keychain item exists without reading its secret."""
+    if platform.system() != "Darwin":
+        return None
+    if not _is_macos_keyring_backend():
+        return None
+    security_bin = shutil.which("security")
+    if security_bin is None:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                security_bin,
+                "find-generic-password",
+                "-s",
+                _KEYRING_SERVICE,
+                "-a",
+                username,
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode == 0:
+        return True
+    if result.returncode == 44:
+        return False
+    return None
 
 
 def resolve_env_credential(env_var: str, *, default: str = "") -> str:
@@ -49,6 +88,9 @@ def llm_api_key_source(env_var: str) -> str:
         return "env"
     if _keyring_is_disabled():
         return "none"
+    item_exists = _macos_keychain_item_exists(env_var)
+    if item_exists is not None:
+        return "keyring" if item_exists else "none"
     try:
         if (keyring.get_password(_KEYRING_SERVICE, env_var) or "").strip():
             return "keyring"
@@ -59,6 +101,13 @@ def llm_api_key_source(env_var: str) -> str:
 
 def has_llm_api_key(env_var: str) -> bool:
     """Return True when an API key is available from env or secure local storage."""
+    if os.getenv(env_var, "").strip():
+        return True
+    if _keyring_is_disabled():
+        return False
+    item_exists = _macos_keychain_item_exists(env_var)
+    if item_exists is not None:
+        return item_exists
     return bool(resolve_llm_api_key(env_var))
 
 

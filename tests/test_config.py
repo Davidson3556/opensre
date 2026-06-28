@@ -45,6 +45,39 @@ def test_llm_settings_from_env_uses_secure_local_api_key(monkeypatch) -> None:
     assert settings.openai_api_key == "stored-secret"
 
 
+def test_llm_settings_from_env_only_resolves_selected_provider_key(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    calls: list[str] = []
+
+    def _resolve(env_var: str) -> str:
+        calls.append(env_var)
+        if env_var != "OPENAI_API_KEY":
+            raise AssertionError(f"unexpected key lookup: {env_var}")
+        return "stored-openai"
+
+    monkeypatch.setattr("config.config.resolve_llm_api_key", _resolve)
+
+    settings = LLMSettings.from_env()
+
+    assert settings.provider == "openai"
+    assert settings.openai_api_key == "stored-openai"
+    assert calls == ["OPENAI_API_KEY"]
+
+
+def test_llm_settings_from_env_keyless_provider_does_not_resolve_keyring(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "codex")
+
+    def _resolve(env_var: str) -> str:
+        raise AssertionError(f"unexpected key lookup: {env_var}")
+
+    monkeypatch.setattr("config.config.resolve_llm_api_key", _resolve)
+
+    settings = LLMSettings.from_env()
+
+    assert settings.provider == "codex"
+
+
 def test_llm_settings_require_minimax_api_key() -> None:
     with pytest.raises(ValidationError, match="MINIMAX_API_KEY"):
         LLMSettings.model_validate({"provider": "minimax"})
@@ -216,6 +249,25 @@ def test_resolve_llm_settings_falls_back_to_openai_when_default_anthropic_key_mi
     assert settings.provider == "openai"
     assert settings.openai_api_key == "sk-openai"
     assert has_credentials_for_active_llm_provider() is True
+
+
+def test_resolve_llm_settings_stops_key_lookup_after_successful_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "openrouter")
+    calls: list[str] = []
+
+    def _resolve(env_var: str) -> str:
+        calls.append(env_var)
+        if env_var == "OPENAI_API_KEY":
+            return "sk-openai"
+        return ""
+
+    monkeypatch.setattr("config.config.resolve_llm_api_key", _resolve)
+
+    settings = resolve_llm_settings()
+
+    assert settings.provider == "openai"
+    assert settings.openai_api_key == "sk-openai"
+    assert calls == ["OPENROUTER_API_KEY", "OPENAI_API_KEY"]
 
 
 def test_has_credentials_for_active_llm_provider_with_key(monkeypatch) -> None:

@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import subprocess
+
 import keyring
 
 import config.llm_credentials as llm_credentials
 from tests.shared.keyring_backend import MemoryKeyring
+
+
+class _MacOSKeyringBackend:
+    pass
+
+
+_MacOSKeyringBackend.__module__ = "keyring.backends.macOS"
 
 
 def test_resolve_env_credential_prefers_env_over_keyring(monkeypatch) -> None:
@@ -33,6 +42,55 @@ def test_llm_api_key_source_reports_env_keyring_and_none(monkeypatch) -> None:
         assert llm_credentials.llm_api_key_source("OPENAI_API_KEY") == "env"
     finally:
         keyring.set_keyring(previous_backend)
+
+
+def test_llm_api_key_source_uses_macos_metadata_without_reading_secret(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSRE_DISABLE_KEYRING", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(llm_credentials.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(llm_credentials.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(llm_credentials.keyring, "get_keyring", lambda: _MacOSKeyringBackend())
+
+    def _run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command == [
+            "/usr/bin/security",
+            "find-generic-password",
+            "-s",
+            "opensre.llm",
+            "-a",
+            "OPENAI_API_KEY",
+        ]
+        assert kwargs["check"] is False
+        return subprocess.CompletedProcess(command, 0)
+
+    def _get_password(_service: str, _username: str) -> str:
+        raise AssertionError("metadata source check must not read the keychain secret")
+
+    monkeypatch.setattr(llm_credentials.subprocess, "run", _run)
+    monkeypatch.setattr(llm_credentials.keyring, "get_password", _get_password)
+
+    assert llm_credentials.llm_api_key_source("OPENAI_API_KEY") == "keyring"
+    assert llm_credentials.has_llm_api_key("OPENAI_API_KEY") is True
+
+
+def test_macos_metadata_missing_item_reports_none_without_reading_secret(monkeypatch) -> None:
+    monkeypatch.delenv("OPENSRE_DISABLE_KEYRING", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(llm_credentials.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(llm_credentials.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(llm_credentials.keyring, "get_keyring", lambda: _MacOSKeyringBackend())
+
+    def _run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(command, 44)
+
+    def _get_password(_service: str, _username: str) -> str:
+        raise AssertionError("metadata source check must not read the keychain secret")
+
+    monkeypatch.setattr(llm_credentials.subprocess, "run", _run)
+    monkeypatch.setattr(llm_credentials.keyring, "get_password", _get_password)
+
+    assert llm_credentials.llm_api_key_source("OPENAI_API_KEY") == "none"
+    assert llm_credentials.has_llm_api_key("OPENAI_API_KEY") is False
 
 
 def test_llm_credential_record_round_trips_in_keyring(monkeypatch) -> None:
