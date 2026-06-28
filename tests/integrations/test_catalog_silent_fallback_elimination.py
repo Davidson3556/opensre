@@ -338,6 +338,32 @@ _ENV_LOADER_CASES: list[tuple[str, dict[str, str], str]] = [
         {"SPLUNK_URL": "https://s.example", "SPLUNK_TOKEN": "t"},
         "SplunkIntegrationConfig",
     ),
+    # Stragglers still on the pre-#1468 swallow pattern: signoz/jenkins/tempo
+    # logged only at debug (exc_info=True); twilio dropped to None silently.
+    (
+        "signoz",
+        {},
+        "signoz_config_from_env",
+    ),
+    (
+        "jenkins",
+        {},
+        "jenkins_config_from_env",
+    ),
+    (
+        "tempo",
+        {},
+        "tempo_config_from_env",
+    ),
+    (
+        "twilio",
+        {
+            "TWILIO_ACCOUNT_SID": "sid",
+            "TWILIO_AUTH_TOKEN": "tok",
+            "TWILIO_SMS_FROM": "+15551234567",
+        },
+        "TwilioIntegrationConfig",
+    ),
 ]
 
 

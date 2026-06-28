@@ -940,9 +940,9 @@ def load_env_integrations() -> list[dict[str, Any]]:
         }
         try:
             twilio_config = TwilioIntegrationConfig.model_validate(twilio_payload)
-        except Exception:
-            twilio_config = None
-        if twilio_config is not None:
+        except Exception as exc:
+            _report_env_loader_failure(exc, integration="twilio")
+        else:
             integrations.append(
                 _active_env_record(
                     "twilio",
@@ -1420,8 +1420,8 @@ def load_env_integrations() -> list[dict[str, Any]]:
                     signoz_config.model_dump(exclude={"integration_id"}),
                 )
             )
-    except Exception:
-        logger.debug("Failed to load SigNoz config from env", exc_info=True)
+    except Exception as exc:
+        _report_env_loader_failure(exc, integration="signoz")
 
     try:
         jenkins_config = jenkins_config_from_env()
@@ -1432,8 +1432,8 @@ def load_env_integrations() -> list[dict[str, Any]]:
                     jenkins_config.model_dump(exclude={"integration_id"}),
                 )
             )
-    except Exception:
-        logger.debug("Failed to load Jenkins config from env", exc_info=True)
+    except Exception as exc:
+        _report_env_loader_failure(exc, integration="jenkins")
 
     try:
         tempo_config = tempo_config_from_env()
@@ -1444,8 +1444,8 @@ def load_env_integrations() -> list[dict[str, Any]]:
                     tempo_config.model_dump(exclude={"integration_id"}),
                 )
             )
-    except Exception:
-        logger.debug("Failed to load Tempo config from env", exc_info=True)
+    except Exception as exc:
+        _report_env_loader_failure(exc, integration="tempo")
 
     temporal_url = os.getenv("TEMPORAL_API_URL", "").strip()
     temporal_namespace = os.getenv("TEMPORAL_NAMESPACE", "default").strip()
