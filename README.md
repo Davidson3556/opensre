@@ -93,12 +93,6 @@ The root installer URL auto-detects Unix shell vs PowerShell and installs the la
 macOS / Linux:
 
 ```bash
-curl -fsSL https://install.opensre.com | bash
-```
-
-Equivalent explicit main-channel form:
-
-```bash
 curl -fsSL https://install.opensre.com | bash -s -- --main
 ```
 
