@@ -319,6 +319,12 @@ _ENV_LOADER_CASES: list[tuple[str, dict[str, str], str]] = [
         "AWSIntegrationConfig",
     ),
     (
+        # The access-key path is a separate elif branch with its own guard.
+        "aws",
+        {"AWS_ACCESS_KEY_ID": "key", "AWS_SECRET_ACCESS_KEY": "secret"},
+        "AWSIntegrationConfig",
+    ),
+    (
         "whatsapp",
         {
             "TWILIO_ACCOUNT_SID": "sid",
