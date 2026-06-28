@@ -13,14 +13,15 @@ CPR draining from the turn's action-routing and prompt-construction logic.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Literal
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.markup import escape
 
 from core.agent_harness.session import ReplSession
-from interactive_shell.agent_shell.agent import AgentEvent, AgentEventSink
 from interactive_shell.runtime.core.state import SpinnerState
 from interactive_shell.runtime.utils.input_policy import turn_should_show_spinner
 from interactive_shell.ui import (
@@ -32,6 +33,18 @@ from interactive_shell.ui import (
 )
 from interactive_shell.ui.components.cpr_stdin import drain_stale_cpr_bytes
 from interactive_shell.ui.streaming.console import StreamingConsole
+
+
+@dataclass(frozen=True)
+class AgentEvent:
+    """Agent lifecycle event emitted during one submitted shell turn."""
+
+    type: Literal["turn_start", "turn_interrupted", "turn_error", "turn_end"]
+    text: str | None = None
+    error: Exception | None = None
+
+
+AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
 
 
 @dataclass(frozen=True)

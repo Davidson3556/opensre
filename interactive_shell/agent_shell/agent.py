@@ -18,17 +18,24 @@ import logging
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any
 
 from rich.console import Console
-from rich.markup import escape
 
 from core.agent_harness.action_plan import ActionPlanAction
 from interactive_shell.agent_shell.turn_entry import handle_message_with_agent
 from interactive_shell.runtime import ReplSession
+from interactive_shell.runtime.agent_presentation import (
+    AgentEvent,
+    AgentEventSink,
+    ConsoleAgentEventSink,
+)
 from interactive_shell.runtime.background.workers import BackgroundTaskManager
+from interactive_shell.runtime.core.confirmation import (
+    DispatchCancelled,
+    request_confirmation_via_prompt,
+)
 from interactive_shell.runtime.core.state import (
-    PROMPT_REFRESH_INTERVAL_S,
     ReplState,
     SpinnerState,
 )
@@ -43,14 +50,8 @@ from interactive_shell.runtime.input.actions import (
 )
 from interactive_shell.runtime.utils.input_policy import (
     turn_needs_exclusive_stdin,
-    turn_should_show_spinner,
 )
 from interactive_shell.tools.tool_gathering import gather_tool_evidence
-from interactive_shell.ui import (
-    ERROR,
-    WARNING,
-)
-from interactive_shell.ui.components.cpr_stdin import drain_stale_cpr_bytes
 from interactive_shell.ui.output.repl_progress import repl_safe_progress_scope
 from interactive_shell.ui.streaming.console import StreamingConsole
 from interactive_shell.utils.error_handling.exception_reporting import report_exception
@@ -61,27 +62,6 @@ _logger = logging.getLogger(__name__)
 
 _AGENT_TURN_KIND = "agent"
 
-# ---------------------------------------------------------------------------
-# Agent lifecycle: pure presentation reducer + effectful transition
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class AgentEvent:
-    """Agent lifecycle event emitted during one submitted shell turn."""
-
-    type: Literal["turn_start", "turn_interrupted", "turn_error", "turn_end"]
-    text: str | None = None
-    error: Exception | None = None
-
-
-AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
-
-
-class DispatchCancelled(Exception):
-    """Raised when in-flight dispatch is cancelled during confirmation."""
-
-
 @contextlib.contextmanager
 def _bound_cli_session(session_id: str) -> Iterator[None]:
     token = bind_cli_session_id(session_id)
@@ -89,102 +69,6 @@ def _bound_cli_session(session_id: str) -> Iterator[None]:
         yield
     finally:
         reset_cli_session_id(token)
-
-
-@dataclass(frozen=True)
-class AgentPresentationState:
-    """Immutable presentation state evolved across lifecycle events."""
-
-    show_spinner: bool = False
-    prompt_suppressed: bool = False
-
-
-def _reduce_agent_presentation(
-    state: AgentPresentationState,
-    event: AgentEvent,
-    *,
-    should_show_spinner: bool,
-) -> AgentPresentationState:
-    """Compute the next presentation state for *event* (pure)."""
-    if event.type == "turn_start":
-        return AgentPresentationState(
-            show_spinner=should_show_spinner,
-            prompt_suppressed=should_show_spinner,
-        )
-    if event.type == "turn_end":
-        return AgentPresentationState()
-    if event.type in {"turn_interrupted", "turn_error"}:
-        return state
-    raise ValueError(f"Unknown agent event type: {event.type!r}")
-
-
-async def _render_agent_presentation_transition(
-    *,
-    previous: AgentPresentationState,
-    current: AgentPresentationState,
-    event: AgentEvent,
-    console: StreamingConsole,
-    spinner: SpinnerState,
-) -> None:
-    """Perform the terminal side effects for one presentation transition."""
-    from interactive_shell.ui.output import set_prompt_suppress_fn
-
-    match event.type:
-        case "turn_start":
-            if current.show_spinner:
-                spinner.start()
-                set_prompt_suppress_fn(console.suppress_prompt_spinner)
-        case "turn_interrupted":
-            console.print(f"[{WARNING}]· interrupted[/]")
-        case "turn_error":
-            exc = event.error
-            if exc is None:
-                raise ValueError("turn_error event requires an error")
-            console.print(f"[{ERROR}]turn error:[/] {escape(str(exc))}")
-        case "turn_end":
-            set_prompt_suppress_fn(None)
-            if previous.show_spinner:
-                spinner.stop()
-            await asyncio.sleep(0.05)
-            drain_stale_cpr_bytes()
-        case _:
-            raise ValueError(f"Unknown agent event type: {event.type!r}")
-
-
-class ConsoleAgentEventSink:
-    """Render agent lifecycle events to the terminal console.
-
-    Imperative shell: it holds the evolving ``AgentPresentationState`` and routes
-    each event through the pure ``_reduce_agent_presentation`` reducer and the
-    effectful ``_render_agent_presentation_transition`` renderer.
-    """
-
-    def __init__(
-        self,
-        *,
-        session: ReplSession,
-        spinner: SpinnerState,
-        console: StreamingConsole,
-    ) -> None:
-        self.session = session
-        self.spinner = spinner
-        self.console = console
-        self.state = AgentPresentationState()
-
-    async def __call__(self, event: AgentEvent) -> None:
-        previous = self.state
-        self.state = _reduce_agent_presentation(
-            previous,
-            event,
-            should_show_spinner=turn_should_show_spinner(event.text or "", self.session),
-        )
-        await _render_agent_presentation_transition(
-            previous=previous,
-            current=self.state,
-            event=event,
-            console=self.console,
-            spinner=self.spinner,
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -415,22 +299,6 @@ async def run_agent_turn_queue(
         finally:
             state.clear_current_task()
             state.queue.task_done()
-
-
-def request_confirmation_via_prompt(state: ReplState, prompt_text: str) -> str:
-    response_event = threading.Event()
-    state.begin_confirmation(response_event, prompt_text)
-    try:
-        while not response_event.is_set():
-            cancel = state.current_cancel_event
-            if cancel is not None and cancel.is_set():
-                raise DispatchCancelled("cancelled while awaiting confirmation")
-            response_event.wait(timeout=PROMPT_REFRESH_INTERVAL_S)
-        if not state.confirm_response:
-            raise DispatchCancelled("cancelled while awaiting confirmation")
-        return state.confirm_response[0]
-    finally:
-        state.clear_confirmation()
 
 
 __all__ = [

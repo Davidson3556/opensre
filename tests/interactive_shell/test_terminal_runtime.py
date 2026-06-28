@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import io
 import re
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -50,6 +52,25 @@ from platform.terminal.theme import (
     get_active_theme_name,
     set_active_theme,
 )
+
+
+def test_agent_presentation_import_does_not_load_agent_shell_agent() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; "
+                "import interactive_shell.runtime.agent_presentation; "
+                "print('interactive_shell.agent_shell.agent' in sys.modules)"
+            ),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
 
 
 def test_streaming_console_status_does_not_recurse(monkeypatch) -> None:
