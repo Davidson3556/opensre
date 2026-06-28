@@ -64,3 +64,19 @@ def test_changed_test_file_is_targeted() -> None:
     escalate, targets, _ = rules.classify([path])
     assert not escalate
     assert targets == [path]
+
+
+def test_reporting_rule_routes_to_tests_delivery() -> None:
+    rules = _rules_module()
+    escalate, targets, _ = rules.classify(["tools/investigation/reporting/publish.py"])
+    assert not escalate
+    assert targets == ["tests/delivery/"]
+
+
+def test_all_rule_targets_are_tuples_not_bare_strings() -> None:
+    # A single target written as ("x") is a str, not a tuple — classify() would
+    # then iterate it character by character. infra/ci is outside the mypy paths
+    # so this footgun isn't caught by typecheck; guard it here for every rule.
+    rules = _rules_module()
+    for rule in rules.RULES:
+        assert isinstance(rule.test_targets, tuple), rule.path_prefix
