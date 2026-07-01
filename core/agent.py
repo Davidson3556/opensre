@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 from collections import deque
 from collections.abc import Sequence
@@ -117,11 +118,11 @@ class Agent[RuntimeToolT: RuntimeTool]:
         tool_hooks: ToolExecutionHooks | None = None,
     ) -> ShellTurnResult:
         """Run a full headless turn through the shared agent harness."""
-        from core.agent_harness.agents.headless_agent import (
-            dispatch_message_to_headless_agent,
-        )
-
-        return dispatch_message_to_headless_agent(
+        # Resolved dynamically so this module keeps the layering one-way
+        # (agent_harness -> core): a static import of the harness here would form a
+        # core.agent <-> agent_harness.agents cycle (CodeQL py/cyclic-import).
+        headless = importlib.import_module("core.agent_harness.agents.headless_agent")
+        result: ShellTurnResult = headless.dispatch_message_to_headless_agent(
             message,
             session=session,
             output=output,
@@ -136,6 +137,7 @@ class Agent[RuntimeToolT: RuntimeTool]:
             is_tty=is_tty,
             tool_hooks=tool_hooks,
         )
+        return result
 
     def __init__(
         self,

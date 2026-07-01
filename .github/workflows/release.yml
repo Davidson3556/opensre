@@ -288,7 +288,11 @@ jobs:
           # Capture the exit status explicitly so a crashing binary still prints
           # its stdout/stderr (under `set -e` the failed substitution aborted the
           # step before the output was ever shown, hiding the real error).
-          if [ -x "./dist/${{ matrix.binary_name }}" ]; then
+          # onefile builds place the executable at ./dist/<name>; onedir builds
+          # produce a ./dist/opensre/ directory containing the executable. A bare
+          # `-x` test matches the onedir directory too (dirs carry the search
+          # bit), so require a regular file before treating it as the binary.
+          if [ -f "./dist/${{ matrix.binary_name }}" ] && [ -x "./dist/${{ matrix.binary_name }}" ]; then
             BINARY_PATH="./dist/${{ matrix.binary_name }}"
           else
             BINARY_PATH="./dist/opensre/${{ matrix.binary_name }}"

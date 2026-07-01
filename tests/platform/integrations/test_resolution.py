@@ -7,7 +7,6 @@ import json
 from typing import Any
 
 import core.agent_harness.integrations.resolution as resolution
-from core.agent_harness.integrations.resolution import IntegrationResolutionResult
 
 
 def _jwt(payload: dict[str, Any]) -> str:
@@ -80,7 +79,7 @@ def test_resolve_local_store_sources_returns_progress_metadata(monkeypatch: Any)
 
 
 def test_resolution_result_is_strict_pydantic_model() -> None:
-    result = IntegrationResolutionResult(
+    result = resolution.IntegrationResolutionResult(
         resolved_integrations={
             "datadog": {"site": "datadoghq.com"},
             "_gateway_chat_id": "chat-1",
