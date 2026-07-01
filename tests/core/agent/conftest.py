@@ -20,6 +20,7 @@ from config.llm_auth.credentials import status as credential_status
 from config.platform_bootstrap import ensure_project_platform_package
 from tests.core.agent._ci_gates import (
     running_in_github_actions,
+    skip_or_fail,
 )
 
 ensure_project_platform_package()
@@ -39,12 +40,6 @@ _TURN_TEST_DEFAULT_ENV = {
     "OPENSRE_NO_TELEMETRY": "1",
     "OPENSRE_INVESTIGATION_SOURCE": "test",
 }
-
-
-def _skip_or_fail_live_llm(message: str) -> None:
-    if running_in_github_actions():
-        pytest.fail(message)
-    pytest.skip(message)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -119,13 +114,11 @@ def _resolve_live_llm_configuration(
         hint = f" configured provider={provider!r}"
         if env_var is not None:
             hint += f", required key={env_var}"
-        _skip_or_fail_live_llm(
-            f"Live LLM turn tests require usable LLM configuration:{hint}. {msg}"
-        )
+        skip_or_fail(f"Live LLM turn tests require usable LLM configuration:{hint}. {msg}")
 
     auth = credential_status(settings.provider)
     if not auth.configured or auth.stale:
-        _skip_or_fail_live_llm(
+        skip_or_fail(
             "Live LLM turn tests require usable LLM credentials:"
             f" configured provider={settings.provider!r}, auth={auth.source}, detail={auth.detail}"
         )
