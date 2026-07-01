@@ -361,9 +361,10 @@ def test_detect_with_unrelated_files_is_not_logged_in(
     assert probe.logged_in is None
 
 
+@patch("integrations.llm_cli.copilot._fallback_copilot_paths", return_value=[])
 @patch("integrations.llm_cli.binary_resolver.shutil.which", return_value=None)
 def test_detect_when_binary_not_found(
-    _mock_which: MagicMock, monkeypatch: pytest.MonkeyPatch
+    _mock_which: MagicMock, _mock_fallback: MagicMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _clean_copilot_env(monkeypatch)
     probe = CopilotAdapter().detect()
