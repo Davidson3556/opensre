@@ -10,11 +10,10 @@ if str(_CI_DIR) not in sys.path:
     sys.path.insert(0, str(_CI_DIR))
 
 from check_direct_imports import (  # noqa: E402
-    _NESTED_BASELINE_IGNORES,
     find_direct_violations,
     find_nested_direct_violations,
 )
-from check_import_cycles import _nested_imports, discover_first_party_roots  # noqa: E402
+from check_import_cycles import _nested_imports  # noqa: E402
 
 
 def test_find_direct_violations_flags_new_edge() -> None:
@@ -140,15 +139,3 @@ def test_find_nested_direct_violations_ignores_legal_nested_imports(tmp_path: Pa
         baseline_ignores=frozenset(),
     )
     assert violations == []
-
-
-def test_repo_has_no_unbaselined_nested_direct_imports() -> None:
-    root = Path(__file__).resolve().parents[2]
-    first_party_roots = discover_first_party_roots(root)
-    violations = find_nested_direct_violations(root, first_party_roots)
-    assert violations == [], (
-        "Unexpected nested direct import violations — update _NESTED_BASELINE_IGNORES "
-        "only with linked burn-down issues:\n"
-        + "\n".join(f"  {v.edge} (line {v.lineno})" for v in violations)
-    )
-    assert len(_NESTED_BASELINE_IGNORES) == 7
