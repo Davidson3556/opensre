@@ -78,13 +78,10 @@ async def _render_agent_presentation_transition(
     spinner: SpinnerState,
 ) -> None:
     """Perform the terminal side effects for one presentation transition."""
-    from surfaces.interactive_shell.ui.output import set_prompt_suppress_fn
-
     match event.type:
         case "turn_start":
             if current.show_spinner:
                 spinner.start()
-                set_prompt_suppress_fn(console.suppress_prompt_spinner)
         case "turn_interrupted":
             console.print(f"[{WARNING}]· interrupted[/]")
         case "turn_error":
@@ -98,7 +95,6 @@ async def _render_agent_presentation_transition(
             if isinstance(exc, LLMCreditExhaustedError):
                 console.print(f"[{DIM}]Run /model to switch to another provider.[/]")
         case "turn_end":
-            set_prompt_suppress_fn(None)
             if previous.show_spinner:
                 spinner.stop()
             await asyncio.sleep(0.05)
