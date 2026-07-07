@@ -17,7 +17,8 @@ from pathlib import Path
 INTEGRATIONS_DIR = Path(__file__).resolve().parents[2] / "integrations"
 
 # Cross-cutting infra that is intentionally flat — NOT vendor integrations.
-# `port.py` is the Ports & Adapters interface, not a SaaS vendor.
+# `port.py` and `harness_adapters.py` are Ports & Adapters wiring, not SaaS
+# vendors.
 ALLOWED_FLAT_MODULES = frozenset(
     {
         "catalog.py",
@@ -25,6 +26,7 @@ ALLOWED_FLAT_MODULES = frozenset(
         "config_models.py",
         "daily_update.py",
         "effective_models.py",
+        "harness_adapters.py",
         "mcp_streamable_http_compat.py",
         "messaging_security.py",
         "models.py",

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 
 import httpx
 
+import integrations.posthog.client as client
 from integrations._validation_helpers import report_validation_failure
-from integrations.posthog import client
 from integrations.posthog.config import PostHogConfig
 
 logger = logging.getLogger(__name__)
