@@ -338,25 +338,37 @@ class _DeferredSyntheticThread:
         _DeferredSyntheticThread.pending.append(self._target)
 
 
+def _synthetic_presenter(session: Session) -> MagicMock:
+    presenter = MagicMock()
+    presenter.session = session
+    presenter.start_task_output_streams.return_value = []
+    presenter.join_task_output_streams.return_value = None
+    presenter.report_exception.return_value = None
+    presenter.print_error.return_value = None
+    return presenter
+
+
 class TestSyntheticSubprocessWatcher:
     def test_watch_marks_completed_when_process_already_done(
         self,
         monkeypatch: pytest.MonkeyPatch,
         stderr_buf: tempfile.SpooledTemporaryFile,  # type: ignore[type-arg]
     ) -> None:
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
-        monkeypatch.setattr(ae.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _ImmediateThread,
+        )
 
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         task.attach_process(proc)
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         assert task.status == TaskStatus.COMPLETED
         hist = session.history[-1]
         assert hist["type"] == "synthetic_test"
@@ -374,11 +386,13 @@ class TestSyntheticSubprocessWatcher:
         cancel_requested branch runs, so terminated_by_watcher stays False.
         The task must be COMPLETED, not CANCELLED — the process succeeded.
         """
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
-        monkeypatch.setattr(ae.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _ImmediateThread,
+        )
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         proc = MagicMock()
@@ -400,8 +414,8 @@ class TestSyntheticSubprocessWatcher:
             task.cancel_requested.set()
             pending[0] = 0  # process finishes naturally in the same window
 
-        monkeypatch.setattr(ae.time, "sleep", _fake_sleep)
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        monkeypatch.setattr("tools.interactive_shell.subprocess.time.sleep", _fake_sleep)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         # terminated_by_watcher is False → honour exit code 0 → COMPLETED
         assert task.status == TaskStatus.COMPLETED
         assert sleeps
@@ -412,11 +426,13 @@ class TestSyntheticSubprocessWatcher:
         stderr_buf: tempfile.SpooledTemporaryFile,  # type: ignore[type-arg]
     ) -> None:
         """cancel_requested is set while proc is still running; watcher terminates it."""
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
-        monkeypatch.setattr(ae.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _ImmediateThread,
+        )
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         proc = MagicMock()
@@ -429,9 +445,9 @@ class TestSyntheticSubprocessWatcher:
         task.cancel_requested.set()  # cancel already set before first loop check
 
         # Skip the sleep so the loop iterates immediately to the cancel branch.
-        monkeypatch.setattr(ae.time, "sleep", lambda _: None)
+        monkeypatch.setattr("tools.interactive_shell.subprocess.time.sleep", lambda _: None)
 
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         assert task.status == TaskStatus.CANCELLED
         hist = session.history[-1]
         assert hist["type"] == "synthetic_test"
@@ -447,11 +463,13 @@ class TestSyntheticSubprocessWatcher:
         The watcher should mark the task COMPLETED, not CANCELLED, because we
         never called _terminate_child_process — the process was already gone.
         """
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
-        monkeypatch.setattr(ae.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _ImmediateThread,
+        )
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         proc = MagicMock()
@@ -463,7 +481,7 @@ class TestSyntheticSubprocessWatcher:
         # Simulate /cancel arriving just as the watcher reads poll()
         task.cancel_requested.set()
 
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         assert task.status == TaskStatus.COMPLETED
 
     def test_watch_captures_stderr_on_failure(
@@ -472,11 +490,13 @@ class TestSyntheticSubprocessWatcher:
         stderr_buf: tempfile.SpooledTemporaryFile,  # type: ignore[type-arg]
     ) -> None:
         """Diagnostic stderr output is included in mark_failed message."""
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
-        monkeypatch.setattr(ae.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _ImmediateThread,
+        )
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         proc = MagicMock()
@@ -484,7 +504,7 @@ class TestSyntheticSubprocessWatcher:
         proc.returncode = 1
 
         stderr_buf.write(b"ConnectionError: database unreachable\n")
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         assert task.status == TaskStatus.FAILED
         assert "exit code 1" in (task.error or "")
         assert "ConnectionError" in (task.error or "")
@@ -495,20 +515,22 @@ class TestSyntheticSubprocessWatcher:
         monkeypatch: pytest.MonkeyPatch,
         stderr_buf: tempfile.SpooledTemporaryFile,  # type: ignore[type-arg]
     ) -> None:
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
         _DeferredSyntheticThread.pending.clear()
-        monkeypatch.setattr(ae.threading, "Thread", _DeferredSyntheticThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _DeferredSyntheticThread,
+        )
 
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         task.attach_process(proc)
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         assert len(_DeferredSyntheticThread.pending) == 1
         session.clear()
         _DeferredSyntheticThread.pending[0]()
@@ -520,20 +542,22 @@ class TestSyntheticSubprocessWatcher:
         monkeypatch: pytest.MonkeyPatch,
         stderr_buf: tempfile.SpooledTemporaryFile,  # type: ignore[type-arg]
     ) -> None:
-        import surfaces.interactive_shell.runtime.subprocess_runner as ae
-
         _DeferredSyntheticThread.pending.clear()
-        monkeypatch.setattr(ae.threading, "Thread", _DeferredSyntheticThread)
+        monkeypatch.setattr(
+            "tools.interactive_shell.synthetic.runner.threading.Thread",
+            _DeferredSyntheticThread,
+        )
 
         proc = MagicMock()
         proc.poll.return_value = 0
         proc.returncode = 0
 
         session = Session()
+        presenter = _synthetic_presenter(session)
         task = session.task_registry.create(TaskKind.SYNTHETIC_TEST)
         task.mark_running()
         task.attach_process(proc)
-        watch_synthetic_subprocess(task, proc, session, "rds_postgres", stderr_buf)
+        watch_synthetic_subprocess(task, proc, presenter, "rds_postgres", stderr_buf)
         _DeferredSyntheticThread.pending[0]()
         assert session.history[-1]["type"] == "synthetic_test"
         _DeferredSyntheticThread.pending.clear()
