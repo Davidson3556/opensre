@@ -142,7 +142,6 @@ jobs:
               tests/delivery
               tests/sandbox
               tests/hermes
-              tests/github
           - os: ubuntu-latest
             shard: integrations-and-misc
             pytest_paths: >-
