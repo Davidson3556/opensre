@@ -76,6 +76,27 @@ def test_execute_tool_calls_validates_arguments_before_execution() -> None:
     ]
 
 
+def test_success_payload_with_error_none_reaches_agent() -> None:
+    """A success dict carrying ``"error": None`` must reach the agent unchanged,
+    not be flagged as a failure on the mere presence of the key (#3889)."""
+    payload = {"available": True, "events": [{"id": 1}], "error": None}
+
+    result = execute_tool_calls([_call()], [_tool(execute=lambda _a, _c: payload)], {})[0]
+
+    assert result.is_error is False
+    assert result.details == payload
+    # compat_payload returns the full payload for old call sites, not {"error": ...}.
+    assert execute_tools([_call()], [_tool(execute=lambda _a, _c: payload)], {}) == [payload]
+
+
+def test_truthy_error_still_flagged_as_failure() -> None:
+    """A real error message is still surfaced as a failure (#3889)."""
+    result = execute_tool_calls([_call()], [_tool(execute=lambda _a, _c: {"error": "boom"})], {})[0]
+
+    assert result.is_error is True
+    assert result.content == "boom"
+
+
 def test_before_hook_can_block_with_structured_result() -> None:
     def before(_request: ToolExecutionRequest) -> BeforeToolCallResult:
         return BeforeToolCallResult(blocked=True, reason="blocked", details={"policy": "deny"})
