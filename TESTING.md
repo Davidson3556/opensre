@@ -76,17 +76,18 @@ For features that touch both storage and display, test each layer separately:
 # Phase 1 — storage correctness (fast, no REPL)
 from core.agent_harness.session import (
     JsonlSessionStorage,
-    Session,
+    SessionCore,
     default_session_repo,
 )
 
 storage = JsonlSessionStorage()
-session = Session(storage=storage)
+session = SessionCore(storage=storage)
 storage.open_session(session)
 session.record("chat", "why is redis slow?")
 storage.flush(session)
 data = default_session_repo().load_session(session.session_id[:8])
-assert data["has_snapshot"] is True
+assert data is not None                                    # session persisted and reloads by prefix
+assert data["history"][0]["text"] == "why is redis slow?"  # the chat entry round-tripped
 
 # Phase 2 — display correctness (ReplDriver)
 with ReplDriver() as repl:
