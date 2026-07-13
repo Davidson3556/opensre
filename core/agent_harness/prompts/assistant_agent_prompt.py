@@ -1,10 +1,14 @@
 """System prompt building for the terminal assistant."""
 
+from collections.abc import Mapping
+from typing import Any
+
 from core.agent_harness.prompts.rules import (
     AGENT_RESPONSE_THREE_TIER_RULE,
     CLI_ASSISTANT_MARKDOWN_RULE,
     INTERACTIVE_SHELL_TERMINOLOGY_RULE,
 )
+from core.agent_harness.prompts.runtime_facts import render_runtime_facts
 
 _TERMINOLOGY_RULE = INTERACTIVE_SHELL_TERMINOLOGY_RULE
 _MARKDOWN_RULE = CLI_ASSISTANT_MARKDOWN_RULE
@@ -62,74 +66,6 @@ def build_handoff_guidance_block(handoff_contents: tuple[str, ...]) -> str:
     return "".join(blocks)
 
 
-def _render_runtime_facts(
-    opensre_version: str | None,
-    opensre_build: str | None,
-    runtime_env: str | None,
-    now_iso: str | None,
-    tz_name: str | None,
-    python_version: str | None,
-    pid: int | None,
-    ppid: int | None,
-    uptime_seconds: float | None,
-    installed_tools: dict[str, str] | None,
-    kubeconfig: str | None,
-) -> str:
-    """Runtime section of the environment block, or ``""`` when nothing to say.
-
-    Phrased for quote-verbatim recall: earlier prompt wording ("including the
-    build marker if present") caused the LLM to treat "build marker" as a slot
-    name and hallucinate a value like ``0`` when the marker was empty.
-    """
-    version = (opensre_version or "").strip()
-    build_marker = (opensre_build or "").strip()
-    env_name = (runtime_env or "").strip()
-    now = (now_iso or "").strip()
-    tz = (tz_name or "").strip()
-    py = (python_version or "").strip()
-    kubecfg = (kubeconfig or "").strip()
-    present_tools = sorted(name for name, path in (installed_tools or {}).items() if path)
-    if not (version or env_name or now or py or pid or present_tools):
-        return ""
-    bits: list[str] = []
-    if version:
-        display = f"{version} ({build_marker})" if build_marker else version
-        bits.append(f"OpenSRE version is {display}")
-    if env_name:
-        bits.append(f"runtime environment is {env_name}")
-    if now:
-        bits.append(f"current time is {now}")
-    if tz:
-        bits.append(f"local timezone is {tz}")
-    if uptime_seconds is not None and uptime_seconds >= 0:
-        bits.append(f"process uptime is {uptime_seconds} seconds")
-    if py:
-        bits.append(f"Python interpreter version is {py}")
-    if pid:
-        parent = f", parent {ppid}" if ppid else ""
-        bits.append(f"process id is {pid}{parent}")
-    if present_tools:
-        bits.append(f"installed tools on PATH are {', '.join(present_tools)}")
-    if kubecfg:
-        bits.append(f"kubeconfig path is {kubecfg}")
-    return (
-        "Runtime facts (quote the strings below EXACTLY when asked; do not "
-        "paraphrase them into other field names): "
-        + "; ".join(bits)
-        + ". When the user asks which OpenSRE version is running, reply with the "
-        "full version string above verbatim — including any parenthetical suffix. "
-        "When the user asks for the current date, time, day of the week, or "
-        "timezone, answer from the strings above — do NOT guess a date/time from "
-        "your training data. When the user asks for the Python version, process "
-        "id, parent process id, uptime, kubeconfig path, or which tools are "
-        "installed, answer from the strings above — do NOT run `python --version`, "
-        "`kubectl version`, `which`, `ps`, `date`, `uptime`, or `opensre --version`. "
-        "Do NOT invent field names, values, or numbers not present above. Do NOT "
-        "shell out or use subprocess — the Python execution sandbox blocks process "
-        "spawning; use `inputs['opensre_runtime']` inside the sandbox instead."
-    )
-
-
 def build_environment_block(
     *,
     integrations: tuple[str, ...],
@@ -138,22 +74,13 @@ def build_environment_block(
     reasoning_model: str | None = None,
     toolcall_model: str | None = None,
     llm_settings_available: bool | None = None,
-    opensre_version: str | None = None,
-    opensre_build: str | None = None,
-    runtime_env: str | None = None,
-    now_iso: str | None = None,
-    tz_name: str | None = None,
-    python_version: str | None = None,
-    pid: int | None = None,
-    ppid: int | None = None,
-    uptime_seconds: float | None = None,
-    installed_tools: dict[str, str] | None = None,
-    kubeconfig: str | None = None,
+    runtime: Mapping[str, Any] | None = None,
 ) -> str:
     """Render shell-state facts so the assistant can answer directly.
 
     Decoupled from any session type: the caller (a ``PromptContextProvider``
-    adapter) supplies integration names and optional LLM settings.
+    adapter) supplies integration names, optional LLM settings, and the
+    ``capture_runtime_facts()`` dict as ``runtime``.
     """
     facts: list[str] = []
     if integrations:
@@ -190,19 +117,7 @@ def build_environment_block(
             "instead of guessing or telling them to run another command."
         )
 
-    runtime_fact = _render_runtime_facts(
-        opensre_version,
-        opensre_build,
-        runtime_env,
-        now_iso,
-        tz_name,
-        python_version,
-        pid,
-        ppid,
-        uptime_seconds,
-        installed_tools,
-        kubeconfig,
-    )
+    runtime_fact = render_runtime_facts(runtime or {})
     if runtime_fact:
         facts.append(runtime_fact)
 
