@@ -11,7 +11,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from pydantic import ValidationError
+
 from platform.observability.errors.boundary import report_exception
+
+
+def _sentry_safe(exc: BaseException) -> BaseException:
+    """Return an exception safe to capture, stripping secret field values.
+
+    A pydantic ``ValidationError`` string embeds each failing field's raw
+    ``input_value`` — which can be a secret (bot token, password, API key).
+    Replace it with a non-secret ``ValueError`` keyed on the model name so the
+    failure signal reaches Sentry without the leaked value. All other
+    exceptions pass through unchanged.
+    """
+    if isinstance(exc, ValidationError):
+        return ValueError(f"{exc.title} validation failed")
+    return exc
 
 
 def report_validation_failure(
@@ -46,7 +62,7 @@ def report_validation_failure(
             ``True`` only when the local traceback genuinely aids debugging.
     """
     report_exception(
-        exc,
+        _sentry_safe(exc),
         logger=logger,
         message=f"[{integration}] {method} validation failed",
         severity=severity,
@@ -70,7 +86,7 @@ def report_classify_failure(
 ) -> None:
     """Log + Sentry-capture a classify failure for an integration record."""
     report_exception(
-        exc,
+        _sentry_safe(exc),
         logger=logger,
         message=f"classify_failed: integration={integration} record_id={record_id}",
         severity="warning",
