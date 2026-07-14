@@ -46,6 +46,9 @@ class DefaultPromptContextProvider:
     def agents_md(self) -> str:
         return str(self._session.grounding.agents_md.build_text())
 
+    def docs(self, query: str) -> str:
+        return str(self._session.grounding.docs.build_text(query))
+
     def investigation_flow(self) -> str:
         return build_investigation_flow_reference_text()
 
