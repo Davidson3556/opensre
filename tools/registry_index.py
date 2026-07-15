@@ -72,6 +72,13 @@ def _fallback_descriptors() -> tuple[ToolDescriptor, ...]:
             "tools.interactive_shell.actions.implementation",
         ),
         ToolDescriptor(
+            "configure_telegram",
+            ("action",),
+            "interactive_shell",
+            None,
+            "tools.interactive_shell.actions.configure_telegram",
+        ),
+        ToolDescriptor(
             "fix_sentry_issue_start",
             ("action",),
             "interactive_shell",

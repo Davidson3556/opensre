@@ -15,6 +15,7 @@ from __future__ import annotations
 TOOL_MODULES = (
     "actions.assistant_handoff",
     "actions.cli_command",
+    "actions.configure_telegram",
     "actions.implementation",
     "actions.investigation",
     "actions.llm_provider",

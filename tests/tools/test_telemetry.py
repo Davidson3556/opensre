@@ -1007,6 +1007,7 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         "check_s3_marker",
         "cli_exec",
         "code_implement",
+        "configure_telegram",
         "describe_rds_events",
         "describe_rds_instance",
         "ec2_instances_by_tag",

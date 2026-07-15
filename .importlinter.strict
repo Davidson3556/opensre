@@ -43,6 +43,8 @@ ignore_imports =
     surfaces.interactive_shell.command_registry.gateway_cmds -> gateway.runtime.daemon
     surfaces.interactive_shell.controller -> gateway.http.web_server
     # tools -> integrations (T-4 debt — vendor tools / reporting)
+    tools.interactive_shell.actions.configure_telegram -> integrations.store
+    tools.interactive_shell.actions.configure_telegram -> integrations.telegram.verifier
     tools.community_followup_tool -> integrations.github.client
     tools.community_followup_tool -> integrations.github.helpers
     tools.community_followup_tool -> integrations.github.tools.workflow

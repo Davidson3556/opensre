@@ -16,6 +16,7 @@ ToolKind = Literal[
     "implementation",
     "llm_provider",
     "assistant_handoff",
+    "configure_telegram",
 ]
 
 TOOL_KIND_TO_NAME: dict[ToolKind, str] = {
@@ -30,6 +31,7 @@ TOOL_KIND_TO_NAME: dict[ToolKind, str] = {
     "implementation": "code_implement",
     "llm_provider": "llm_set_provider",
     "assistant_handoff": "assistant_handoff",
+    "configure_telegram": "configure_telegram",
 }
 
 __all__ = ["TOOL_KIND_TO_NAME", "ToolKind"]
