@@ -113,7 +113,9 @@ def fold_overflow_into_summary(
     prior_summary = messages[0][1][len(_SUMMARY_PREFIX) :] if head_is_summary else ""
     body = messages[1:] if head_is_summary else list(messages)
 
-    keep = max(max_messages - 1, 1)  # reserve one slot for the summary
+    # Reserve one slot for the summary, and keep an even count so the retained
+    # tail always starts on a user turn rather than orphaning an assistant reply.
+    keep = max((max_messages - 1) // 2 * 2, 2)
     if len(body) <= keep:
         return messages
     overflow = body[:-keep]

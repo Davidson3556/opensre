@@ -48,6 +48,16 @@ def test_extends_existing_summary_without_nesting() -> None:
     assert sum(1 for role, text in folded if text.startswith(_SUMMARY_PREFIX)) == 1
 
 
+def test_retained_tail_stays_turn_aligned() -> None:
+    # keep must be even, so the verbatim tail after the summary never starts on
+    # an orphaned assistant reply (a split user/assistant turn).
+    folded = fold_overflow_into_summary(_turns(20), max_messages=24)
+
+    tail = folded[1:]  # drop the leading summary
+    assert tail[0][0] == "user"
+    assert [role for role, _ in tail] == ["user", "assistant"] * (len(tail) // 2)
+
+
 def test_full_summary_keeps_newest_overflow_and_anchor() -> None:
     # A prior summary already at the char budget must not freeze: fresh overflow
     # still lands, and the earliest anchor context is not fully evicted.
