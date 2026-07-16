@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import re
 
-MAX_CONVERSATION_TURNS = 12
-MAX_CONVERSATION_MESSAGES = MAX_CONVERSATION_TURNS * 2
+# Canonical home for the window constants is core.state.agent_state; re-exported
+# here (see __all__) so prompt/turn builders keep a single import point.
+from core.state.agent_state import MAX_CONVERSATION_MESSAGES, MAX_CONVERSATION_TURNS
 
 NO_HISTORY_PLACEHOLDER = "(no prior messages in this CLI thread)"
 _ACTION_FACT_MARKERS = (
@@ -168,3 +169,13 @@ def format_prior_action_facts(
         rendered.append(chunk)
         remaining -= len(chunk) + 2
     return "\n\n".join(rendered)
+
+
+__all__ = [
+    "MAX_CONVERSATION_MESSAGES",
+    "MAX_CONVERSATION_TURNS",
+    "NO_HISTORY_PLACEHOLDER",
+    "expand_affirmative_follow_up",
+    "format_prior_action_facts",
+    "format_recent_conversation",
+]

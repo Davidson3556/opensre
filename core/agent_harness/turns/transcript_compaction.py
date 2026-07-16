@@ -9,6 +9,7 @@ from typing import Any
 DEFAULT_AUTO_COMPACTION_CHARS = 48_000
 _KEEP_RECENT_MESSAGES = 8
 _SUMMARY_MAX_CHARS = 6_000
+_SUMMARY_PREFIX = "Session summary:\n"
 
 
 @dataclass(frozen=True)
@@ -60,7 +61,7 @@ def compact_session_branch(
     kept = messages[-_KEEP_RECENT_MESSAGES:]
     compacted = messages[:-_KEEP_RECENT_MESSAGES]
     final_summary = summary or deterministic_summary(compacted)
-    session.agent.messages = [("assistant", f"Session summary:\n{final_summary}"), *kept]
+    session.agent.messages = [("assistant", f"{_SUMMARY_PREFIX}{final_summary}"), *kept]
     after_chars = _message_chars(list(session.agent.messages))
     session.storage.append_compaction(
         session.session_id,
@@ -87,6 +88,40 @@ def auto_compact_if_needed(
     if not should_compact(session, threshold_chars=threshold_chars):
         return None
     return compact_session_branch(session)
+
+
+def fold_overflow_into_summary(
+    messages: list[tuple[str, str]],
+    *,
+    max_messages: int,
+) -> list[tuple[str, str]]:
+    """Fold turns beyond the window into a leading running summary.
+
+    The end-of-turn trim used to drop the oldest turns outright, so anything past
+    the window vanished with no trace. Instead, summarize the overflow into a
+    single leading ``Session summary:`` message and keep the most recent turns
+    verbatim, so early context survives inside the window.
+
+    Works on a bare message list (not a persisted session) so both the live
+    ``Session`` and headless stores share one behavior. Extends an existing
+    leading summary rather than nesting a new one, keeping it a running summary.
+    """
+    if max_messages < 1 or len(messages) <= max_messages:
+        return messages
+
+    head_is_summary = messages[0][0] == "assistant" and messages[0][1].startswith(_SUMMARY_PREFIX)
+    prior_summary = messages[0][1][len(_SUMMARY_PREFIX) :] if head_is_summary else ""
+    body = messages[1:] if head_is_summary else list(messages)
+
+    keep = max(max_messages - 1, 1)  # reserve one slot for the summary
+    if len(body) <= keep:
+        return messages
+    overflow = body[:-keep]
+    recent = body[-keep:]
+
+    folded = deterministic_summary(overflow)
+    combined = f"{prior_summary}\n{folded}".strip() if prior_summary else folded
+    return [("assistant", f"{_SUMMARY_PREFIX}{combined[:_SUMMARY_MAX_CHARS]}"), *recent]
 
 
 def deterministic_summary(messages: list[tuple[str, str]]) -> str:
@@ -131,5 +166,6 @@ __all__ = [
     "auto_compact_if_needed",
     "compact_session_branch",
     "deterministic_summary",
+    "fold_overflow_into_summary",
     "should_compact",
 ]
