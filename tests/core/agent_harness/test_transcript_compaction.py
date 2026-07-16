@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from core.agent_harness.turns.transcript_compaction import fold_overflow_into_summary
-
-_SUMMARY_PREFIX = "Session summary:\n"
+from core.agent_harness.turns.transcript_compaction import (
+    _SUMMARY_MAX_CHARS,
+    _SUMMARY_PREFIX,
+    fold_overflow_into_summary,
+)
 
 
 def _turns(count: int, *, start: int = 1) -> list[tuple[str, str]]:
@@ -44,3 +46,21 @@ def test_extends_existing_summary_without_nesting() -> None:
     assert folded[0][1].count(_SUMMARY_PREFIX) == 1
     assert "older context here" in folded[0][1]
     assert sum(1 for role, text in folded if text.startswith(_SUMMARY_PREFIX)) == 1
+
+
+def test_full_summary_keeps_newest_overflow_and_anchor() -> None:
+    # A prior summary already at the char budget must not freeze: fresh overflow
+    # still lands, and the earliest anchor context is not fully evicted.
+    anchor = "ANCHOR-cluster-prod-eu-42"
+    prior = anchor + " " + ("x" * _SUMMARY_MAX_CHARS)
+    messages = [("assistant", f"{_SUMMARY_PREFIX}{prior}")]
+    messages += [("user", "NEWEST-overflow-marker question"), ("assistant", "answer")]
+    messages += _turns(24)
+
+    folded = fold_overflow_into_summary(messages, max_messages=24)
+
+    summary = folded[0][1]
+    assert summary.startswith(_SUMMARY_PREFIX)
+    assert len(summary) <= len(_SUMMARY_PREFIX) + _SUMMARY_MAX_CHARS
+    assert "NEWEST-overflow-marker" in summary  # fresh overflow retained
+    assert anchor in summary  # earliest anchor retained

@@ -119,9 +119,18 @@ def fold_overflow_into_summary(
     overflow = body[:-keep]
     recent = body[-keep:]
 
-    folded = deterministic_summary(overflow)
-    combined = f"{prior_summary}\n{folded}".strip() if prior_summary else folded
-    return [("assistant", f"{_SUMMARY_PREFIX}{combined[:_SUMMARY_MAX_CHARS]}"), *recent]
+    folded = deterministic_summary(overflow)[:_SUMMARY_MAX_CHARS]
+    if prior_summary:
+        # Keep the newest fold intact, then fill the rest of the budget with the
+        # earliest summarized context. Plain head-truncation would freeze once
+        # full and silently drop fresh overflow; plain tail-truncation would
+        # drop the original anchor context the summary exists to preserve.
+        head_room = _SUMMARY_MAX_CHARS - len(folded) - 1
+        head = prior_summary[:head_room].rstrip() if head_room > 0 else ""
+        combined = f"{head}\n{folded}".strip() if head else folded
+    else:
+        combined = folded
+    return [("assistant", f"{_SUMMARY_PREFIX}{combined}"), *recent]
 
 
 def deterministic_summary(messages: list[tuple[str, str]]) -> str:
