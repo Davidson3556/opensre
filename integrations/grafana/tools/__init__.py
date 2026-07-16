@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from core.tool_framework.tool_decorator import tool
+from core.tool_framework.utils.tool_availability import tool_unavailable
 
 
 def _query_grafana_alert_rules_extract_params(sources: dict[str, dict]) -> dict[str, Any]:
@@ -94,12 +95,7 @@ def query_grafana_alert_rules(
 
     client = _resolve_grafana_client(grafana_endpoint, grafana_api_key)
     if not client or not client.is_configured:
-        return {
-            "source": "grafana_alerts",
-            "available": False,
-            "error": "Grafana integration not configured",
-            "rules": [],
-        }
+        return tool_unavailable("grafana_alerts", "Grafana integration not configured", rules=[])
 
     rules = client.query_alert_rules(folder=folder)
     return {
@@ -222,12 +218,9 @@ def query_grafana_annotations(
         grafana_endpoint, grafana_api_key, grafana_username, grafana_password
     )
     if not client or not client.is_configured:
-        return {
-            "source": "grafana_annotations",
-            "available": False,
-            "error": "Grafana integration not configured",
-            "annotations": [],
-        }
+        return tool_unavailable(
+            "grafana_annotations", "Grafana integration not configured", annotations=[]
+        )
 
     now_ms = int(time.time() * 1000)
     try:
@@ -237,12 +230,7 @@ def query_grafana_annotations(
         # yields a valid [to - window, to] range rather than from_ts > to_ts.
         from_ts = _iso_to_epoch_ms(from_iso) if from_iso else to_ts - time_range_minutes * 60 * 1000
     except (ValueError, TypeError, AttributeError) as e:
-        return {
-            "source": "grafana_annotations",
-            "available": False,
-            "error": f"Invalid timestamp: {e}",
-            "annotations": [],
-        }
+        return tool_unavailable("grafana_annotations", f"Invalid timestamp: {e}", annotations=[])
 
     annotations = client.query_annotations(from_ts=from_ts, to_ts=to_ts, tags=tags, limit=limit)
     return {
@@ -400,19 +388,9 @@ def query_grafana_logs(
         grafana_endpoint, grafana_api_key, grafana_username, grafana_password
     )
     if not client or not client.is_configured:
-        return {
-            "source": "grafana_loki",
-            "available": False,
-            "error": "Grafana integration not configured",
-            "logs": [],
-        }
+        return tool_unavailable("grafana_loki", "Grafana integration not configured", logs=[])
     if not client.loki_datasource_uid:
-        return {
-            "source": "grafana_loki",
-            "available": False,
-            "error": "Loki datasource not found",
-            "logs": [],
-        }
+        return tool_unavailable("grafana_loki", "Loki datasource not found", logs=[])
 
     def _build_query(label: str, value: str) -> str:
         if execution_run_id:
@@ -432,12 +410,7 @@ def query_grafana_logs(
             query = fallback_query
 
     if not result.get("success"):
-        return {
-            "source": "grafana_loki",
-            "available": False,
-            "error": result.get("error", "Unknown error"),
-            "logs": [],
-        }
+        return tool_unavailable("grafana_loki", result.get("error", "Unknown error"), logs=[])
 
     logs_data = result.get("logs", [])
     error_keywords = ("error", "fail", "exception", "traceback")
@@ -574,28 +547,13 @@ def query_grafana_metrics(
         grafana_endpoint, grafana_api_key, grafana_username, grafana_password
     )
     if not client or not client.is_configured:
-        return {
-            "source": "grafana_mimir",
-            "available": False,
-            "error": "Grafana integration not configured",
-            "metrics": [],
-        }
+        return tool_unavailable("grafana_mimir", "Grafana integration not configured", metrics=[])
     if not client.mimir_datasource_uid:
-        return {
-            "source": "grafana_mimir",
-            "available": False,
-            "error": "Mimir datasource not found",
-            "metrics": [],
-        }
+        return tool_unavailable("grafana_mimir", "Mimir datasource not found", metrics=[])
 
     result = client.query_mimir(metric_name, service_name=service_name)
     if not result.get("success"):
-        return {
-            "source": "grafana_mimir",
-            "available": False,
-            "error": result.get("error", "Unknown error"),
-            "metrics": [],
-        }
+        return tool_unavailable("grafana_mimir", result.get("error", "Unknown error"), metrics=[])
 
     return {
         "source": "grafana_mimir",
@@ -660,12 +618,9 @@ def query_grafana_service_names(
 
     client = _resolve_grafana_client(grafana_endpoint, grafana_api_key)
     if not client or not client.is_configured:
-        return {
-            "source": "grafana_loki_labels",
-            "available": False,
-            "error": "Grafana integration not configured",
-            "service_names": [],
-        }
+        return tool_unavailable(
+            "grafana_loki_labels", "Grafana integration not configured", service_names=[]
+        )
 
     service_names = client.query_loki_label_values("service_name")
     return {
@@ -754,28 +709,13 @@ def query_grafana_traces(
 
     client = _resolve_grafana_client(grafana_endpoint, grafana_api_key)
     if not client or not client.is_configured:
-        return {
-            "source": "grafana_tempo",
-            "available": False,
-            "error": "Grafana integration not configured",
-            "traces": [],
-        }
+        return tool_unavailable("grafana_tempo", "Grafana integration not configured", traces=[])
     if not client.tempo_datasource_uid:
-        return {
-            "source": "grafana_tempo",
-            "available": False,
-            "error": "Tempo datasource not found",
-            "traces": [],
-        }
+        return tool_unavailable("grafana_tempo", "Tempo datasource not found", traces=[])
 
     result = client.query_tempo(service_name, limit=limit)
     if not result.get("success"):
-        return {
-            "source": "grafana_tempo",
-            "available": False,
-            "error": result.get("error", "Unknown error"),
-            "traces": [],
-        }
+        return tool_unavailable("grafana_tempo", result.get("error", "Unknown error"), traces=[])
 
     traces = result.get("traces", [])
     if execution_run_id and traces:
