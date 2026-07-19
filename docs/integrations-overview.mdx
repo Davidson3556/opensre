@@ -49,11 +49,15 @@ Inside the interactive shell you can also run `/integrations list`, `/integratio
 
 Enterprise connectors are configured through the OpenSRE web app at [app.tracer.cloud](https://app.tracer.cloud). Once connected, they are available to all users in your organization.
 
-**Observability.** Connect [Grafana](/grafana) and [Datadog](/datadog) for logs, metrics, traces, and alerts.
+| Category | Integrations | Setup doc |
+| --- | --- | --- |
+| **Observability** | Grafana, Datadog, Sentry, Honeycomb | [Grafana](/grafana) (Option 4), [Datadog](/datadog) (Option 4) |
+| **Infrastructure** | AWS, Kubernetes | [AWS](/aws), [Kubernetes](/kubernetes) |
+| **Communication** | Slack, Discord, Telegram | [Messaging overview](/messaging/index) |
 
-**Infrastructure.** Connect [AWS](/aws) to map your environment across clouds and clusters.
+After connecting in the web app, confirm each connector shows **connected**, then run a test investigation or verify the same integration locally with `opensre integrations verify <name>` if your team also uses the CLI.
 
-**Communication.** Deliver investigation reports via [Slack, Discord, or Telegram](/messaging/index).
+See [Enterprise setup](/install-enterprise) for the full org onboarding checklist.
 
 <Frame>
   ![Integrations](/images/integrations.png)
