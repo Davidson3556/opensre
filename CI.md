@@ -105,7 +105,13 @@ make test-cov
 
 ## 4) Conditional checks
 
-If integration config, integration wiring, or related tools changed, also run:
+CI runs the fast registry smoke gate on every code change:
+
+```bash
+make verify-integrations-smoke
+```
+
+If integration config, integration wiring, or related tools changed, also run the live check against your local store and environment:
 
 ```bash
 make verify-integrations

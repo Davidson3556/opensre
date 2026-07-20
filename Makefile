@@ -2,7 +2,7 @@
 export
 
 .PHONY: install build onboard demo benchmark benchmark-update-readme \
-	alert-template investigate-alert verify-integrations check-docker \
+	alert-template investigate-alert verify-integrations verify-integrations-smoke check-docker \
 	grafana-local-up grafana-local-down grafana-local-seed \
 	cloudwatch-demo datadog-demo crashloop-demo prefect-demo \
 	flink-demo upstream-downstream \
@@ -91,6 +91,11 @@ CLOUDOPSBENCH_LIMIT ?=
 
 verify-integrations:
 	uv run opensre integrations verify $(if $(SERVICE),$(SERVICE),) $(if $(SLACK_TEST),--send-slack-test,)
+
+verify-integrations-smoke:
+	$(PYTHON) -m pytest -q \
+	  tests/integrations/test_verification_registry.py \
+	  tests/integrations/test_registry.py
 
 check-docker:
 	@command -v docker >/dev/null 2>&1 || { echo "Docker is required for the live local Grafana stack. Install Docker Desktop or another Docker-compatible runtime, then rerun this target."; exit 1; }
@@ -513,6 +518,7 @@ help:
 	@echo "  make alert-template TEMPLATE=datadog - Print a starter alert JSON template"
 	@echo "  make investigate-alert ALERT=/path/to/alert.json - Run RCA against your own alert payload"
 	@echo "  make verify-integrations - Check local store + .env integrations before running RCA"
+	@echo "  make verify-integrations-smoke - Fast registry/catalog contract tests (CI smoke gate)"
 	@echo "  make prefect-demo    - Run Prefect ECS Fargate E2E test (alias for demo)"
 	@echo "  make prefect-local-test - Run Prefect ECS local test (CLOUD=1 for ECS)"
 	@echo "  make flink-demo      - Run Apache Flink ECS E2E test"
