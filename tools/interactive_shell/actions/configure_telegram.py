@@ -2,10 +2,14 @@
 
 The action agent selects this tool when a user pastes a Telegram bot token and
 asks to set up / connect / enable Telegram, and extracts the token (and an
-optional chat id) into the tool arguments. It validates the token against the
-Telegram Bot API and, on success, saves the integration — so the user does not
-have to re-enter the token in the interactive `/integrations setup telegram`
-wizard.
+optional chat id) into the tool arguments — so the user does not have to
+re-enter the token in the interactive `/integrations setup telegram` wizard.
+
+Everything after collecting those values (merging over the stored record,
+verifying, persisting, and the "configured but cannot deliver" advisory) is
+delegated to :func:`integrations.setup_flow.apply_setup`, which the onboarding
+wizard drives with prompt-collected values. This module is only the adapter
+between the agent's arguments and that shared flow.
 
 Selection is the action agent's job via normal tool-calling; there is no
 keyword/regex detection of tokens here (see ``tools/interactive_shell/AGENTS.md``).
@@ -35,33 +39,28 @@ def execute_configure_telegram_tool(args: dict[str, Any], ctx: ActionToolContext
         ctx.console.print("[yellow]No Telegram bot token provided.[/]")
         return {"ok": False, "error": "missing_bot_token"}
 
-    # Validate the token against the Telegram Bot API before persisting anything,
-    # so a typo or revoked token fails with a reason instead of saving junk. Uses
-    # the integration-layer verifier (tools may depend on integrations, not on
-    # surfaces).
-    from integrations.telegram.verifier import verify_telegram
+    # The shared setup flow merges over the stored record, verifies, and only
+    # then persists — so a token-only paste keeps an existing default_chat_id, a
+    # bad token cannot overwrite a working integration, and the secret is
+    # redacted out of anything shown back.
+    from integrations.setup_flow import apply_setup
 
     ctx.console.print("[dim]Validating Telegram bot token…[/]")
-    outcome = verify_telegram("setup", {"bot_token": bot_token})
-    # The verifier's failure detail can embed the token (it includes the request
-    # URL, which contains ``/bot<token>/``). Redact it so the secret is never
-    # surfaced back to the user or the model.
-    detail = outcome["detail"].replace(bot_token, "<token>")
-    if outcome["status"] != "passed":
-        ctx.console.print(f"[red]Telegram setup failed: {escape(detail)}[/]")
-        return {"ok": False, "error": detail}
+    outcome = apply_setup("telegram", {"bot_token": bot_token, "default_chat_id": chat_id})
+    if not outcome.ok:
+        ctx.console.print(f"[red]Telegram setup failed: {escape(outcome.detail)}[/]")
+        return {"ok": False, "error": outcome.detail}
 
-    from integrations.store import upsert_integration
-
-    credentials: dict[str, Any] = {"bot_token": bot_token}
-    if chat_id:
-        credentials["default_chat_id"] = chat_id
-    upsert_integration("telegram", {"credentials": credentials})
-
-    # Never echo the token back; the verifier's detail names the bot, not the secret.
-    ctx.console.print(f"[green]✓ {escape(detail)} Saved to the integration store.[/]")
+    ctx.console.print(f"[green]✓ {escape(outcome.detail)} Saved to the integration store.[/]")
+    if outcome.warning:
+        ctx.console.print(f"[yellow]{escape(outcome.warning)}[/]")
     ctx.session.record("configure_telegram", "telegram", ok=True)
-    return {"ok": True, "detail": detail, "chat_id_set": bool(chat_id)}
+    return {
+        "ok": True,
+        "detail": outcome.detail,
+        "warning": outcome.warning,
+        "chat_id_set": bool(chat_id),
+    }
 
 
 def run_configure_telegram(*, bot_token: str, chat_id: str = "", context: Any) -> dict[str, Any]:
