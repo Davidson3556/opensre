@@ -20,6 +20,7 @@ from platform.terminal.theme import SECONDARY
 from surfaces.cli.wizard._ui import (
     _console,
     _integration_defaults,
+    _joined_values,
     _prompt_value,
     _render_integration_result,
     _string_value,
@@ -39,20 +40,29 @@ def configure_from_spec(
     if intro:
         _console.print(intro)
     while True:
-        values = {
-            field.name: _prompt_value(
+        values: dict[str, str | None] = {}
+        for field in spec.fields:
+            if field.is_constant:
+                values[field.name] = field.constant
+                continue
+            stored = credentials.get(field.name)
+            # Prefer a joined list when the store still has a sequence (e.g. Better
+            # Stack ``sources`` from the pre-spec wizard). ``_string_value`` alone
+            # would drop the list and prefill blank, so Enter would clear it.
+            default = _joined_values(
+                stored, separator=",", fallback=_string_value(stored, field.default)
+            )
+            values[field.name] = _prompt_value(
                 field.question,
                 # A stored value wins over the spec's default, so re-running
                 # onboarding is a series of enters rather than a retype.
-                default=_string_value(credentials.get(field.name), field.default),
+                default=default,
                 secret=field.secret,
                 # Only reached when the field has no default to fall back on:
                 # _prompt_value substitutes the default before it consults this,
                 # so a defaulted field never re-prompts and never returns blank.
                 allow_empty=not field.required,
             )
-            for field in spec.fields
-        }
         with _console.status(f"Validating {title} credentials...", spinner="dots"):
             outcome = apply_setup(spec, values)
         _render_integration_result(

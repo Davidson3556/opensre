@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -93,6 +94,10 @@ def test_integrations_setup_accepts_openclaw() -> None:
 
 
 def test_setup_openclaw_saves_credentials(monkeypatch) -> None:
+    import dataclasses
+
+    import integrations.openclaw.setup as openclaw_setup
+
     answers = iter(["openclaw", "mcp serve"])
 
     def fake_p(_label: str, default: str = "", secret: bool = False) -> str:
@@ -101,12 +106,24 @@ def test_setup_openclaw_saves_credentials(monkeypatch) -> None:
     saved: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr("integrations.cli._p", fake_p)
     monkeypatch.setattr(
-        "integrations.cli.upsert_integration",
+        "integrations.setup_flow.upsert_integration",
         lambda service, entry: saved.append((service, entry)),
     )
     monkeypatch.setattr(
-        "integrations.cli.validate_openclaw_config",
-        lambda _config: type("Result", (), {"ok": True, "detail": "ok"})(),
+        "integrations.setup_flow.sync_env_secret",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "integrations.setup_flow.sync_env_values",
+        lambda *_args, **_kwargs: Path("/tmp/.env"),
+    )
+    monkeypatch.setattr(
+        openclaw_setup,
+        "OPENCLAW_SETUP",
+        dataclasses.replace(
+            openclaw_setup.OPENCLAW_SETUP,
+            verify=lambda _source, _config: {"status": "passed", "detail": "ok"},
+        ),
     )
 
     _setup_openclaw()
@@ -119,7 +136,7 @@ def test_setup_openclaw_saves_credentials(monkeypatch) -> None:
                 "credentials": {
                     "mode": "stdio",
                     "command": "openclaw",
-                    "args": ["mcp", "serve"],
+                    "args": "mcp serve",
                     "url": "",
                     "auth_token": "",
                 }
@@ -134,11 +151,26 @@ def test_setup_servicenow_saves_normalized_https_url(monkeypatch) -> None:
     def fake_p(_label: str, default: str = "", secret: bool = False) -> str:
         return next(answers)
 
+    class _Resp:
+        status_code = 200
+
     saved: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr("integrations.cli._p", fake_p)
     monkeypatch.setattr(
-        "integrations.cli.upsert_integration",
+        "integrations.setup_flow.upsert_integration",
         lambda service, entry: saved.append((service, entry)),
+    )
+    monkeypatch.setattr(
+        "integrations.setup_flow.sync_env_secret",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "integrations.setup_flow.sync_env_values",
+        lambda *_args, **_kwargs: Path("/tmp/.env"),
+    )
+    monkeypatch.setattr(
+        "integrations.servicenow.verifier.httpx.get",
+        lambda *_args, **_kwargs: _Resp(),
     )
 
     _setup_servicenow()
@@ -163,12 +195,20 @@ def test_setup_servicenow_rejects_plain_http_remote_url(monkeypatch) -> None:
     # setup with an actionable error, not be stored and dropped at classify.
     monkeypatch.setattr(
         "integrations.cli._p",
-        lambda _label, _default="", _secret=False: "http://dev12345.service-now.com",
+        lambda *_args, **_kwargs: "http://dev12345.service-now.com",
     )
     saved: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(
-        "integrations.cli.upsert_integration",
+        "integrations.setup_flow.upsert_integration",
         lambda service, entry: saved.append((service, entry)),
+    )
+    monkeypatch.setattr(
+        "integrations.setup_flow.sync_env_secret",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "integrations.setup_flow.sync_env_values",
+        lambda *_args, **_kwargs: Path("/tmp/.env"),
     )
 
     with pytest.raises(SystemExit):

@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from config.constants.betterstack import (
+    BETTERSTACK_PASSWORD_ENV,
+    BETTERSTACK_QUERY_ENDPOINT_ENV,
+    BETTERSTACK_SOURCES_ENV,
+    BETTERSTACK_USERNAME_ENV,
+)
 from config.constants.billing import (
     CREDITS_HTTP_TIMEOUT_SECONDS,
     ORGANIZATION_ID_ENV,
@@ -58,6 +64,21 @@ from config.constants.mongodb_atlas import (
     MONGODB_ATLAS_PROJECT_ID_ENV,
     MONGODB_ATLAS_PUBLIC_KEY_ENV,
 )
+from config.constants.mysql import (
+    MYSQL_DATABASE_ENV,
+    MYSQL_HOST_ENV,
+    MYSQL_PASSWORD_ENV,
+    MYSQL_PORT_ENV,
+    MYSQL_SSL_MODE_ENV,
+    MYSQL_USERNAME_ENV,
+)
+from config.constants.openclaw import (
+    OPENCLAW_MCP_ARGS_ENV,
+    OPENCLAW_MCP_AUTH_TOKEN_ENV,
+    OPENCLAW_MCP_COMMAND_ENV,
+    OPENCLAW_MCP_MODE_ENV,
+    OPENCLAW_MCP_URL_ENV,
+)
 from config.constants.pagerduty import PAGERDUTY_API_KEY_ENV, PAGERDUTY_BASE_URL_ENV
 from config.constants.paths import (
     INTEGRATIONS_STORE_PATH,
@@ -67,6 +88,14 @@ from config.constants.paths import (
     get_store_path,
 )
 from config.constants.platform import IS_WINDOWS
+from config.constants.postgresql import (
+    POSTGRESQL_DATABASE_ENV,
+    POSTGRESQL_HOST_ENV,
+    POSTGRESQL_PASSWORD_ENV,
+    POSTGRESQL_PORT_ENV,
+    POSTGRESQL_SSL_MODE_ENV,
+    POSTGRESQL_USERNAME_ENV,
+)
 from config.constants.posthog import (
     DEFAULT_POSTHOG_TIMEOUT_SECONDS,
     DEFAULT_POSTHOG_URL,
@@ -98,6 +127,11 @@ from config.constants.sentry_mcp import (
     SENTRY_MCP_AUTH_TOKEN_ENV,
     SENTRY_MCP_HOST_ENV,
     SENTRY_MCP_URL_ENV,
+)
+from config.constants.servicenow import (
+    SERVICENOW_INSTANCE_URL_ENV,
+    SERVICENOW_PASSWORD_ENV,
+    SERVICENOW_USERNAME_ENV,
 )
 from config.constants.signoz import SIGNOZ_API_KEY_ENV, SIGNOZ_URL_ENV
 from config.constants.smtp import (
@@ -139,6 +173,10 @@ __all__ = [
     "AZURE_OPENAI_API_KEY_ENV",
     "AZURE_OPENAI_API_VERSION_ENV",
     "AZURE_OPENAI_BASE_URL_ENV",
+    "BETTERSTACK_PASSWORD_ENV",
+    "BETTERSTACK_QUERY_ENDPOINT_ENV",
+    "BETTERSTACK_SOURCES_ENV",
+    "BETTERSTACK_USERNAME_ENV",
     "CORALOGIX_API_KEY_ENV",
     "CORALOGIX_APPLICATION_NAME_ENV",
     "CORALOGIX_BASE_URL_ENV",
@@ -179,11 +217,28 @@ __all__ = [
     "MONGODB_ATLAS_PRIVATE_KEY_ENV",
     "MONGODB_ATLAS_PROJECT_ID_ENV",
     "MONGODB_ATLAS_PUBLIC_KEY_ENV",
+    "MYSQL_DATABASE_ENV",
+    "MYSQL_HOST_ENV",
+    "MYSQL_PASSWORD_ENV",
+    "MYSQL_PORT_ENV",
+    "MYSQL_SSL_MODE_ENV",
+    "MYSQL_USERNAME_ENV",
+    "OPENCLAW_MCP_ARGS_ENV",
+    "OPENCLAW_MCP_AUTH_TOKEN_ENV",
+    "OPENCLAW_MCP_COMMAND_ENV",
+    "OPENCLAW_MCP_MODE_ENV",
+    "OPENCLAW_MCP_URL_ENV",
     "OPENSRE_HOME_DIR",
     "OPENSRE_TMP_DIR",
     "ORGANIZATION_ID_ENV",
     "PAGERDUTY_API_KEY_ENV",
     "PAGERDUTY_BASE_URL_ENV",
+    "POSTGRESQL_DATABASE_ENV",
+    "POSTGRESQL_HOST_ENV",
+    "POSTGRESQL_PASSWORD_ENV",
+    "POSTGRESQL_PORT_ENV",
+    "POSTGRESQL_SSL_MODE_ENV",
+    "POSTGRESQL_USERNAME_ENV",
     "POSTHOG_BASE_URL_ENV",
     "POSTHOG_CAPTURE_API_KEY",
     "POSTHOG_HOST",
@@ -205,6 +260,9 @@ __all__ = [
     "SENTRY_ORGANIZATION_SLUG_ENV",
     "SENTRY_PROJECT_SLUG_ENV",
     "SENTRY_TRACES_SAMPLE_RATE",
+    "SERVICENOW_INSTANCE_URL_ENV",
+    "SERVICENOW_PASSWORD_ENV",
+    "SERVICENOW_USERNAME_ENV",
     "SIGNOZ_API_KEY_ENV",
     "SIGNOZ_URL_ENV",
     "SMTP_DEFAULT_TO_ENV",

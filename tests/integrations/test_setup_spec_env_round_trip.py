@@ -28,6 +28,7 @@ import pytest
 import integrations.setup_flow as setup_flow
 from config.env_file import env_assignment_key, read_env_lines, sync_env_values
 from integrations._catalog_impl import load_env_integrations, resolve_effective_integrations
+from integrations.betterstack.setup import BETTERSTACK_SETUP
 from integrations.coralogix.setup import CORALOGIX_SETUP
 from integrations.dagster.setup import DAGSTER_SETUP
 from integrations.datadog.setup import DATADOG_SETUP
@@ -38,11 +39,15 @@ from integrations.honeycomb.setup import HONEYCOMB_SETUP
 from integrations.incident_io.setup import INCIDENT_IO_SETUP
 from integrations.jenkins.setup import JENKINS_SETUP
 from integrations.mongodb_atlas.setup import MONGODB_ATLAS_SETUP
+from integrations.mysql.setup import MYSQL_SETUP
+from integrations.openclaw.setup import OPENCLAW_SETUP
 from integrations.pagerduty.setup import PAGERDUTY_SETUP
+from integrations.postgresql.setup import POSTGRESQL_SETUP
 from integrations.posthog.setup import POSTHOG_SETUP
 from integrations.posthog_mcp.setup import POSTHOG_MCP_SETUP
 from integrations.sentry.setup import SENTRY_SETUP
 from integrations.sentry_mcp.setup import SENTRY_MCP_SETUP
+from integrations.servicenow.setup import SERVICENOW_SETUP
 from integrations.signoz.setup import SIGNOZ_SETUP
 from integrations.smtp.setup import SMTP_SETUP
 from integrations.telegram.setup import TELEGRAM_SETUP
@@ -157,6 +162,40 @@ _SUBMITTED: dict[str, dict[str, str]] = {
         "url": "https://x-mcp.checkout.internal/mcp",
         "auth_token": "x-mcp-tunnel-token",
     },
+    "betterstack": {
+        "query_endpoint": "https://eu-nbg-2-connect.betterstackdata.com",
+        "username": "bs-user",
+        "password": "bs-password",
+        "sources": "t1_checkout,t2_api",
+    },
+    "openclaw": {
+        "mode": "stdio",
+        "command": "openclaw",
+        "args": "mcp serve",
+        "url": "",
+        "auth_token": "",
+    },
+    "servicenow": {
+        "instance_url": "https://dev12345.service-now.com",
+        "username": "opensre",
+        "password": "sn-password",
+    },
+    "postgresql": {
+        "host": "postgres.eu.example.com",
+        "database": "checkout",
+        "port": "5432",
+        "username": "opensre",
+        "password": "pg-password",
+        "ssl_mode": "require",
+    },
+    "mysql": {
+        "host": "mysql.eu.example.com",
+        "database": "checkout",
+        "port": "3306",
+        "username": "opensre",
+        "password": "mysql-password",
+        "ssl_mode": "required",
+    },
 }
 
 # Helm's env-only catalog discovery additionally gates on ``OSRE_HELM_INTEGRATION``
@@ -191,6 +230,11 @@ _SPECS = [
     POSTHOG_MCP_SETUP,
     SENTRY_MCP_SETUP,
     X_MCP_SETUP,
+    BETTERSTACK_SETUP,
+    OPENCLAW_SETUP,
+    SERVICENOW_SETUP,
+    POSTGRESQL_SETUP,
+    MYSQL_SETUP,
 ]
 
 
@@ -261,6 +305,19 @@ def _restore_environment(written: _Persisted, monkeypatch: pytest.MonkeyPatch) -
             monkeypatch.setenv(key, line.split("=", 1)[1].strip())
 
 
+def _matches_catalog_value(got: Any, expected: str) -> bool:
+    """Compare across env-string ↔ catalog-model normalizations.
+
+    Ports become ints; comma/space-separated hints become sequences. Neither
+    change is a persistence bug — the names and values still round-trip.
+    """
+    if isinstance(got, (list, tuple)):
+        if "," in expected:
+            return list(got) == [part.strip() for part in expected.split(",") if part.strip()]
+        return list(got) == [part for part in expected.split() if part]
+    return str(got) == expected
+
+
 def _catalog_credentials(service: str) -> dict[str, Any]:
     # Tracer is the one integration whose env-only discovery lives outside
     # ``load_env_integrations`` entirely — it is a top-level fallback inside
@@ -305,18 +362,7 @@ def test_persisted_credentials_are_read_back_by_the_catalog(
 
     resolved = _catalog_credentials(spec.service)
     for field in spec.fields:
-        actual = resolved.get(field.name)
-        # Missing catalog keys must fail even if a future ``_SUBMITTED`` entry
-        # accidentally uses the literal string ``"None"`` (``str(None) == "None"``).
-        assert actual is not None, (
-            f"{spec.service}.{field.name} was persisted as {field.env_var!r}, "
-            "which the catalog does not read back into that credential"
-        )
-        # str(...) on both sides: env vars are always strings, and a config
-        # model may legitimately coerce one back to a number (SMTP's port) —
-        # that is a type normalization, not the persistence bug this test
-        # guards against.
-        assert str(actual) == str(submitted[field.name]), (
+        assert _matches_catalog_value(resolved.get(field.name), submitted[field.name]), (
             f"{spec.service}.{field.name} was persisted as {field.env_var!r}, "
             "which the catalog does not read back into that credential"
         )
