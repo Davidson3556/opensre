@@ -38,7 +38,9 @@ import integrations.jenkins.setup as jenkins_setup
 import integrations.mongodb_atlas.setup as mongodb_atlas_setup
 import integrations.pagerduty.setup as pagerduty_setup
 import integrations.posthog.setup as posthog_setup
+import integrations.posthog_mcp.setup as posthog_mcp_setup
 import integrations.sentry.setup as sentry_setup
+import integrations.sentry_mcp.setup as sentry_mcp_setup
 import integrations.setup_flow as setup_flow
 import integrations.signoz.setup as signoz_setup
 import integrations.smtp.setup as smtp_setup
@@ -47,6 +49,7 @@ import integrations.temporal.setup as temporal_setup
 import integrations.tracer.setup as tracer_setup
 import integrations.vercel.setup as vercel_setup
 import integrations.whatsapp.setup as whatsapp_setup
+import integrations.x_mcp.setup as x_mcp_setup
 
 _ANSWERS: dict[str, dict[str, str]] = {
     "datadog": {"api_key": "dd-api-key", "app_key": "dd-app-key", "site": "datadoghq.eu"},
@@ -133,6 +136,20 @@ _ANSWERS: dict[str, dict[str, str]] = {
         "password": "tempo-password",
         "org_id": "checkout-tenant",
     },
+    "posthog_mcp": {
+        "url": "https://mcp.eu.posthog.com/mcp",
+        "auth_token": "phx_mcp_personal_api_key",
+        "project_id": "checkout-project",
+    },
+    "sentry_mcp": {
+        "url": "https://mcp.eu.sentry.dev/mcp",
+        "auth_token": "sentry-user-auth-token",
+        "host": "sentry.checkout.internal",
+    },
+    "x_mcp": {
+        "url": "https://x-mcp.checkout.internal/mcp",
+        "auth_token": "x-mcp-tunnel-token",
+    },
 }
 
 # (spec module, spec attribute, CLI handler) — the attribute is patched rather
@@ -160,6 +177,9 @@ _CASES = [
     pytest.param(smtp_setup, "SMTP_SETUP", cli._setup_smtp, id="smtp"),
     pytest.param(whatsapp_setup, "WHATSAPP_SETUP", cli._setup_whatsapp, id="whatsapp"),
     pytest.param(tempo_setup, "TEMPO_SETUP", cli._setup_tempo, id="tempo"),
+    pytest.param(posthog_mcp_setup, "POSTHOG_MCP_SETUP", cli._setup_posthog_mcp, id="posthog_mcp"),
+    pytest.param(sentry_mcp_setup, "SENTRY_MCP_SETUP", cli._setup_sentry_mcp, id="sentry_mcp"),
+    pytest.param(x_mcp_setup, "X_MCP_SETUP", cli._setup_x_mcp, id="x_mcp"),
 ]
 
 # HELM_SETUP has no field that is both required and defaultless (``helm_path``
@@ -295,7 +315,10 @@ def test_blank_required_field_exits_before_the_next_prompt(
 ) -> None:
     """Fail on the field that is blank, not after working through the rest."""
     spec = getattr(module, attr)
-    first_required = next(f for f in spec.fields if f.required and not f.default)
+    try:
+        first_required = next(f for f in spec.fields if f.required and not f.default)
+    except StopIteration:
+        pytest.skip(f"{spec.service} has no required field without a default")
     _install(monkeypatch, module, attr, run, blank=first_required.name)
 
     with pytest.raises(SystemExit):

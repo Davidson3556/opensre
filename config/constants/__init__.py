@@ -77,6 +77,11 @@ from config.constants.posthog import (
     POSTHOG_PROJECT_ID_ENV,
     POSTHOG_TIMEOUT_SECONDS_ENV,
 )
+from config.constants.posthog_mcp import (
+    POSTHOG_MCP_AUTH_TOKEN_ENV,
+    POSTHOG_MCP_PROJECT_ID_ENV,
+    POSTHOG_MCP_URL_ENV,
+)
 from config.constants.sentry import (
     DEFAULT_SENTRY_BASE_URL,
     SENTRY_AUTH_TOKEN_ENV,
@@ -88,6 +93,11 @@ from config.constants.sentry import (
     SENTRY_ORGANIZATION_SLUG_ENV,
     SENTRY_PROJECT_SLUG_ENV,
     SENTRY_TRACES_SAMPLE_RATE,
+)
+from config.constants.sentry_mcp import (
+    SENTRY_MCP_AUTH_TOKEN_ENV,
+    SENTRY_MCP_HOST_ENV,
+    SENTRY_MCP_URL_ENV,
 )
 from config.constants.signoz import SIGNOZ_API_KEY_ENV, SIGNOZ_URL_ENV
 from config.constants.smtp import (
@@ -123,6 +133,7 @@ from config.constants.twilio import (
     WHATSAPP_DEFAULT_TO_ENV,
 )
 from config.constants.vercel import VERCEL_API_TOKEN_ENV, VERCEL_TEAM_ID_ENV
+from config.constants.x_mcp import X_MCP_AUTH_TOKEN_ENV, X_MCP_URL_ENV
 
 __all__ = [
     "AZURE_OPENAI_API_KEY_ENV",
@@ -176,6 +187,9 @@ __all__ = [
     "POSTHOG_BASE_URL_ENV",
     "POSTHOG_CAPTURE_API_KEY",
     "POSTHOG_HOST",
+    "POSTHOG_MCP_AUTH_TOKEN_ENV",
+    "POSTHOG_MCP_PROJECT_ID_ENV",
+    "POSTHOG_MCP_URL_ENV",
     "POSTHOG_PERSONAL_API_KEY_ENV",
     "POSTHOG_PROJECT_ID_ENV",
     "POSTHOG_TIMEOUT_SECONDS_ENV",
@@ -185,6 +199,9 @@ __all__ = [
     "SENTRY_ERROR_SAMPLE_RATE",
     "SENTRY_IN_APP_INCLUDE",
     "SENTRY_MAX_BREADCRUMBS",
+    "SENTRY_MCP_AUTH_TOKEN_ENV",
+    "SENTRY_MCP_HOST_ENV",
+    "SENTRY_MCP_URL_ENV",
     "SENTRY_ORGANIZATION_SLUG_ENV",
     "SENTRY_PROJECT_SLUG_ENV",
     "SENTRY_TRACES_SAMPLE_RATE",
@@ -217,6 +234,8 @@ __all__ = [
     "VERCEL_TEAM_ID_ENV",
     "WEBAPP_URL_ENV",
     "WHATSAPP_DEFAULT_TO_ENV",
+    "X_MCP_AUTH_TOKEN_ENV",
+    "X_MCP_URL_ENV",
     "ensure_opensre_tmp_dir",
     "get_store_path",
 ]

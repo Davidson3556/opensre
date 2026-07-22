@@ -40,7 +40,9 @@ from integrations.jenkins.setup import JENKINS_SETUP
 from integrations.mongodb_atlas.setup import MONGODB_ATLAS_SETUP
 from integrations.pagerduty.setup import PAGERDUTY_SETUP
 from integrations.posthog.setup import POSTHOG_SETUP
+from integrations.posthog_mcp.setup import POSTHOG_MCP_SETUP
 from integrations.sentry.setup import SENTRY_SETUP
+from integrations.sentry_mcp.setup import SENTRY_MCP_SETUP
 from integrations.signoz.setup import SIGNOZ_SETUP
 from integrations.smtp.setup import SMTP_SETUP
 from integrations.telegram.setup import TELEGRAM_SETUP
@@ -49,6 +51,7 @@ from integrations.temporal.setup import TEMPORAL_SETUP
 from integrations.tracer.setup import TRACER_SETUP
 from integrations.vercel.setup import VERCEL_SETUP
 from integrations.whatsapp.setup import WHATSAPP_SETUP
+from integrations.x_mcp.setup import X_MCP_SETUP
 
 # A distinct, recognizable value per field, so two fields of the same
 # integration swapping places fails instead of coincidentally matching. Values
@@ -140,6 +143,20 @@ _SUBMITTED: dict[str, dict[str, str]] = {
         "password": "tempo-password",
         "org_id": "checkout-tenant",
     },
+    "posthog_mcp": {
+        "url": "https://mcp.eu.posthog.com/mcp",
+        "auth_token": "phx_mcp_personal_api_key",
+        "project_id": "checkout-project",
+    },
+    "sentry_mcp": {
+        "url": "https://mcp.eu.sentry.dev/mcp",
+        "auth_token": "sentry-user-auth-token",
+        "host": "sentry.checkout.internal",
+    },
+    "x_mcp": {
+        "url": "https://x-mcp.checkout.internal/mcp",
+        "auth_token": "x-mcp-tunnel-token",
+    },
 }
 
 # Helm's env-only catalog discovery additionally gates on ``OSRE_HELM_INTEGRATION``
@@ -171,6 +188,9 @@ _SPECS = [
     TRACER_SETUP,
     VERCEL_SETUP,
     WHATSAPP_SETUP,
+    POSTHOG_MCP_SETUP,
+    SENTRY_MCP_SETUP,
+    X_MCP_SETUP,
 ]
 
 
