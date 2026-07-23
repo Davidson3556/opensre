@@ -10,13 +10,15 @@ wizard use.
 
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any
 
 import httpx
 
+from config.constants.discord import DISCORD_API_BASE
 from integrations.verification import register_verifier, result
 
-_ME_URL = "https://discord.com/api/v10/users/@me"
+_ME_URL = f"{DISCORD_API_BASE}/users/@me"
 
 
 @register_verifier("discord")
@@ -30,9 +32,9 @@ def verify_discord(source: str, config: dict[str, Any]) -> dict[str, str]:
     except httpx.HTTPError as exc:
         return result("discord", source, "failed", f"Discord API check failed: {exc}")
 
-    if response.status_code == 401:
+    if response.status_code == HTTPStatus.UNAUTHORIZED:
         return result("discord", source, "failed", "Discord bot token is invalid or revoked.")
-    if response.status_code != 200:
+    if response.status_code != HTTPStatus.OK:
         return result(
             "discord", source, "failed", f"Discord API check failed: HTTP {response.status_code}."
         )

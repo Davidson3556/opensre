@@ -10,7 +10,9 @@ gate on it.
 
 from __future__ import annotations
 
-_COMMANDS_URL = "https://discord.com/api/v10/applications/{application_id}/commands"
+from config.constants.discord import DISCORD_API_BASE
+
+_COMMANDS_URL = DISCORD_API_BASE + "/applications/{application_id}/commands"
 _INVESTIGATE_COMMAND = {
     "name": "investigate",
     "description": "Trigger an OpenSRE investigation",

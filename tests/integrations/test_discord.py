@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from http import HTTPStatus
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -27,7 +28,7 @@ def test_verify_discord_missing_bot_token() -> None:
 def test_verify_discord_accepts_a_valid_token_and_names_the_bot() -> None:
     with patch(
         "integrations.discord.verifier.httpx.get",
-        return_value=_fake_response(200, {"username": "opensre_bot"}),
+        return_value=_fake_response(HTTPStatus.OK, {"username": "opensre_bot"}),
     ) as get:
         result = verify_discord("local env", {"bot_token": "good-token"})
 
@@ -40,7 +41,10 @@ def test_verify_discord_accepts_a_valid_token_and_names_the_bot() -> None:
 
 
 def test_verify_discord_reports_an_invalid_token() -> None:
-    with patch("integrations.discord.verifier.httpx.get", return_value=_fake_response(401)):
+    with patch(
+        "integrations.discord.verifier.httpx.get",
+        return_value=_fake_response(HTTPStatus.UNAUTHORIZED),
+    ):
         result = verify_discord("local env", {"bot_token": "revoked"})
 
     assert result["status"] == "failed"
@@ -48,11 +52,14 @@ def test_verify_discord_reports_an_invalid_token() -> None:
 
 
 def test_verify_discord_reports_an_unexpected_status() -> None:
-    with patch("integrations.discord.verifier.httpx.get", return_value=_fake_response(503)):
+    with patch(
+        "integrations.discord.verifier.httpx.get",
+        return_value=_fake_response(HTTPStatus.SERVICE_UNAVAILABLE),
+    ):
         result = verify_discord("local env", {"bot_token": "token"})
 
     assert result["status"] == "failed"
-    assert "HTTP 503" in result["detail"]
+    assert f"HTTP {HTTPStatus.SERVICE_UNAVAILABLE.value}" in result["detail"]
 
 
 def test_verify_discord_reports_a_transport_error() -> None:
