@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
+import httpx
 
 from integrations.verification import register_verifier, result
 
@@ -26,8 +26,8 @@ def verify_discord(source: str, config: dict[str, Any]) -> dict[str, str]:
         return result("discord", source, "missing", "Missing bot_token.")
 
     try:
-        response = requests.get(_ME_URL, headers={"Authorization": f"Bot {bot_token}"}, timeout=10)
-    except Exception as exc:
+        response = httpx.get(_ME_URL, headers={"Authorization": f"Bot {bot_token}"}, timeout=10)
+    except httpx.HTTPError as exc:
         return result("discord", source, "failed", f"Discord API check failed: {exc}")
 
     if response.status_code == 401:

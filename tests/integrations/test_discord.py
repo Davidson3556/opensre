@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import requests
+import httpx
 from pydantic import ValidationError
 
 from integrations.discord import classify
@@ -26,7 +26,7 @@ def test_verify_discord_missing_bot_token() -> None:
 
 def test_verify_discord_accepts_a_valid_token_and_names_the_bot() -> None:
     with patch(
-        "integrations.discord.verifier.requests.get",
+        "integrations.discord.verifier.httpx.get",
         return_value=_fake_response(200, {"username": "opensre_bot"}),
     ) as get:
         result = verify_discord("local env", {"bot_token": "good-token"})
@@ -40,7 +40,7 @@ def test_verify_discord_accepts_a_valid_token_and_names_the_bot() -> None:
 
 
 def test_verify_discord_reports_an_invalid_token() -> None:
-    with patch("integrations.discord.verifier.requests.get", return_value=_fake_response(401)):
+    with patch("integrations.discord.verifier.httpx.get", return_value=_fake_response(401)):
         result = verify_discord("local env", {"bot_token": "revoked"})
 
     assert result["status"] == "failed"
@@ -48,7 +48,7 @@ def test_verify_discord_reports_an_invalid_token() -> None:
 
 
 def test_verify_discord_reports_an_unexpected_status() -> None:
-    with patch("integrations.discord.verifier.requests.get", return_value=_fake_response(503)):
+    with patch("integrations.discord.verifier.httpx.get", return_value=_fake_response(503)):
         result = verify_discord("local env", {"bot_token": "token"})
 
     assert result["status"] == "failed"
@@ -57,8 +57,8 @@ def test_verify_discord_reports_an_unexpected_status() -> None:
 
 def test_verify_discord_reports_a_transport_error() -> None:
     with patch(
-        "integrations.discord.verifier.requests.get",
-        side_effect=requests.RequestException("unreachable"),
+        "integrations.discord.verifier.httpx.get",
+        side_effect=httpx.RequestError("unreachable"),
     ):
         result = verify_discord("local env", {"bot_token": "token"})
 
