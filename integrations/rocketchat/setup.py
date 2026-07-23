@@ -4,8 +4,10 @@ Rocket.Chat can be reached two ways, and setup accepts either: an incoming
 webhook URL (a fixed destination), or a personal access token — the server URL,
 auth token, and user id together — which lets delivery target channels
 dynamically. Neither field is individually required; the requirement is that
-*one of the two paths* is complete, which ``SetupField.required`` cannot say. So
-every field is optional and the ``validate`` hook enforces the real rule.
+*one of the two paths* is complete. Every field is therefore optional here, and
+:func:`integrations.rocketchat.verifier.verify_rocketchat` enforces the real
+rule — it already rejects an incomplete pair, and keeping the check there means
+setup and health checks agree on what "configured" means.
 
 The token trio is mirrored to the keyring / ``.env`` so the deploy preflight
 (which reads the environment, not the store) sees a Rocket.Chat that was
@@ -29,18 +31,6 @@ AUTH_TOKEN_FIELD = "auth_token"
 USER_ID_FIELD = "user_id"
 WEBHOOK_URL_FIELD = "webhook_url"
 DEFAULT_CHANNEL_FIELD = "default_channel"
-
-_TOKEN_TRIO = (SERVER_URL_FIELD, AUTH_TOKEN_FIELD, USER_ID_FIELD)
-
-
-def _require_webhook_or_token_trio(credentials: dict[str, str | None]) -> str:
-    """Accept a webhook URL, or the full server/token/user-id trio — not neither."""
-    has_trio = all(credentials.get(field) for field in _TOKEN_TRIO)
-    has_webhook = bool(credentials.get(WEBHOOK_URL_FIELD))
-    if has_trio or has_webhook:
-        return ""
-    return "Provide either a webhook URL, or all of server URL, auth token, and user ID."
-
 
 ROCKETCHAT_SETUP = IntegrationSetupSpec(
     service="rocketchat",
@@ -84,7 +74,6 @@ ROCKETCHAT_SETUP = IntegrationSetupSpec(
             required=False,
         ),
     ),
-    validate=_require_webhook_or_token_trio,
     verify=verify_rocketchat,
 )
 

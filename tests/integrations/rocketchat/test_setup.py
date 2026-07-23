@@ -1,10 +1,11 @@
 """The Rocket.Chat setup spec — the either/or rule and where fields persist.
 
-Rocket.Chat is the case ``SetupField.required`` cannot express: a webhook URL
-*or* the server/token/user-id trio, but not neither. The rule lives in the
-spec's ``validate`` hook, so the checks worth protecting are that it accepts
-each valid shape, rejects an incomplete one, and does so before any credential
-is written.
+Rocket.Chat accepts a webhook URL *or* the server/token/user-id trio, but not
+neither — a rule ``SetupField.required`` cannot express, so every field is
+optional on the spec and :func:`integrations.rocketchat.verifier.verify_rocketchat`
+enforces it. The rejection tests below therefore run the *real* verifier: it
+short-circuits on an incomplete pair before any network call, and keeping the
+check there is what makes setup and health checks agree.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ _ENV_PATH = Path("/tmp/opensre-test/.env")
 
 @pytest.fixture
 def writes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    """Capture every persistence call and make the verifier pass."""
+    """Capture every persistence call, leaving the verifier real."""
     captured: dict[str, Any] = {"store": [], "keyring": [], "env": []}
     monkeypatch.setattr(
         setup_flow,
@@ -37,12 +38,18 @@ def writes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "sync_env_values",
         lambda values, **_kw: captured["env"].append(dict(values)) or _ENV_PATH,
     )
-    monkeypatch.setattr(
-        setup_flow, "_verify", lambda _spec, _creds: (True, "Rocket.Chat connected.")
-    )
     return captured
 
 
+@pytest.fixture
+def verified(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pass verification, for the cases about persistence rather than the rule."""
+    monkeypatch.setattr(
+        setup_flow, "_verify", lambda _spec, _creds: (True, "Rocket.Chat connected.")
+    )
+
+
+@pytest.mark.usefixtures("verified")
 def test_webhook_only_setup_is_accepted(writes: dict[str, Any]) -> None:
     outcome = setup_flow.apply_setup(ROCKETCHAT_SETUP, {"webhook_url": "https://chat/hook/abc"})
 
@@ -50,6 +57,7 @@ def test_webhook_only_setup_is_accepted(writes: dict[str, Any]) -> None:
     assert writes["store"][0]["credentials"]["webhook_url"] == "https://chat/hook/abc"
 
 
+@pytest.mark.usefixtures("verified")
 def test_token_trio_setup_is_accepted(writes: dict[str, Any]) -> None:
     outcome = setup_flow.apply_setup(
         ROCKETCHAT_SETUP,
@@ -60,10 +68,10 @@ def test_token_trio_setup_is_accepted(writes: dict[str, Any]) -> None:
 
 
 def test_neither_path_is_rejected_before_any_write(writes: dict[str, Any]) -> None:
+    """The real verifier rejects an empty setup, and nothing is persisted."""
     outcome = setup_flow.apply_setup(ROCKETCHAT_SETUP, {"default_channel": "#ops"})
 
     assert outcome.ok is False
-    assert "webhook URL, or all of server URL, auth token, and user ID" in outcome.detail
     assert writes == {"store": [], "keyring": [], "env": []}
 
 
@@ -73,9 +81,11 @@ def test_incomplete_trio_without_a_webhook_is_rejected(writes: dict[str, Any]) -
     )
 
     assert outcome.ok is False
+    assert "auth_token or user_id" in outcome.detail
     assert writes["store"] == []
 
 
+@pytest.mark.usefixtures("verified")
 def test_token_trio_persists_to_env_and_keyring_but_the_webhook_stays_store_only(
     writes: dict[str, Any],
 ) -> None:
