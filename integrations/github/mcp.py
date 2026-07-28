@@ -1229,130 +1229,16 @@ def validate_github_mcp_config(
             failure_category="not_configured",
         )
 
+    async def _run_validation() -> GitHubMCPValidationResult:
+        async with _open_github_mcp_session(config) as session:
+            return await _validate_github_mcp_config_async(
+                session,
+                repo_view=repo_view,
+                repo_visibility=repo_visibility,
+            )
+
     try:
-        tools = list_github_mcp_tools(config)
-        tool_names = tuple(sorted(tool["name"] for tool in tools))
-        missing = sorted(set(REQUIRED_SOURCE_INVESTIGATION_TOOLS) - set(tool_names))
-        if missing:
-            return GitHubMCPValidationResult(
-                ok=False,
-                detail=(
-                    "GitHub MCP connected, but required repository investigation tools are missing: "
-                    f"{', '.join(missing)}."
-                ),
-                tool_names=tool_names,
-                failure_category="insufficient_tools",
-            )
-
-        if "get_me" not in tool_names:
-            return GitHubMCPValidationResult(
-                ok=False,
-                detail=(
-                    "GitHub MCP connected, but the required identity tool 'get_me' is not exposed. "
-                    "Widen your toolsets to include it."
-                ),
-                tool_names=tool_names,
-                failure_category="insufficient_tools",
-            )
-
-        me_result = call_github_mcp_tool(config, "get_me", {})
-        if me_result.get("is_error"):
-            detail = me_result.get("text") or "Unknown authentication failure."
-            return GitHubMCPValidationResult(
-                ok=False,
-                detail=f"GitHub MCP connected, but authentication failed: {detail}",
-                tool_names=tool_names,
-                failure_category="authentication",
-            )
-
-        structured: dict[str, Any] = {}
-        raw_structured = me_result.get("structured_content")
-        if isinstance(raw_structured, dict):
-            structured = raw_structured
-        profile_pub, profile_priv = _repo_visibility_counts_from_get_me_profile(
-            structured, me_result.get("text", "")
-        )
-        user_name = str(structured.get("login") or structured.get("name") or "").strip()
-        if not user_name:
-            try:
-                payload = json.loads(me_result.get("text", "{}"))
-                user_name = str(payload.get("login") or payload.get("name") or "").strip()
-            except json.JSONDecodeError:
-                user_name = ""
-
-        who = user_name or "authenticated GitHub user"
-        probe_plans = _iter_repo_access_probe_plans(tools, user_name, view=repo_view)
-        if not probe_plans:
-            attempted_tools = _repo_probe_attempts(tools, user_name, view=repo_view)
-            profile_result = _validation_result_from_get_me_profile_counts(
-                user_name=user_name,
-                tool_names=tool_names,
-                structured=structured,
-                me_text=me_result.get("text", ""),
-                profile_pub=profile_pub,
-                profile_priv=profile_priv,
-                note=("repository counts from get_me profile (no list/search repo tool exposed)"),
-            )
-            if profile_result is not None:
-                return profile_result
-            return GitHubMCPValidationResult(
-                ok=False,
-                detail=(
-                    f"Authenticated as {who}, but no repository listing or search tool was usable "
-                    f"(tried: {_format_repo_probe_attempts(attempted_tools)}). "
-                    "Enable toolsets that include repo listing or search (e.g. add `search` or "
-                    "`stargazers` alongside repos) for api.githubcopilot.com."
-                ),
-                tool_names=tool_names,
-                authenticated_user=user_name,
-                failure_category="repository_access",
-                profile_public_repos=profile_pub,
-                profile_private_repos=profile_priv,
-            )
-
-        last_probe_tool = ""
-        last_probe_detail = ""
-        for repo_tool, repo_args in probe_plans:
-            list_result = call_github_mcp_tool(config, repo_tool, repo_args)
-            if not list_result.get("is_error"):
-                return _validation_success_from_repo_probe_result(
-                    user_name=user_name,
-                    tool_names=tool_names,
-                    repo_tool=repo_tool,
-                    list_result=list_result,
-                    repo_visibility=repo_visibility,
-                    profile_pub=profile_pub,
-                    profile_priv=profile_priv,
-                )
-            last_probe_tool = repo_tool
-            last_probe_detail = str(
-                list_result.get("text") or "Unknown error listing repositories."
-            )
-            if not _is_recoverable_repo_probe_error(repo_tool, repo_args, last_probe_detail):
-                return GitHubMCPValidationResult(
-                    ok=False,
-                    detail=(
-                        f"Authenticated as {who}, but repository access check failed ({repo_tool}): "
-                        f"{last_probe_detail} "
-                        "(connectivity OK; auth or token scope may be insufficient for repo APIs)."
-                    ),
-                    tool_names=tool_names,
-                    authenticated_user=user_name,
-                    failure_category="repository_access",
-                    profile_public_repos=profile_pub,
-                    profile_private_repos=profile_priv,
-                )
-
-        return _repo_access_probe_fallback_result(
-            user_name=user_name,
-            tool_names=tool_names,
-            structured=structured,
-            me_text=me_result.get("text", ""),
-            profile_pub=profile_pub,
-            profile_priv=profile_priv,
-            last_probe_tool=last_probe_tool,
-            last_probe_detail=last_probe_detail,
-        )
+        return cast(GitHubMCPValidationResult, _run_async(_run_validation()))
     except Exception as err:
         report_validation_failure(
             err,
@@ -1365,6 +1251,155 @@ def validate_github_mcp_config(
             detail=_connectivity_failure_detail(err),
             failure_category="connectivity",
         )
+
+
+async def _validate_github_mcp_config_async(
+    session: ClientSession,
+    *,
+    repo_view: GitHubMcpRepoView = "auto",
+    repo_visibility: GitHubMcpRepoVisibilityFilter = "any",
+) -> GitHubMCPValidationResult:
+    """Inner async validation — One MCP session per validation run."""
+
+    list_tools_result = await session.list_tools()
+    raw_tools = list_tools_result.tools
+    tools: list[dict[str, Any]] = [
+        {
+            "name": t.name,
+            "description": t.description or "",
+            "input_schema": getattr(t, "input_schema", None),
+        }
+        for t in raw_tools
+    ]
+    tool_names = tuple(sorted(t["name"] for t in tools))
+
+    missing = sorted(set(REQUIRED_SOURCE_INVESTIGATION_TOOLS) - set(tool_names))
+    if missing:
+        return GitHubMCPValidationResult(
+            ok=False,
+            detail=(
+                "GitHub MCP connected, but required repository investigation tools are missing: "
+                f"{', '.join(missing)}."
+            ),
+            tool_names=tool_names,
+            failure_category="insufficient_tools",
+        )
+
+    if "get_me" not in tool_names:
+        return GitHubMCPValidationResult(
+            ok=False,
+            detail=(
+                "GitHub MCP connected, but the required identity tool 'get_me' is not exposed. "
+                "Widen your toolsets to include it."
+            ),
+            tool_names=tool_names,
+            failure_category="insufficient_tools",
+        )
+
+    raw_me = await session.call_tool("get_me", {})
+    me_result = _tool_result_to_dict(raw_me)
+    me_result["tool"] = "get_me"
+    me_result["arguments"] = {}
+
+    if me_result.get("is_error"):
+        detail = me_result.get("text") or "Unknown authentication failure."
+        return GitHubMCPValidationResult(
+            ok=False,
+            detail=f"GitHub MCP connected, but authentication failed: {detail}",
+            tool_names=tool_names,
+            failure_category="authentication",
+        )
+
+    structured: dict[str, Any] = {}
+    raw_structured = me_result.get("structured_content")
+    if isinstance(raw_structured, dict):
+        structured = raw_structured
+    profile_pub, profile_priv = _repo_visibility_counts_from_get_me_profile(
+        structured, me_result.get("text", "")
+    )
+    user_name = str(structured.get("login") or structured.get("name") or "").strip()
+    if not user_name:
+        try:
+            payload = json.loads(me_result.get("text", "{}"))
+            user_name = str(payload.get("login") or payload.get("name") or "").strip()
+        except json.JSONDecodeError:
+            user_name = ""
+
+    who = user_name or "authenticated GitHub user"
+    probe_plans = _iter_repo_access_probe_plans(tools, user_name, view=repo_view)
+    if not probe_plans:
+        attempted_tools = _repo_probe_attempts(tools, user_name, view=repo_view)
+        profile_result = _validation_result_from_get_me_profile_counts(
+            user_name=user_name,
+            tool_names=tool_names,
+            structured=structured,
+            me_text=me_result.get("text", ""),
+            profile_pub=profile_pub,
+            profile_priv=profile_priv,
+            note=("repository counts from get_me profile (no list/search repo tool exposed)"),
+        )
+        if profile_result is not None:
+            return profile_result
+        return GitHubMCPValidationResult(
+            ok=False,
+            detail=(
+                f"Authenticated as {who}, but no repository listing or search tool was usable "
+                f"(tried: {_format_repo_probe_attempts(attempted_tools)}). "
+                "Enable toolsets that include repo listing or search (e.g. add `search` or "
+                "`stargazers` alongside repos) for api.githubcopilot.com."
+            ),
+            tool_names=tool_names,
+            authenticated_user=user_name,
+            failure_category="repository_access",
+            profile_public_repos=profile_pub,
+            profile_private_repos=profile_priv,
+        )
+
+    last_probe_tool = ""
+    last_probe_detail = ""
+    for repo_tool, repo_args in probe_plans:
+        raw_list = await session.call_tool(repo_tool, repo_args)
+        list_result = _tool_result_to_dict(raw_list)
+        list_result["tool"] = repo_tool
+        list_result["arguments"] = repo_args
+
+        if not list_result.get("is_error"):
+            return _validation_success_from_repo_probe_result(
+                user_name=user_name,
+                tool_names=tool_names,
+                repo_tool=repo_tool,
+                list_result=list_result,
+                repo_visibility=repo_visibility,
+                profile_pub=profile_pub,
+                profile_priv=profile_priv,
+            )
+        last_probe_tool = repo_tool
+        last_probe_detail = str(list_result.get("text") or "Unknown error listing repositories.")
+        if not _is_recoverable_repo_probe_error(repo_tool, repo_args, last_probe_detail):
+            return GitHubMCPValidationResult(
+                ok=False,
+                detail=(
+                    f"Authenticated as {who}, but repository access check failed ({repo_tool}): "
+                    f"{last_probe_detail} "
+                    "(connectivity OK; auth or token scope may be insufficient for repo APIs)."
+                ),
+                tool_names=tool_names,
+                authenticated_user=user_name,
+                failure_category="repository_access",
+                profile_public_repos=profile_pub,
+                profile_private_repos=profile_priv,
+            )
+
+    return _repo_access_probe_fallback_result(
+        user_name=user_name,
+        tool_names=tool_names,
+        structured=structured,
+        me_text=me_result.get("text", ""),
+        profile_pub=profile_pub,
+        profile_priv=profile_priv,
+        last_probe_tool=last_probe_tool,
+        last_probe_detail=last_probe_detail,
+    )
 
 
 def build_github_code_search_query(owner: str, repo: str, query: str) -> str:
