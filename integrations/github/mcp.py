@@ -1300,6 +1300,7 @@ async def _validate_github_mcp_config_async(
         raw_me = await session.call_tool("get_me", {})
         me_result = _tool_result_to_dict(raw_me)
     except Exception as err:
+        logger.debug("GitHub MCP tool call failed: get_me", exc_info=True)
         me_result = {
             "is_error": True,
             "text": _root_cause_message(err),
@@ -1370,6 +1371,7 @@ async def _validate_github_mcp_config_async(
             raw_list = await session.call_tool(repo_tool, repo_args)
             list_result = _tool_result_to_dict(raw_list)
         except Exception as err:
+            logger.debug("GitHub MCP tool call failed: %s", repo_tool, exc_info=True)
             list_result = {
                 "is_error": True,
                 "text": _root_cause_message(err),
