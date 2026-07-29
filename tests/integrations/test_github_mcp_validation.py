@@ -45,9 +45,9 @@ def _make_fake_session_patcher(
             payload: dict[str, Any] = call_fn(config, name, args or {})
             raw = MagicMock()
             raw.isError = payload.get("is_error", False)
-            text_item = MagicMock(spec=mcp_types.TextContent)
-            text_item.text = payload.get("text", "")
-            raw.content = [text_item]
+            raw.content = [
+                mcp_types.TextContent(type="text", text=payload.get("text", ""))
+            ]
             raw.structuredContent = payload.get("structured_content")
             return raw
 
