@@ -33,7 +33,7 @@ def _make_fake_session_patcher(
         list_result.tools = [
             mcp_types.Tool(
                 name=str(t["name"]),
-                input_schema=t.get("input_schema") or {},
+                inputSchema=t.get("input_schema") or {},
             )
             for t in tools_dicts
         ]

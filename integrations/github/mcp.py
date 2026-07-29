@@ -1267,7 +1267,7 @@ async def _validate_github_mcp_config_async(
         {
             "name": t.name,
             "description": t.description or "",
-            "input_schema": getattr(t, "input_schema", None),
+            "input_schema": getattr(t, "inputSchema", None),
         }
         for t in raw_tools
     ]
@@ -1296,8 +1296,16 @@ async def _validate_github_mcp_config_async(
             failure_category="insufficient_tools",
         )
 
-    raw_me = await session.call_tool("get_me", {})
-    me_result = _tool_result_to_dict(raw_me)
+    try:
+        raw_me = await session.call_tool("get_me", {})
+        me_result = _tool_result_to_dict(raw_me)
+    except Exception as err:
+        me_result = {
+            "is_error": True,
+            "text": _root_cause_message(err),
+            "content": [],
+            "structured_content": None,
+        }
     me_result["tool"] = "get_me"
     me_result["arguments"] = {}
 
@@ -1358,8 +1366,16 @@ async def _validate_github_mcp_config_async(
     last_probe_tool = ""
     last_probe_detail = ""
     for repo_tool, repo_args in probe_plans:
-        raw_list = await session.call_tool(repo_tool, repo_args)
-        list_result = _tool_result_to_dict(raw_list)
+        try:
+            raw_list = await session.call_tool(repo_tool, repo_args)
+            list_result = _tool_result_to_dict(raw_list)
+        except Exception as err:
+            list_result = {
+                "is_error": True,
+                "text": _root_cause_message(err),
+                "content": [],
+                "structured_content": None,
+            }
         list_result["tool"] = repo_tool
         list_result["arguments"] = repo_args
 
