@@ -45,6 +45,7 @@
               "interactive-shell-assistant",
               "deployment",
               "api",
+              "python-api",
               "faq",
               "cloudopsbench",
               "bi-weekly-giveaway"
@@ -86,7 +87,8 @@
           {
             "group": "Configuration",
             "pages": [
-              "configuration/environment-variables"
+              "configuration/environment-variables",
+              "configuration/remote-sync"
             ]
           }
         ]
@@ -160,6 +162,8 @@
               "kubernetes",
               "cloudtrail_events",
               "bitbucket",
+              "elb",
+              "ec2",
               "github",
               "github-workflow-tools",
               "architecture-audit-tool",

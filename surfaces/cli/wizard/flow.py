@@ -636,6 +636,11 @@ def run_wizard(_argv: list[str] | None = None) -> int:
         "How do you want to get started?",
         [
             Choice(
+                value="focused",
+                label="Focused",
+                hint="Provider, one integration, then run the agent",
+            ),
+            Choice(
                 value="quickstart", label="Quickstart", hint="Local setup with the usual defaults"
             ),
             Choice(
@@ -644,7 +649,9 @@ def run_wizard(_argv: list[str] | None = None) -> int:
                 hint="Show probes and choose the target explicitly",
             ),
         ],
-        default=default_wizard_mode,
+        default=default_wizard_mode
+        if default_wizard_mode in {"focused", "quickstart", "advanced"}
+        else "focused",
     )
 
     store_path = get_store_path()
@@ -675,7 +682,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
     provider_extra_env: dict[str, str] = {}
     credential_state: CredentialState = OK
     # Records a ``continue_unsaved`` secret export so it can be re-applied after
-    # ``sync_provider_env`` pops it, before the in-process shell handoff (#3591).
+    # ``sync_provider_env`` pops it, before the in-process shell handoff.
     session_env_sink: dict[str, str] = {}
     while True:
         credential_state = OK
@@ -813,7 +820,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
                 # A ``host`` credential (e.g. the Ollama host) is not a secret api key: never
                 # migrate a stale legacy ``api_key`` value into it — that would leak a
                 # secret-shaped value into .env and point the runtime at a bogus host. Fall
-                # through to the host prompt instead (#3291).
+                # through to the host prompt instead.
                 if not has_api_key and legacy_api_key and provider.credential_kind != "host":
                     migration_outcome = _persist_llm_credential_with_recovery(
                         provider, legacy_api_key, session_env_sink=session_env_sink
@@ -894,17 +901,19 @@ def run_wizard(_argv: list[str] | None = None) -> int:
     if credential_state == UNSAVED:
         # sync_provider_env pops every secret provider's api-key env; re-apply the
         # session-only value the user chose to continue with so the in-process shell
-        # handoff can read it. A secret is never written to .env — the keyring stays the
-        # only persistent store (#3591). A ``host`` value normally goes straight to .env
-        # and never reaches this sink; it only lands here when its .env write failed and
-        # the user picked "continue without saving", where re-applying it to os.environ
-        # is exactly what is wanted.
+        # handoff can read it. Secrets persist via the secret store (file-first by
+        # default; OS keyring only when OPENSRE_USE_KEYRING=1). A ``host`` value
+        # normally goes straight to .env and never reaches this sink; it only lands
+        # here when its .env write failed and the user picked "continue without
+        # saving", where re-applying it to os.environ is exactly what is wanted.
         os.environ.update(session_env_sink)
 
     _step_header(3, WIZARD_TOTAL_STEPS, "Integrations")
     try:
         configured_integrations, integration_env_path = (
-            _integration_configurators_module._configure_selected_integrations()
+            _integration_configurators_module._configure_selected_integrations(
+                mode=wizard_mode,
+            )
         )
     except KeyboardInterrupt:
         cancelled = Text()
@@ -927,5 +936,5 @@ def run_wizard(_argv: list[str] | None = None) -> int:
             provider, persisted_auth_method, credential_state=credential_state
         ),
     )
-    _render_next_steps()
+    _render_next_steps(focused=wizard_mode == "focused")
     return 0

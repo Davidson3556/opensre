@@ -318,6 +318,17 @@ MCP_BY_COMMAND: dict[str, _SlashMcpFields] = {
         "User asks how to stop a running investigation or background work",
         anti_examples=("User provides a task id to cancel (use /cancel)",),
     ),
+    "/remote-sync": _mcp(
+        "Mirror this machine's sessions and memory to an object store the user "
+        "owns. Subcommands: status, sync [--pull-only|--push-only]. Off unless "
+        "the user enabled it; integration credentials and model keys are never "
+        "uploaded.",
+        "User asks to sync, back up, or restore their conversations and memory",
+        anti_examples=(
+            "User asks to connect an AWS integration for investigations (use /integrations)",
+            "User asks what opensre remembers (use /memory)",
+        ),
+    ),
     "/tasks": _mcp(
         "List recent and in-flight shell background tasks with ids and status.",
         "User asks to list running or recent tasks",

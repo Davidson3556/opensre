@@ -45,6 +45,9 @@ from surfaces.interactive_shell.command_registry.privacy_cmds import (
     COMMANDS as PRIVACY_COMMANDS,
 )
 from surfaces.interactive_shell.command_registry.rca_cmds import COMMANDS as RCA_COMMANDS
+from surfaces.interactive_shell.command_registry.remote_sync_cmds import (
+    COMMANDS as REMOTE_SYNC_COMMANDS,
+)
 from surfaces.interactive_shell.command_registry.repl_data import (
     load_llm_settings,
     load_verified_integrations,
@@ -89,6 +92,7 @@ _MERGED_SEQUENCE = tuple(
         GATEWAY_COMMANDS,
         PRIVACY_COMMANDS,
         MEMORY_COMMANDS,
+        REMOTE_SYNC_COMMANDS,
         AGENTS_COMMANDS,
         ALERTS_COMMANDS,
         PARITY_COMMANDS,
