@@ -25,6 +25,24 @@ def test_is_available_requires_connection_verified_owner_repo() -> None:
     assert rt.is_available({}) is False
 
 
+def test_is_available_for_workspace_public_repository() -> None:
+    rt = get_github_star_history.__opensre_registered_tool__
+
+    assert (
+        rt.is_available(
+            {
+                "github": {
+                    "connection_verified": False,
+                    "public_repository": True,
+                    "owner": "Tracer-Cloud",
+                    "repo": "opensre",
+                }
+            }
+        )
+        is True
+    )
+
+
 def test_extract_params_maps_classified_credentials() -> None:
     rt = get_github_star_history.__opensre_registered_tool__
     sources = mock_agent_state()

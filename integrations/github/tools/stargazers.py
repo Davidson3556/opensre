@@ -29,7 +29,11 @@ _STAR_ACCEPT_HEADER = "application/vnd.github.star+json"
 def _github_star_history_available(sources: dict[str, dict]) -> bool:
     gh = sources.get("github", {})
     return bool(
-        (github_source_available(sources) or resolve_github_token(None))
+        (
+            github_source_available(sources)
+            or gh.get("public_repository")
+            or resolve_github_token(None)
+        )
         and gh.get("owner")
         and gh.get("repo")
     )
@@ -140,7 +144,7 @@ def get_github_star_history(
     end_day = now.date()
     start_day = end_day - timedelta(days=window_days - 1)
     window_start = datetime.combine(start_day, time.min, tzinfo=UTC)
-    client = GitHubRestClient(github_token)
+    client = GitHubRestClient(github_token, allow_unauthenticated_read=True)
     repository_path = f"/repos/{owner}/{repo}"
 
     try:
