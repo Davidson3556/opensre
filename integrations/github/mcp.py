@@ -658,10 +658,9 @@ async def _list_tools_async(config: GitHubMCPConfig) -> list[types.Tool]:
         return list(result.tools)
 
 
-def list_github_mcp_tools(config: GitHubMCPConfig) -> list[dict[str, Any]]:
-    """List available tools from a GitHub MCP server."""
+def _tool_defs(tools: Sequence[types.Tool]) -> list[dict[str, Any]]:
+    """Normalize MCP tool objects into the dicts the probe planners consume."""
 
-    tools = _run_async(_list_tools_async(config))
     return [
         {
             "name": tool.name,
@@ -672,17 +671,42 @@ def list_github_mcp_tools(config: GitHubMCPConfig) -> list[dict[str, Any]]:
     ]
 
 
+def list_github_mcp_tools(config: GitHubMCPConfig) -> list[dict[str, Any]]:
+    """List available tools from a GitHub MCP server."""
+
+    return _tool_defs(_run_async(_list_tools_async(config)))
+
+
+async def _call_tool_on_session(
+    session: ClientSession,
+    tool_name: str,
+    arguments: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Call one tool on an open session, turning failures into an error payload."""
+
+    payload: dict[str, Any]
+    try:
+        payload = _tool_result_to_dict(await session.call_tool(tool_name, arguments or {}))
+    except Exception as err:
+        logger.debug("GitHub MCP tool call failed: %s", tool_name, exc_info=True)
+        payload = {
+            "is_error": True,
+            "text": _root_cause_message(err),
+            "content": [],
+            "structured_content": None,
+        }
+    payload["tool"] = tool_name
+    payload["arguments"] = arguments or {}
+    return payload
+
+
 async def _call_tool_async(
     config: GitHubMCPConfig,
     tool_name: str,
     arguments: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     async with _open_github_mcp_session(config) as session:
-        result = await session.call_tool(tool_name, arguments or {})
-        payload = _tool_result_to_dict(result)
-        payload["tool"] = tool_name
-        payload["arguments"] = arguments or {}
-        return payload
+        return await _call_tool_on_session(session, tool_name, arguments)
 
 
 def call_github_mcp_tool(
@@ -695,7 +719,7 @@ def call_github_mcp_tool(
     try:
         return cast(dict[str, Any], _run_async(_call_tool_async(config, tool_name, arguments)))
     except Exception as err:
-        logger.debug("GitHub MCP tool call failed: %s", tool_name, exc_info=True)
+        logger.debug("GitHub MCP session failed for tool: %s", tool_name, exc_info=True)
         return {
             "is_error": True,
             "text": _root_cause_message(err),
@@ -1260,18 +1284,9 @@ async def _validate_github_mcp_config_async(
     repo_view: GitHubMcpRepoView = "auto",
     repo_visibility: GitHubMcpRepoVisibilityFilter = "any",
 ) -> GitHubMCPValidationResult:
-    """Inner async validation — One MCP session per validation run."""
+    """Run every validation step on a single MCP session."""
 
-    list_tools_result = await session.list_tools()
-    raw_tools = list_tools_result.tools
-    tools: list[dict[str, Any]] = [
-        {
-            "name": t.name,
-            "description": t.description or "",
-            "input_schema": getattr(t, "inputSchema", None),
-        }
-        for t in raw_tools
-    ]
+    tools = _tool_defs((await session.list_tools()).tools)
     tool_names = tuple(sorted(t["name"] for t in tools))
 
     missing = sorted(set(REQUIRED_SOURCE_INVESTIGATION_TOOLS) - set(tool_names))
@@ -1297,20 +1312,7 @@ async def _validate_github_mcp_config_async(
             failure_category="insufficient_tools",
         )
 
-    try:
-        raw_me = await session.call_tool("get_me", {})
-        me_result = _tool_result_to_dict(raw_me)
-    except Exception as err:
-        logger.debug("GitHub MCP tool call failed: get_me", exc_info=True)
-        me_result = {
-            "is_error": True,
-            "text": _root_cause_message(err),
-            "content": [],
-            "structured_content": None,
-        }
-    me_result["tool"] = "get_me"
-    me_result["arguments"] = {}
-
+    me_result = await _call_tool_on_session(session, "get_me", {})
     if me_result.get("is_error"):
         detail = me_result.get("text") or "Unknown authentication failure."
         return GitHubMCPValidationResult(
@@ -1368,20 +1370,7 @@ async def _validate_github_mcp_config_async(
     last_probe_tool = ""
     last_probe_detail = ""
     for repo_tool, repo_args in probe_plans:
-        try:
-            raw_list = await session.call_tool(repo_tool, repo_args)
-            list_result = _tool_result_to_dict(raw_list)
-        except Exception as err:
-            logger.debug("GitHub MCP tool call failed: %s", repo_tool, exc_info=True)
-            list_result = {
-                "is_error": True,
-                "text": _root_cause_message(err),
-                "content": [],
-                "structured_content": None,
-            }
-        list_result["tool"] = repo_tool
-        list_result["arguments"] = repo_args
-
+        list_result = await _call_tool_on_session(session, repo_tool, repo_args)
         if not list_result.get("is_error"):
             return _validation_success_from_repo_probe_result(
                 user_name=user_name,
