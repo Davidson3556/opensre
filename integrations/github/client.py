@@ -67,10 +67,15 @@ class GitHubRestClient:
     """Minimal GitHub REST API client with pagination and typed errors."""
 
     def __init__(
-        self, github_token: str | None = None, *, base_url: str = "https://api.github.com"
+        self,
+        github_token: str | None = None,
+        *,
+        base_url: str = "https://api.github.com",
+        allow_unauthenticated_read: bool = False,
     ) -> None:
         self._token = resolve_github_token(github_token)
         self._base_url = base_url.rstrip("/")
+        self._allow_unauthenticated_read = allow_unauthenticated_read
 
     def request(
         self,
@@ -82,7 +87,7 @@ class GitHubRestClient:
         accept: str = "application/vnd.github+json",
         api_version: str = "2022-11-28",
     ) -> JsonPayload:
-        if not self._token:
+        if not self._token and not (self._allow_unauthenticated_read and method.upper() == "GET"):
             raise GitHubApiError(
                 "GitHub token is required. Configure github_token, GITHUB_TOKEN, or GH_TOKEN."
             )
@@ -95,9 +100,9 @@ class GitHubRestClient:
             method=method.upper(),
             headers={
                 "Accept": accept,
-                "Authorization": f"Bearer {self._token}",
                 "Content-Type": "application/json; charset=utf-8",
                 "X-GitHub-Api-Version": api_version,
+                **({"Authorization": f"Bearer {self._token}"} if self._token else {}),
             },
         )
         try:
@@ -130,7 +135,7 @@ class GitHubRestClient:
         accept: str = "application/vnd.github+json",
         api_version: str = "2022-11-28",
     ) -> list[dict[str, Any]]:
-        if not self._token:
+        if not self._token and not self._allow_unauthenticated_read:
             raise GitHubApiError(
                 "GitHub token is required. Configure github_token, GITHUB_TOKEN, or GH_TOKEN."
             )
@@ -143,8 +148,8 @@ class GitHubRestClient:
                 method="GET",
                 headers={
                     "Accept": accept,
-                    "Authorization": f"Bearer {self._token}",
                     "X-GitHub-Api-Version": api_version,
+                    **({"Authorization": f"Bearer {self._token}"} if self._token else {}),
                 },
             )
             try:

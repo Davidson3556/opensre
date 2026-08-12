@@ -286,6 +286,56 @@ def test_resolve_gather_integrations_enriches_github_from_repo_url() -> None:
     assert session.vcs_repo_scopes["github"] == ("Tracer-Cloud", "opensre")
 
 
+def test_resolve_gather_integrations_adds_workspace_github_for_public_star_history() -> None:
+    session = Session()
+    session.resolved_integrations_cache = {}
+    session.runtime_metadata = {"workspace_repo": "Tracer-Cloud/opensre"}
+
+    resolved = _resolve_gather_integrations(
+        session,
+        "What is our current github star developer velocity?",
+    )
+
+    assert resolved["github"] == {
+        "connection_verified": False,
+        "public_repository": True,
+        "owner": "Tracer-Cloud",
+        "repo": "opensre",
+    }
+
+
+def test_gather_passes_workspace_github_to_evidence_driver(monkeypatch: Any) -> None:
+    session = Session()
+    session.resolved_integrations_cache = {}
+    session.runtime_metadata = {"workspace_repo": "Tracer-Cloud/opensre"}
+    captured: dict[str, Any] = {}
+
+    def _fake_gather(
+        _message: str,
+        _session: Session,
+        **kwargs: Any,
+    ) -> None:
+        captured.update(kwargs["resolved_integrations"])
+        return None
+
+    monkeypatch.setattr(
+        "core.agent_harness.turns.evidence_driver.gather_tool_evidence",
+        _fake_gather,
+    )
+
+    assert (
+        gather_integration_tool_evidence(
+            "What is our current github star developer velocity?",
+            session,
+            _console(),
+        )
+        is None
+    )
+    assert captured["github"]["public_repository"] is True
+    assert captured["github"]["owner"] == "Tracer-Cloud"
+    assert captured["github"]["repo"] == "opensre"
+
+
 def test_resolve_gather_integrations_uses_session_cache_on_follow_up() -> None:
     session = Session()
     session.resolved_integrations_cache = {

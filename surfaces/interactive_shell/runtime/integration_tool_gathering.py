@@ -113,10 +113,27 @@ def _resolve_gather_integrations(
     message: str,
     resolved_integrations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve gather integrations through the decoupled agent helper."""
-    return evidence_driver._resolve_gather_integrations(  # noqa: SLF001
+    """Resolve gather integrations and expose the workspace's public GitHub repo."""
+    resolved = evidence_driver._resolve_gather_integrations(  # noqa: SLF001
         session, message, resolved_integrations=resolved_integrations
     )
+    if "github" in resolved:
+        return resolved
+
+    workspace_repo = str(session.runtime_metadata.get("workspace_repo") or "").strip()
+    owner, separator, repo = workspace_repo.partition("/")
+    if not separator or not owner or not repo or "/" in repo:
+        return resolved
+
+    return {
+        **resolved,
+        "github": {
+            "connection_verified": False,
+            "public_repository": True,
+            "owner": owner,
+            "repo": repo,
+        },
+    }
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -173,6 +190,9 @@ def gather_integration_tool_evidence(
     # Key by display source (PostHog), not MCP method name — ``list_*`` and
     # ``call_*`` otherwise both print identical ``· checking Posthog…`` lines.
     source_call_counts: dict[str, int] = {}
+    effective_resolved = _resolve_gather_integrations(
+        session, message, resolved_integrations=resolved_integrations
+    )
 
     def on_progress(kind: str, data: dict[str, Any]) -> None:
         if kind == "tool_start":
@@ -199,7 +219,7 @@ def gather_integration_tool_evidence(
         persist=persist,
         error_reporter=_ShellGatherErrorReporter(),
         agent_factory=agent_factory,
-        resolved_integrations=resolved_integrations,
+        resolved_integrations=effective_resolved,
     )
 
 
