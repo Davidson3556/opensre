@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import shlex
@@ -53,13 +54,18 @@ from surfaces.cli.wizard._ui import (
 from surfaces.cli.wizard.azure_openai import (
     choose_provider_model,
 )
-from surfaces.cli.wizard.azure_openai import (
-    ensure_endpoint_settings as ensure_azure_openai_endpoint_settings,
-)
 from surfaces.cli.wizard.config import PROVIDER_BY_VALUE, SUPPORTED_PROVIDERS, ProviderOption
 from surfaces.cli.wizard.configurators.github import (
     DEFAULT_GITHUB_MCP_MODE,
     DEFAULT_GITHUB_MCP_URL,
+)
+from surfaces.cli.wizard.custom_endpoints import (
+    onboarding_provider_choices,
+    onboarding_provider_default,
+    resolve_onboarding_provider,
+)
+from surfaces.cli.wizard.endpoint_prompt import (
+    ensure_endpoint_settings as ensure_provider_endpoint_settings,
 )
 from surfaces.cli.wizard.env_sync import sync_provider_env
 from surfaces.cli.wizard.integration_health import IntegrationHealthResult
@@ -82,6 +88,7 @@ from surfaces.cli.wizard.validation import (
 )
 
 WIZARD_TOTAL_STEPS = 4
+logger = logging.getLogger(__name__)
 
 _CLI_SUBSCRIPTION_LOGIN_ARGS: dict[str, tuple[str, ...]] = {
     "claude-code": ("auth", "login"),
@@ -118,6 +125,17 @@ __all__ = [
 # materialize on first access.
 def build_demo_action_response():
     return _build_demo_action_response()
+
+
+def _seed_onboarding_loops() -> int:
+    """Seed starter scheduled loops after onboarding completes."""
+    from platform.scheduler.loops import seed_starter_loops
+
+    try:
+        return len(seed_starter_loops())
+    except Exception:
+        logger.debug("Failed to seed onboarding starter loops", exc_info=True)
+        return 0
 
 
 def _provider_label_for_saved_summary(
@@ -709,9 +727,9 @@ def run_wizard(_argv: list[str] | None = None) -> int:
 
         if change_provider:
             try:
-                provider = PROVIDER_BY_VALUE[
-                    _choose(
-                        "Choose your LLM provider",
+                provider_selection = _choose(
+                    "Choose your LLM provider",
+                    onboarding_provider_choices(
                         [
                             Choice(
                                 value=p.value,
@@ -719,7 +737,13 @@ def run_wizard(_argv: list[str] | None = None) -> int:
                                 hint=p.group,
                             )
                             for p in provider_options
-                        ],
+                        ]
+                    ),
+                    default=onboarding_provider_default(default_provider_value),
+                )
+                provider = PROVIDER_BY_VALUE[
+                    resolve_onboarding_provider(
+                        provider_selection,
                         default=default_provider_value,
                     )
                 ]
@@ -804,7 +828,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
                 # so this call short-circuits on the configured endpoint rather than
                 # re-prompting — its only job now is to hand the endpoint env back for the
                 # .env sync.
-                azure_env = ensure_azure_openai_endpoint_settings(provider)
+                azure_env = ensure_provider_endpoint_settings(provider)
                 if azure_env is None:
                     force_repick = True
                     continue
@@ -854,7 +878,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
             # ``AZURE_OPENAI_BASE_URL`` in ``os.environ``, so this call short-circuits on the
             # configured endpoint instead of re-prompting — its only job now is to hand the
             # endpoint env back for the .env sync.
-            azure_env = ensure_azure_openai_endpoint_settings(provider)
+            azure_env = ensure_provider_endpoint_settings(provider)
             if azure_env is None:
                 force_repick = True
                 continue
@@ -924,6 +948,7 @@ def run_wizard(_argv: list[str] | None = None) -> int:
         integration_env_path = None
 
     summary_env_path = integration_env_path or str(env_path)
+    _seed_onboarding_loops()
 
     _step_header(4, WIZARD_TOTAL_STEPS, "Summary")
     _render_saved_summary(
