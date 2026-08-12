@@ -180,7 +180,7 @@ from integrations.azure_sql import build_azure_sql_config
 from integrations.azure_sql import classify as _classify_azure_sql
 from integrations.betterstack import build_betterstack_config
 from integrations.betterstack import classify as _classify_betterstack
-from integrations.bitbucket import classify as _classify_bitbucket
+from integrations.bitbucket.config import classify as _classify_bitbucket
 from integrations.buzz import classify as _classify_buzz
 from integrations.config_models import (
     DEFAULT_DATADOG_SITE,

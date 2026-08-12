@@ -129,7 +129,7 @@ _CLASSIFY_PATCH_TARGETS: list[tuple[str, str, str]] = [
     # (None, None) with no report at all; twilio/whatsapp swallowed ValidationError
     # specifically). All five now route through report_classify_failure like every
     # other vendor above.
-    ("bitbucket", "integrations.bitbucket", "BitbucketConfig"),
+    ("bitbucket", "integrations.bitbucket.config", "BitbucketConfig"),
     ("signoz", "integrations.signoz", "build_signoz_config"),
     ("tempo", "integrations.tempo", "build_tempo_config"),
     ("twilio", "integrations.twilio", "TwilioIntegrationConfig"),
