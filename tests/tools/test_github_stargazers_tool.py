@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import patch
 
 from integrations.github.client import GitHubApiError
@@ -58,6 +59,42 @@ def test_extract_params_maps_classified_credentials() -> None:
     assert params["owner"] == "Tracer-Cloud"
     assert params["repo"] == "opensre"
     assert params["github_token"] == "ghp_test"
+
+
+def test_extract_params_marks_workspace_repository_for_public_reads() -> None:
+    rt = get_github_star_history.__opensre_registered_tool__
+
+    params = rt.extract_params(
+        {
+            "github": {
+                "connection_verified": False,
+                "public_repository": True,
+                "owner": "Tracer-Cloud",
+                "repo": "opensre",
+            }
+        }
+    )
+
+    assert params["public_repository"] is True
+
+
+def test_run_allows_anonymous_reads_only_for_public_repository_source() -> None:
+    seen_unauthenticated_read_flags: list[bool] = []
+
+    class _StubClient:
+        def __init__(self, _token: str | None, *, allow_unauthenticated_read: bool) -> None:
+            seen_unauthenticated_read_flags.append(allow_unauthenticated_read)
+
+        def request(self, _method: str, path: str, **_kwargs: Any) -> dict[str, int] | list[dict]:
+            if path == "/repos/o/r":
+                return {"stargazers_count": 0}
+            return []
+
+    with patch("integrations.github.tools.stargazers.GitHubRestClient", _StubClient):
+        get_github_star_history(owner="o", repo="r")
+        get_github_star_history(owner="o", repo="r", public_repository=True)
+
+    assert seen_unauthenticated_read_flags == [False, True]
 
 
 def test_run_scans_newest_pages_until_window_is_covered() -> None:

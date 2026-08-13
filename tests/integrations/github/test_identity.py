@@ -14,6 +14,8 @@ from integrations.github.identity import workspace_public_repository_source
         ("", None),
         ("owner-only", None),
         ("owner/repo/extra", None),
+        ("git@gitlab.com:acme/infra", None),
+        ("git@bitbucket.org:team/svc", None),
     ],
 )
 def test_workspace_public_repository_source_accepts_only_owner_repo(

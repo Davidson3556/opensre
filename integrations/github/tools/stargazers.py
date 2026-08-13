@@ -44,7 +44,12 @@ def _github_star_history_extract_params(sources: dict[str, dict]) -> dict[str, A
     gh = sources.get("github", {})
     if not gh:
         return {}
-    return {"owner": gh.get("owner"), "repo": gh.get("repo"), **github_creds(gh)}
+    return {
+        "owner": gh.get("owner"),
+        "repo": gh.get("repo"),
+        "public_repository": bool(gh.get("public_repository")),
+        **github_creds(gh),
+    }
 
 
 def _now_utc() -> datetime:
@@ -125,18 +130,20 @@ def _github_stargazer_listing_error(exc: GitHubApiError) -> str:
                 "description": "UTC days to include, default 30.",
             },
             "github_token": {"type": "string"},
+            "public_repository": {"type": "boolean"},
         },
         "required": ["owner", "repo"],
     },
     is_available=_github_star_history_available,
     extract_params=_github_star_history_extract_params,
-    injected_params=GITHUB_INJECTED_PARAMS,
+    injected_params=(*GITHUB_INJECTED_PARAMS, "public_repository"),
 )
 def get_github_star_history(
     owner: str,
     repo: str,
     days: int | None = None,
     github_token: str | None = None,
+    public_repository: bool = False,
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """Fetch a bounded, newest-first day-by-day GitHub star history window."""
@@ -145,7 +152,10 @@ def get_github_star_history(
     end_day = now.date()
     start_day = end_day - timedelta(days=window_days - 1)
     window_start = datetime.combine(start_day, time.min, tzinfo=UTC)
-    client = GitHubRestClient(github_token, allow_unauthenticated_read=True)
+    client = GitHubRestClient(
+        github_token,
+        allow_unauthenticated_read=public_repository,
+    )
     repository_path = f"/repos/{owner}/{repo}"
 
     try:

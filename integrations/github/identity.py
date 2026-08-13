@@ -1,13 +1,16 @@
-"""Lightweight GitHub identity helpers for UI and analytics.
+"""Lightweight GitHub identity helpers for UI, analytics, and public sources.
 
-Kept separate from :mod:`integrations.github.login` so callers like the welcome
-banner can read the saved handle without importing the heavy GitHub MCP stack.
+Kept separate from :mod:`integrations.github.login` so callers can read saved
+identity data or derive public repository scope without importing GitHub MCP.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
+
+_GITHUB_REPOSITORY_PART_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def workspace_public_repository_source(
@@ -16,7 +19,9 @@ def workspace_public_repository_source(
     """Expose a valid workspace GitHub repository for public read-only tools."""
     workspace_repo = str(runtime_metadata.get("workspace_repo") or "").strip()
     owner, separator, repo = workspace_repo.partition("/")
-    if not separator or not owner or not repo or "/" in repo:
+    if not separator or not _GITHUB_REPOSITORY_PART_RE.fullmatch(owner):
+        return {}
+    if not _GITHUB_REPOSITORY_PART_RE.fullmatch(repo):
         return {}
     return {
         "github": {
