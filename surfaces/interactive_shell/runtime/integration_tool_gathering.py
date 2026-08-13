@@ -19,6 +19,7 @@ from rich.markup import escape
 from core.agent_harness.turns import evidence_driver
 from core.agent_harness.turns.evidence_driver import GatherAgentFactory
 from core.agent_harness.turns.gather_observation import GatheredEvidence
+from integrations.github.identity import workspace_public_repository_source
 from surfaces.interactive_shell.session import Session
 from surfaces.interactive_shell.ui import DIM
 from surfaces.interactive_shell.utils.error_handling.exception_reporting import report_exception
@@ -113,27 +114,13 @@ def _resolve_gather_integrations(
     message: str,
     resolved_integrations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve gather integrations and expose the workspace's public GitHub repo."""
+    """Resolve gather integrations and merge public workspace sources when needed."""
     resolved = evidence_driver._resolve_gather_integrations(  # noqa: SLF001
         session, message, resolved_integrations=resolved_integrations
     )
     if "github" in resolved:
         return resolved
-
-    workspace_repo = str(session.runtime_metadata.get("workspace_repo") or "").strip()
-    owner, separator, repo = workspace_repo.partition("/")
-    if not separator or not owner or not repo or "/" in repo:
-        return resolved
-
-    return {
-        **resolved,
-        "github": {
-            "connection_verified": False,
-            "public_repository": True,
-            "owner": owner,
-            "repo": repo,
-        },
-    }
+    return {**resolved, **workspace_public_repository_source(session.runtime_metadata)}
 
 
 def _truncate(text: str, limit: int) -> str:
