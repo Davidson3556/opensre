@@ -62,22 +62,25 @@ def _parse_git_remote_url(url: str) -> tuple[str, str] | None:
 
 
 def detect_git_remote_repo_scope(cwd: str | Path | None = None) -> tuple[str, str] | None:
-    """Best-effort ``owner/repo`` from ``git remote get-url origin`` in *cwd*."""
+    """Best-effort ``owner/repo`` from the checkout's origin or upstream remote."""
     work_dir = Path(cwd or os.getcwd())
-    try:
-        result = subprocess.run(
-            ["git", "remote", "get-url", "origin"],
-            cwd=work_dir,
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return _parse_git_remote_url(result.stdout)
+    for remote in ("origin", "upstream"):
+        try:
+            result = subprocess.run(
+                ["git", "remote", "get-url", remote],
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode == 0:
+            scope = _parse_git_remote_url(result.stdout)
+            if scope is not None:
+                return scope
+    return None
 
 
 def infer_github_repo_scope(

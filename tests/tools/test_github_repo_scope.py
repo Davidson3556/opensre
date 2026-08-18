@@ -103,9 +103,27 @@ def test_detect_git_remote_repo_scope_parses_ssh_remote() -> None:
         assert detect_git_remote_repo_scope() == ("org", "repo")
 
 
+def test_detect_git_remote_repo_scope_falls_back_to_upstream() -> None:
+    with patch("integrations.github.repo_scope.subprocess.run") as run:
+        run.side_effect = [
+            MagicMock(returncode=2, stdout=""),
+            MagicMock(
+                returncode=0,
+                stdout="https://github.com/Tracer-Cloud/opensre.git\n",
+            ),
+        ]
+
+        assert detect_git_remote_repo_scope() == ("Tracer-Cloud", "opensre")
+
+    assert [call.args[0][-1] for call in run.call_args_list] == ["origin", "upstream"]
+
+
 def test_detect_git_remote_repo_scope_rejects_non_github_remote() -> None:
     with patch("integrations.github.repo_scope.subprocess.run") as run:
-        run.return_value = MagicMock(returncode=0, stdout="git@bitbucket.org:org/repo.git\n")
+        run.side_effect = [
+            MagicMock(returncode=0, stdout="git@bitbucket.org:org/repo.git\n"),
+            MagicMock(returncode=2, stdout=""),
+        ]
         assert detect_git_remote_repo_scope() is None
 
 

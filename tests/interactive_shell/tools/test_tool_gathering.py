@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import io
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
 
 import core as runtime_module
 import platform.harness_ports as harness_ports
+from config.constants.runtime_metadata import WORKSPACE_REPO_ENV_KEYS
 from core.agent_harness.turns.evidence_driver import (
     GatherAgentFactory,
     _resolve_gather_integrations,  # noqa: PLC2701
@@ -360,8 +362,13 @@ def test_resolve_gather_integrations_uses_gitlab_session_cache() -> None:
     assert resolved["gitlab"]["file_path"] == "runbook.md"
 
 
-def test_resolve_gather_integrations_uses_passed_turn_view() -> None:
+def test_resolve_gather_integrations_uses_passed_turn_view(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
     """When the turn's resolved view is supplied, it is the base — no session re-resolve."""
+    for key in WORKSPACE_REPO_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(tmp_path)
     session = Session()
     # The session cache holds a different integration than the turn resolved this turn.
     session.resolved_integrations_cache = {"datadog": {"connection_verified": True}}

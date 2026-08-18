@@ -61,6 +61,16 @@ def test_extract_params_maps_classified_credentials() -> None:
     assert params["github_token"] == "ghp_test"
 
 
+def test_workspace_scope_is_hidden_from_model_input_schema() -> None:
+    rt = get_github_star_history.__opensre_registered_tool__
+
+    properties = rt.public_input_schema["properties"]
+
+    assert "owner" not in properties
+    assert "repo" not in properties
+    assert properties.keys() == {"days"}
+
+
 def test_extract_params_marks_workspace_repository_for_public_reads() -> None:
     rt = get_github_star_history.__opensre_registered_tool__
 

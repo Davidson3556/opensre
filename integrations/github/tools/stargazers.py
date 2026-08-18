@@ -141,7 +141,12 @@ def _github_stargazer_listing_error(exc: GitHubApiError) -> str:
     },
     is_available=_github_star_history_available,
     extract_params=_github_star_history_extract_params,
-    injected_params=(*GITHUB_INJECTED_PARAMS, "public_repository"),
+    injected_params=(
+        *GITHUB_INJECTED_PARAMS,
+        "owner",
+        "repo",
+        "public_repository",
+    ),
 )
 def get_github_star_history(
     owner: str,

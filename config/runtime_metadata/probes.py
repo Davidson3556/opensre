@@ -238,16 +238,18 @@ def _normalize_repo_identity(raw: str) -> str:
 
 
 def read_git_origin_identity(config_text: str) -> str:
-    """Parse a ``.git/config`` body for ``remote.origin.url`` → ``owner/repo``."""
-    in_origin = False
-    for line in config_text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            in_origin = stripped.lower() == '[remote "origin"]'
-            continue
-        if in_origin and stripped.lower().startswith("url"):
-            _, _, value = stripped.partition("=")
-            return _normalize_repo_identity(value)
+    """Parse a ``.git/config`` body for the origin, then upstream, repository."""
+    lines = config_text.splitlines()
+    for remote in ("origin", "upstream"):
+        in_remote = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("[") and stripped.endswith("]"):
+                in_remote = stripped.lower() == f'[remote "{remote}"]'
+                continue
+            if in_remote and stripped.lower().startswith("url"):
+                _, _, value = stripped.partition("=")
+                return _normalize_repo_identity(value)
     return ""
 
 
@@ -265,7 +267,8 @@ def _git_origin_from_config(repo_root: Path) -> str:
 def workspace_identity_facts() -> dict[str, str]:
     """Which git/GitHub repo is “ours” for this OpenSRE process.
 
-    Prefer an explicit env override, then the checkout’s ``origin`` remote.
+    Prefer an explicit env override, then the checkout's ``origin`` or
+    ``upstream`` remote.
     Empty string means unknown — prompts must state that rather than invent
     Tracer-Cloud/opensre or the user’s employer repo.
     """
