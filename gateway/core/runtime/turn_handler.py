@@ -15,26 +15,23 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable
-from typing import Any
 
 from rich.console import Console
 
-from core.agent_harness.accounting.turn_accounting import DefaultTurnAccounting
-from core.agent_harness.harness import AgentSession, SessionConfig
-from core.agent_harness.session import SessionCore, SessionManager
-from core.agent_harness.session_goal.goal import SessionGoal
-from core.agent_harness.session_goal.progress import (
+from core.agent_harness import SessionCore, SessionManager
+from core.agent_harness.ports import SlashPortsFactory
+from core.agent_harness.runtime import TurnBinding
+from core.agent_harness.spi.session_goal import (
+    SessionGoal,
     format_session_goal_progress,
     format_session_goal_status_line,
 )
-from core.agent_harness.session_goal.run_until import run_until_session_goal
 from gateway.core.runtime.cancel_console import CancelConsole, ensure_turn_cancel
 from gateway.core.runtime.capability_policy import ensure_gateway_capability_policy
 from gateway.core.runtime.concurrency import TurnConcurrencyGate
 from gateway.core.runtime.session_agents import SessionAgentPool
-from gateway.core.runtime.sink_protocol import GatewaySink
 from gateway.core.runtime.status_messages import EMPTY_RESPONSE_MESSAGE
+from gateway.core.transport_api import GatewaySink
 from platform.analytics.cli import (
     capture_gateway_turn_completed,
     capture_gateway_turn_failed,
@@ -47,8 +44,6 @@ from platform.analytics.usage_context import (
 )
 from platform.observability.trace.spans import traced_session
 
-SlashPortsFactory = Callable[[], Any]
-
 _DEFAULT_BUSY_MESSAGE = "OpenSRE is at capacity. Please try again shortly."
 
 
@@ -56,12 +51,10 @@ class GatewayTurnHandler:
     """Services one inbound gateway message per call (a :data:`GatewayAgentCallback`).
 
     One :class:`HeadlessAgent` is kept per logical session and reused across
-    turns; per-turn sinks, accounting, and tool hooks are rebound via
-    :meth:`HeadlessAgent.bind_turn`. Concurrent turns for different sessions
-    stay isolated. Chat goes through :func:`run_until_session_goal` (one action
-    turn; session-goal continuation only when a ``SessionGoal`` is attached via
-    structured handoff or an explicit host attach — same policy as the
-    interactive shell).
+    turns; each message goes through :meth:`HeadlessAgent.handle` with a
+    :class:`TurnBinding` (sink hooks, cancel console) — the same call the
+    interactive shell makes. Concurrent turns for different sessions stay
+    isolated.
 
     When ``gate`` is set, capacity is checked here before the turn runs — the
     manager must not wrap this class in a second "turn handler".
@@ -81,7 +74,6 @@ class GatewayTurnHandler:
             slash_ports_factory=slash_ports_factory,
         )
         # Gateway already bootstrapped env at process start; turns must not reload.
-        self._session_api = AgentSession(SessionConfig(load_env=False))
         self._gate = gate
         self._busy_message = busy_message
 
@@ -132,22 +124,13 @@ class GatewayTurnHandler:
             try:
                 if surface:
                     capture_gateway_turn_started(surface=surface)
-                agent.bind_turn(
-                    session=session,
-                    accounting=DefaultTurnAccounting(session, text),
-                    tool_hooks=getattr(sink, "tool_hooks", None),
-                    console=turn_console,
-                )
-
-                def _chat(message: str) -> Any:
-                    return self._session_api.chat(message, agent=agent)
 
                 def _cancel_requested() -> bool:
                     return isinstance(cancel, threading.Event) and cancel.is_set()
 
                 def _on_progress(goal: SessionGoal) -> None:
                     # Same progress contract as the interactive shell: paint mid-loop
-                    # and scrub happens inside run_until_session_goal. Gateway sinks
+                    # and scrub happens inside the agent's goal loop. Gateway sinks
                     # get a compact status line; full text goes to debug logs.
                     full = format_session_goal_progress(goal, session=session)
                     compact = format_session_goal_status_line(goal, session=session)
@@ -158,13 +141,17 @@ class GatewayTurnHandler:
                         if callable(set_status):
                             set_status(compact)
 
-                turn_result = run_until_session_goal(
-                    _chat,
-                    session,
+                turn_result = agent.handle(
                     text,
+                    TurnBinding(
+                        session=session,
+                        tool_hooks=getattr(sink, "tool_hooks", None),
+                        console=turn_console,
+                        is_tty=False,
+                    ),
                     cancel_requested=_cancel_requested,
                     on_progress=_on_progress,
-                ).last_result
+                )
                 outbound_text = turn_result.primary_response_text
                 logger.debug(
                     "gateway_turn done intent=%s answered=%s outbound_chars=%s",

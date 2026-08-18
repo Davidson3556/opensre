@@ -172,11 +172,15 @@ def test_run_returns_partial_when_page_cap_is_hit() -> None:
     assert "Stopped after 30" in result["warning"]
 
 
-def test_run_reports_timestamp_listing_permission_errors_with_current_count() -> None:
+def test_run_reports_anonymous_listing_auth_error_with_current_count() -> None:
     def fake_request(_method: str, path: str, **_kwargs):
         if path == "/repos/o/r":
             return {"stargazers_count": 101}
-        raise GitHubApiError("forbidden", status_code=403, path="/repos/o/r/stargazers")
+        raise GitHubApiError(
+            "requires authentication",
+            status_code=401,
+            path="/repos/o/r/stargazers",
+        )
 
     with patch(
         "integrations.github.tools.stargazers.GitHubRestClient.request",
@@ -186,7 +190,8 @@ def test_run_reports_timestamp_listing_permission_errors_with_current_count() ->
 
     assert result["available"] is False
     assert result["stargazers_count"] == 101
-    assert "admin/collaborator access" in result["error"]
+    assert "authentication is required" in result["error"]
+    assert "current repository star count is still available" in result["error"]
 
 
 def test_run_reports_missing_starred_at_media_type() -> None:

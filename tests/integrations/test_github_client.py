@@ -81,6 +81,18 @@ def test_public_read_can_omit_authorization(monkeypatch: pytest.MonkeyPatch) -> 
     assert "Authorization" not in seen_headers
 
 
+def test_public_read_mode_still_rejects_unauthenticated_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GITHUB_MCP_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    client = GitHubRestClient(github_token=None, allow_unauthenticated_read=True)
+
+    with pytest.raises(GitHubApiError, match="GitHub token is required"):
+        client.request("POST", "/repos/Tracer-Cloud/opensre/issues", body={"title": "x"})
+
+
 def test_paginate_follows_link_header(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[str] = []
 

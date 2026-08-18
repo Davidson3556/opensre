@@ -11,6 +11,8 @@ from integrations.github.identity import workspace_public_repository_source
     ("workspace_repo", "expected"),
     [
         ("Tracer-Cloud/opensre", ("Tracer-Cloud", "opensre")),
+        ("https://github.com/Tracer-Cloud/opensre.git", ("Tracer-Cloud", "opensre")),
+        ("git@github.com:Tracer-Cloud/opensre.git", ("Tracer-Cloud", "opensre")),
         ("", None),
         ("owner-only", None),
         ("owner/repo/extra", None),

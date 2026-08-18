@@ -50,6 +50,42 @@ def install_harness_adapters() -> None:
     install_investigation_api()
 
 
+def install_notification_adapters() -> tuple[str, ...]:
+    """Register the outbound channels background-RCA notices dispatch through.
+
+    Without this the registry is empty and every configured channel reports
+    ``"unsupported"``, so the returned names are the diagnostic that tells an
+    empty registry apart from a genuinely unknown channel.
+
+    Called on background-RCA completion and when ``/background notify set``
+    validates a channel, not at boot. Importing an adapter module does not pull
+    its vendor transport, because each keeps its client import inside the
+    delivery function.
+
+    Registers the adapter objects rather than relying on the import side effect
+    alone. Imports are cached, so a re-import after
+    ``clear_outbound_adapters()`` runs no module body and would leave the
+    registry empty while this function reported success.
+    """
+    from integrations.buzz.background_adapter import buzz_background_adapter
+    from integrations.rocketchat.background_adapter import rocketchat_background_adapter
+    from integrations.smtp.background_adapter import email_background_adapter
+    from integrations.telegram.background_adapter import telegram_background_adapter
+    from platform.notifications.outbound_registry import (
+        register_outbound_adapter,
+        registered_outbound_adapter_names,
+    )
+
+    for adapter in (
+        buzz_background_adapter,
+        rocketchat_background_adapter,
+        email_background_adapter,
+        telegram_background_adapter,
+    ):
+        register_outbound_adapter(adapter)
+    return registered_outbound_adapter_names()
+
+
 def install_scheduler_runners() -> None:
     """Register the runners scheduled tasks dispatch through.
 
@@ -67,5 +103,6 @@ def install_scheduler_runners() -> None:
 __all__ = [
     "install_harness_adapters",
     "install_investigation_api",
+    "install_notification_adapters",
     "install_scheduler_runners",
 ]

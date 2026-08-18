@@ -8,7 +8,12 @@ from dataclasses import dataclass
 from typing import Any
 from urllib import error, parse, request
 
-from config.constants import GH_TOKEN_ENV, GITHUB_MCP_AUTH_TOKEN_ENV, GITHUB_TOKEN_ENV
+from config.constants import (
+    GH_TOKEN_ENV,
+    GITHUB_API_BASE_URL,
+    GITHUB_MCP_AUTH_TOKEN_ENV,
+    GITHUB_TOKEN_ENV,
+)
 
 JsonPayload = dict[str, Any] | list[Any]
 
@@ -70,7 +75,7 @@ class GitHubRestClient:
         self,
         github_token: str | None = None,
         *,
-        base_url: str = "https://api.github.com",
+        base_url: str = GITHUB_API_BASE_URL,
         allow_unauthenticated_read: bool = False,
     ) -> None:
         self._token = resolve_github_token(github_token)

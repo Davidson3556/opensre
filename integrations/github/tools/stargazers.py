@@ -84,6 +84,11 @@ def _daily_rows(start_day: date, days: int, counts: Counter[date]) -> list[dict[
 
 def _github_stargazer_listing_error(exc: GitHubApiError) -> str:
     message = str(exc)
+    if exc.status_code == 401:
+        return (
+            "GitHub authentication is required to read timestamped stargazer history; "
+            "the current repository star count is still available from public metadata."
+        )
     if exc.status_code in {403, 404, 422}:
         return (
             f"{message}. GitHub stargazer timestamp listings may require repository "
