@@ -583,7 +583,11 @@ def _recent_issues_with_marker(
     if not isinstance(result, list):
         return []
     return [
-        item for item in result if isinstance(item, dict) and marker in str(item.get("body") or "")
+        item
+        for item in result
+        if isinstance(item, dict)
+        and "pull_request" not in item
+        and marker in str(item.get("body") or "")
     ]
 
 

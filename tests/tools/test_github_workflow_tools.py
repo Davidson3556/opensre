@@ -295,6 +295,38 @@ def test_execute_create_returns_existing_issue_for_idempotency_marker() -> None:
     assert result["side_effect"] == "existing_github_issue"
 
 
+def test_execute_create_ignores_pull_request_with_idempotency_marker() -> None:
+    proposal = propose_github_issue_mutation_from_slack(
+        owner="o",
+        repo="r",
+        operation="create",
+        slack_text="ship this",
+        slack_url="https://slack.example/archives/C/p1",
+    )["proposal"]
+    marker = proposal["idempotency_marker"]
+
+    def fake_request(self: GitHubRestClient, method: str, path: str, **_kwargs: Any) -> Any:
+        if path == "/repos/o/r/issues" and method == "GET":
+            return [
+                {
+                    "number": 12,
+                    "body": f"...\n{marker}\n...",
+                    "pull_request": {"url": "https://api.github.com/repos/o/r/pulls/12"},
+                }
+            ]
+        if path == "/repos/o/r/issues" and method == "POST":
+            return {"number": 99, "html_url": "https://github.com/o/r/issues/99"}
+        raise AssertionError((method, path))
+
+    with patch.object(GitHubRestClient, "request", fake_request):
+        result = execute_github_issue_mutation(
+            owner="o", repo="r", proposal=proposal, github_token="tok"
+        )
+
+    assert result["executed"] is True
+    assert result["side_effect"] == "created_github_issue"
+
+
 def test_execute_update_adds_comment_and_preserves_body() -> None:
     proposal = propose_github_issue_mutation_from_slack(
         owner="o",
