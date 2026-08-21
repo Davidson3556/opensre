@@ -27,7 +27,7 @@ request assembly.
   `integrations/`.
 - Agent-callable tool implementations; keep those in `tools/`.
 - Platform services such as guardrails, masking, auth, telemetry, notifications,
-  and sandboxing; keep those in `platform/`.
+  and sandboxing; keep those in `infrastructure/`.
 
 ## Also exported (temporary)
 
