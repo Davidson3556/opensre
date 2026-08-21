@@ -232,3 +232,5 @@ force immediate deletion (e.g., in a throwaway dev account), set
 - ECS Service for long-running benchmark watcher (current is one-off tasks)
 - Cross-region replication of the results bucket
 - KMS customer-managed keys (current uses AWS-managed AES256)
+
+<!-- path-filter demo -->
