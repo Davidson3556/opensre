@@ -16,7 +16,7 @@ from config.constants.gateway import (
     USER_STOP_MESSAGE,
 )
 from config.scope_context import bound_storage_scope
-from gateway.core.billing.credits_client import CreditsOutcome, consume_credits
+from gateway.core.billing.turn_metering import bound_turn_metering
 from gateway.core.middleware.active_turns import ActiveTurnRegistry
 from gateway.core.middleware.approvals import ApprovalBroker, approval_tool_hooks
 from gateway.core.middleware.terminal_outcome import TerminalOutcomeArbiter
@@ -149,16 +149,7 @@ async def handle_polled_inbound_buzz_message(
             except Exception:
                 logger.debug("[buzz-gateway] user-stop finalize failed", exc_info=True)
 
-        def _turn_is_unpaid() -> bool:
-            """Debit the ledger for this turn; refuse it only on an explicit 402.
-
-            UNCONFIGURED (dev setups without metering env) and UNAVAILABLE
-            (webapp outage) proceed, so a billing outage never silences the bot
-            and a config error never reads to users as "out of credits".
-            """
-            outcome = consume_credits(scope.principal.id, reason="buzz_turn")
-            if outcome is not CreditsOutcome.DENIED:
-                return False
+        def _on_credit_denied() -> None:
             logger.info(
                 "[buzz-gateway] turn denied: out of credits channel=%s",
                 event.channel_id,
@@ -168,24 +159,23 @@ async def handle_polled_inbound_buzz_message(
                     output.finalize(CREDITS_DENIED_MESSAGE)
                 except Exception:
                     logger.debug("[buzz-gateway] credits-denied finalize failed", exc_info=True)
-            return True
 
         def _run_turn() -> None:
-            # Metering belongs inside the turn body, on the executor thread.
-            # Off the loop, a slow ledger cannot stall polling or the other
-            # turns sharing it. Fused to the work it pays for, the debit cannot
-            # be stranded: shutdown cancels the awaiting task but not this
-            # thread, so the ``finally`` below still acknowledges the mention
-            # and the next start cannot re-deliver an already-charged message.
+            # The shared runner applies metering after process-capacity
+            # admission. Keeping its bound request here leaves the ledger POST
+            # on this executor thread instead of blocking the polling loop.
             try:
-                if _turn_is_unpaid():
-                    return
                 with (
                     bound_storage_scope(scope),
                     bound_usage_context(
                         surface=UsageSurface.BUZZ,
                         session_id=session.session_id,
                         user_id=event.pubkey or None,
+                    ),
+                    bound_turn_metering(
+                        organization_id=scope.principal.id,
+                        reason="buzz_turn",
+                        on_denied=_on_credit_denied,
                     ),
                 ):
                     handle_callback_to_gateway_agent(

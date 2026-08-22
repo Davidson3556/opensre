@@ -563,10 +563,15 @@ def test_run_returns_none_and_says_at_capacity_when_the_gate_refuses(monkeypatch
     # Arrange
     from infrastructure.turn_host.concurrency import AT_CAPACITY_MESSAGE, TurnConcurrencyGate
 
-    _patch_headless_agent(monkeypatch, _empty_turn_result())
+    factory = _patch_headless_agent(monkeypatch, _empty_turn_result())
     gate = TurnConcurrencyGate(1)
     assert gate.try_acquire() is True  # the only slot is taken
-    handler = TurnRunner(console=Console(force_terminal=False), gate=gate)
+    admission_check = MagicMock(return_value=True)
+    handler = TurnRunner(
+        console=Console(force_terminal=False),
+        gate=gate,
+        admission_check=admission_check,
+    )
     sink = RecordingTurnOutput()
 
     # Act
@@ -577,3 +582,50 @@ def test_run_returns_none_and_says_at_capacity_when_the_gate_refuses(monkeypatch
     # Assert
     assert returned is None
     assert sink.finalized == AT_CAPACITY_MESSAGE
+    admission_check.assert_not_called()
+    factory.assert_not_called()
+
+
+def test_run_rejected_by_admission_never_starts_agent_work(monkeypatch: Any) -> None:
+    """A billing denial owns its response and never constructs an agent."""
+    factory = _patch_headless_agent(monkeypatch, _empty_turn_result())
+    handler = TurnRunner(
+        console=Console(force_terminal=False),
+        admission_check=MagicMock(return_value=False),
+    )
+
+    returned = handler.run(
+        "hello",
+        SessionCore(store=InMemorySessionStore()),
+        RecordingTurnOutput(),
+        logging.getLogger("t"),
+    )
+
+    assert returned is None
+    factory.assert_not_called()
+
+
+def test_run_cancelled_during_admission_never_starts_agent_work(monkeypatch: Any) -> None:
+    """A timeout racing the ledger must not start an LLM turn afterward."""
+    factory = _patch_headless_agent(monkeypatch, _empty_turn_result())
+    sink = RecordingTurnOutput()
+    sink.turn_cancel = threading.Event()
+
+    def _admit_after_timeout() -> bool:
+        sink.turn_cancel.set()
+        return True
+
+    handler = TurnRunner(
+        console=Console(force_terminal=False),
+        admission_check=_admit_after_timeout,
+    )
+
+    returned = handler.run(
+        "hello",
+        SessionCore(store=InMemorySessionStore()),
+        sink,
+        logging.getLogger("t"),
+    )
+
+    assert returned is None
+    factory.assert_not_called()

@@ -18,9 +18,11 @@ import pytest
 from config.constants.gateway import CREDITS_DENIED_MESSAGE
 from core.agent_harness.session import SessionCore
 from core.agent_harness.session.persistence.memory import InMemorySessionStore
+from gateway.core.billing import turn_metering
 from gateway.core.billing.credits_client import CreditsOutcome
 from gateway.core.middleware.active_turns import ActiveTurnRegistry
 from gateway.core.middleware.approvals import ApprovalBroker
+from gateway.tests.billing.turn_metering_harness import metered_callback
 from gateway.transports.telegram import inbound_handler
 from gateway.transports.telegram.inbound_handler import handle_polled_inbound_telegram_message
 from gateway.transports.telegram.inbound_security import InboundDecision
@@ -94,7 +96,7 @@ def _run_turn(client: _FakeClient, callback: MagicMock) -> None:
                 turn_semaphore=asyncio.Semaphore(1),
                 approvals=ApprovalBroker(),
                 active_cancels=ActiveTurnRegistry(),
-                handle_callback_to_gateway_agent=callback,
+                handle_callback_to_gateway_agent=metered_callback(callback),
             )
         )
     finally:
@@ -110,7 +112,7 @@ def test_denied_credits_stop_the_turn_and_bill_the_owning_org(
         charges.append((organization_id, reason))
         return CreditsOutcome.DENIED
 
-    monkeypatch.setattr(inbound_handler, "consume_credits", deny)
+    monkeypatch.setattr(turn_metering, "consume_credits", deny)
     client = _FakeClient()
     callback = MagicMock()
 
@@ -124,7 +126,7 @@ def test_denied_credits_stop_the_turn_and_bill_the_owning_org(
 def test_unconfigured_metering_still_runs_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     """Fail-open: a dev box without metering env is not a billing denial."""
     monkeypatch.setattr(
-        inbound_handler,
+        turn_metering,
         "consume_credits",
         lambda *_a, **_kw: CreditsOutcome.UNCONFIGURED,
     )
