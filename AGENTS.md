@@ -46,7 +46,7 @@
 - Protocol methods you **add or change** use a **docstring-only body** — no
   `...`, no `pass`, no `raise NotImplementedError`, and never a docstring *plus*
   a trailing `...`/`pass`. Precedent (all fully compliant):
-  `infrastructure/filestorage/ports.py`, `core/agent/loop_host.py`,
+  `infrastructure/filestorage/contracts.py`, `core/agent/loop_host.py`,
   `infrastructure/turn_host/turn_output.py`, `core/llm/types.py`.
 
   ```python
