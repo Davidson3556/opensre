@@ -270,12 +270,14 @@ def start_background_text_investigation(
         run_investigation_for_session_background,
     )
 
+    context_overrides = dict(session.accumulated_context) or None
+
     def _run(*, cancel_requested: threading.Event) -> BackgroundRunResult:
         return cast(
             BackgroundRunResult,
             run_investigation_for_session_background(
                 alert_text=alert_text,
-                context_overrides=session.accumulated_context or None,
+                context_overrides=context_overrides,
                 cancel_requested=cancel_requested,
             ),
         )
@@ -302,12 +304,14 @@ def start_background_template_investigation(
         run_sample_alert_for_session_background,
     )
 
+    context_overrides = dict(session.accumulated_context) or None
+
     def _run(*, cancel_requested: threading.Event) -> BackgroundRunResult:
         return cast(
             BackgroundRunResult,
             run_sample_alert_for_session_background(
                 template_name=template_name,
-                context_overrides=session.accumulated_context or None,
+                context_overrides=context_overrides,
                 cancel_requested=cancel_requested,
             ),
         )
