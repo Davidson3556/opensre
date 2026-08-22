@@ -137,8 +137,9 @@ class TurnRunner:
                 return None
             if self._admission_check is not None and not self._admission_check():
                 return None
-            if host_cancel_requested(output):
-                return None
+            # Admission may have consumed a credit. From here the turn lifecycle
+            # must run so transports cannot acknowledge a paid delivery without
+            # dispatching it.
             return self._run_turn(
                 text,
                 session,

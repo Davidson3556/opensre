@@ -605,8 +605,10 @@ def test_run_rejected_by_admission_never_starts_agent_work(monkeypatch: Any) -> 
     factory.assert_not_called()
 
 
-def test_run_cancelled_during_admission_never_starts_agent_work(monkeypatch: Any) -> None:
-    """A timeout racing the ledger must not start an LLM turn afterward."""
+def test_run_cancelled_during_successful_admission_still_starts_turn(
+    monkeypatch: Any,
+) -> None:
+    """Once admission may debit, cancellation must not detach work from billing."""
     factory = _patch_headless_agent(monkeypatch, _empty_turn_result())
     sink = RecordingTurnOutput()
     sink.turn_cancel = threading.Event()
@@ -627,5 +629,5 @@ def test_run_cancelled_during_admission_never_starts_agent_work(monkeypatch: Any
         logging.getLogger("t"),
     )
 
-    assert returned is None
-    factory.assert_not_called()
+    assert returned is not None
+    factory.assert_called_once()
