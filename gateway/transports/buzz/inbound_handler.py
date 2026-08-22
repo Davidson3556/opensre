@@ -104,11 +104,15 @@ async def handle_polled_inbound_buzz_message(
         # (webapp outage) proceed, so a billing outage never silences the bot
         # and a config error never reads to users as "out of credits".
         #
-        # Off-thread because Buzz dispatches turns as concurrent tasks on one
-        # loop: a synchronous POST here would park every other in-flight turn,
-        # and the poll loop with them, for the client timeout.
-        outcome = await asyncio.to_thread(consume_credits, scope.principal.id, reason="buzz_turn")
-        if outcome is CreditsOutcome.DENIED:
+        # Charged synchronously, deliberately. Awaiting the POST would make it
+        # a cancellation point: shutdown cancels turns that outlast the drain
+        # budget, and a charge landing while that await is cancelled strands a
+        # consumed credit on an unacknowledged mention, which the next start
+        # re-delivers and charges again. Nothing suspends between this call and
+        # the ``run_in_executor`` handoff below, so the turn body is always
+        # queued once the ledger has been debited, and its ``on_handled``
+        # acknowledges from the executor thread.
+        if consume_credits(scope.principal.id, reason="buzz_turn") is CreditsOutcome.DENIED:
             logger.info(
                 "[buzz-gateway] turn denied: out of credits channel=%s",
                 event.channel_id,

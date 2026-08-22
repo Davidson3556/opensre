@@ -5,11 +5,18 @@ copy of Telegram, and both shipped without the credit gate Slack and Discord
 carry — every turn ran for free. The charge is billed to the silo organization,
 not the sender's pubkey: only an explicit 402 blocks a turn, so a charge posted
 against the wrong account would fail open and never surface.
+
+The charge must also never be stranded. Buzz acknowledges a mention only once
+its turn body has run, and shutdown cancels turns that outlast the drain
+budget; a debit that lands on a mention which is then re-delivered charges the
+organization twice for one message.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock
@@ -22,7 +29,7 @@ from core.agent_harness.session.persistence.memory import InMemorySessionStore
 from gateway.core.billing.credits_client import CreditsOutcome
 from gateway.core.middleware.active_turns import ActiveTurnRegistry
 from gateway.core.middleware.approvals import ApprovalBroker
-from gateway.transports.buzz import inbound_handler
+from gateway.transports.buzz import background, inbound_handler
 from gateway.transports.buzz.inbound_handler import handle_polled_inbound_buzz_message
 from gateway.transports.buzz.inbound_security import InboundDecision
 from gateway.transports.buzz.pending_approvals import PendingApprovals
@@ -66,19 +73,23 @@ def _authorized_turn(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _event() -> BuzzInboundMessage:
+    return BuzzInboundMessage(
+        event_id="in-1",
+        pubkey="npub-1",
+        channel_id="chan-1",
+        content="@bot hello",
+        created_at=1,
+        reply_event_ids=frozenset(),
+    )
+
+
 def _run_turn(client: _FakeClient, callback: MagicMock) -> None:
     executor = ThreadPoolExecutor(max_workers=1)
     try:
         asyncio.run(
             handle_polled_inbound_buzz_message(
-                BuzzInboundMessage(
-                    event_id="in-1",
-                    pubkey="npub-1",
-                    channel_id="chan-1",
-                    content="@bot hello",
-                    created_at=1,
-                    reply_event_ids=frozenset(),
-                ),
+                _event(),
                 client=client,  # type: ignore[arg-type]
                 session_resolver=_FakeSessionResolver(  # type: ignore[arg-type]
                     SessionCore(store=InMemorySessionStore())
@@ -129,3 +140,78 @@ def test_unconfigured_metering_still_runs_the_turn(monkeypatch: pytest.MonkeyPat
     _run_turn(_FakeClient(), callback)
 
     callback.assert_called_once()
+
+
+def test_a_charged_turn_is_never_left_unacknowledged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A debited ledger must not leave the mention eligible for re-delivery.
+
+    Shutdown cancels turns that outlast the drain budget, and an unacknowledged
+    mention is re-delivered on the next start — so a charge stranded by that
+    cancellation is billed a second time for the same message. Cancelling the
+    turn as the charge lands must therefore still acknowledge it.
+
+    Awaiting the charge reopens this: the cancellation lands on the await, the
+    coroutine unwinds past ``_dispatch_turn``'s trailing ``acknowledge`` (it
+    catches ``Exception``, and ``CancelledError`` is not one), and the credit is
+    spent on a mention that runs again.
+    """
+    charges: list[str] = []
+    acked: list[BuzzInboundMessage] = []
+    task_holder: list[asyncio.Task[None]] = []
+    loop_holder: list[asyncio.AbstractEventLoop] = []
+    cancelled = threading.Event()
+
+    def charge_then_shut_down(_org: str, *, reason: str, **_kwargs: object) -> CreditsOutcome:
+        """Debit the ledger, then expire the drain budget while still in flight.
+
+        The cancel is posted to the loop the way ``_drain_active_turns`` issues
+        it, and this call does not return until the loop has run it or the wait
+        gives up. Awaiting the charge frees the loop to cancel mid-flight;
+        charging inline holds it, so the cancel cannot land until the turn body
+        has been handed to the executor.
+        """
+        charges.append(reason)
+        loop_holder[0].call_soon_threadsafe(_cancel)
+        cancelled.wait(0.25)
+        return CreditsOutcome.ALLOWED
+
+    def _cancel() -> None:
+        task_holder[0].cancel()
+        cancelled.set()
+
+    monkeypatch.setattr(inbound_handler, "consume_credits", charge_then_shut_down)
+
+    async def _run() -> None:
+        executor = ThreadPoolExecutor(max_workers=1)
+        try:
+            task = asyncio.get_running_loop().create_task(
+                background._dispatch_turn(
+                    _event(),
+                    client=_FakeClient(),  # type: ignore[arg-type]
+                    session_resolver=_FakeSessionResolver(  # type: ignore[arg-type]
+                        SessionCore(store=InMemorySessionStore())
+                    ),
+                    settings=GatewaySettings(private_key="k", allowed_pubkeys=["npub-1"]),
+                    executor=executor,
+                    chat_locks={},
+                    turn_semaphore=asyncio.Semaphore(1),
+                    approvals=ApprovalBroker(),
+                    pending_approvals=PendingApprovals(),
+                    active_cancels=ActiveTurnRegistry(),
+                    turn_cancel=None,
+                    loop=asyncio.get_running_loop(),
+                    handle_callback_to_gateway_agent=MagicMock(),
+                    logger=logging.getLogger(__name__),
+                    acknowledge=acked.append,
+                )
+            )
+            task_holder.append(task)
+            loop_holder.append(asyncio.get_running_loop())
+            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            executor.shutdown(wait=True)
+
+    asyncio.run(_run())
+
+    assert charges == ["buzz_turn"], "the ledger was debited exactly once"
+    assert acked, "charged mention was left unacknowledged and will be charged again on replay"

@@ -86,13 +86,10 @@ async def handle_polled_inbound_telegram_message(
             # (webapp outage) proceed, so a billing outage never silences the
             # bot and a config error never reads to users as "out of credits".
             #
-            # Off-thread because the Slack/Discord shape this mirrors runs on a
-            # worker thread already, while this is a coroutine: a synchronous
-            # POST here would park the event loop for the client timeout on
-            # every turn whenever the ledger is slow.
-            outcome = await asyncio.to_thread(
-                consume_credits, scope.principal.id, reason="telegram_turn"
-            )
+            # Charged synchronously, as Slack and Discord do. Awaiting the POST
+            # would turn it into a cancellation point between debiting the
+            # ledger and running the turn that credit paid for.
+            outcome = consume_credits(scope.principal.id, reason="telegram_turn")
             if outcome is CreditsOutcome.DENIED:
                 logger.info(
                     "[telegram-gateway] turn denied: out of credits chat=%s",
