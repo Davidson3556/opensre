@@ -99,27 +99,6 @@ async def handle_polled_inbound_buzz_message(
         if session is None:
             return
 
-        # Metering: only an explicit webapp denial (402) blocks the turn.
-        # UNCONFIGURED (dev setups without metering env) and UNAVAILABLE
-        # (webapp outage) proceed, so a billing outage never silences the bot
-        # and a config error never reads to users as "out of credits".
-        #
-        # Charged synchronously, deliberately. Awaiting the POST would make it
-        # a cancellation point: shutdown cancels turns that outlast the drain
-        # budget, and a charge landing while that await is cancelled strands a
-        # consumed credit on an unacknowledged mention, which the next start
-        # re-delivers and charges again. Nothing suspends between this call and
-        # the ``run_in_executor`` handoff below, so the turn body is always
-        # queued once the ledger has been debited, and its ``on_handled``
-        # acknowledges from the executor thread.
-        if consume_credits(scope.principal.id, reason="buzz_turn") is CreditsOutcome.DENIED:
-            logger.info(
-                "[buzz-gateway] turn denied: out of credits channel=%s",
-                event.channel_id,
-            )
-            client.send_message(channel=event.channel_id, content=CREDITS_DENIED_MESSAGE)
-            return
-
         preview = event.content.replace("\n", " ").strip()
         if len(preview) > 80:
             preview = f"{preview[:77]}..."
@@ -170,8 +149,37 @@ async def handle_polled_inbound_buzz_message(
             except Exception:
                 logger.debug("[buzz-gateway] user-stop finalize failed", exc_info=True)
 
+        def _turn_is_unpaid() -> bool:
+            """Debit the ledger for this turn; refuse it only on an explicit 402.
+
+            UNCONFIGURED (dev setups without metering env) and UNAVAILABLE
+            (webapp outage) proceed, so a billing outage never silences the bot
+            and a config error never reads to users as "out of credits".
+            """
+            outcome = consume_credits(scope.principal.id, reason="buzz_turn")
+            if outcome is not CreditsOutcome.DENIED:
+                return False
+            logger.info(
+                "[buzz-gateway] turn denied: out of credits channel=%s",
+                event.channel_id,
+            )
+            if terminal.claim():
+                try:
+                    output.finalize(CREDITS_DENIED_MESSAGE)
+                except Exception:
+                    logger.debug("[buzz-gateway] credits-denied finalize failed", exc_info=True)
+            return True
+
         def _run_turn() -> None:
+            # Metering belongs inside the turn body, on the executor thread.
+            # Off the loop, a slow ledger cannot stall polling or the other
+            # turns sharing it. Fused to the work it pays for, the debit cannot
+            # be stranded: shutdown cancels the awaiting task but not this
+            # thread, so the ``finally`` below still acknowledges the mention
+            # and the next start cannot re-deliver an already-charged message.
             try:
+                if _turn_is_unpaid():
+                    return
                 with (
                     bound_storage_scope(scope),
                     bound_usage_context(

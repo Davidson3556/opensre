@@ -39,16 +39,21 @@ TEST_ORG_ID = "org_buzz_credits"
 
 
 class _FakeClient:
+    """Records what the channel ends up showing, placeholder edits included."""
+
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.shown: list[str] = []
 
     def send_message(self, *, channel: str, content: str, **_kwargs: Any) -> dict[str, Any]:
         _ = channel
         self.sent.append(content)
+        self.shown.append(content)
         return {"success": True, "error": "", "event_id": f"ev-{len(self.sent)}"}
 
     def edit_message(self, *, event_id: str, content: str) -> dict[str, Any]:
-        _ = (event_id, content)
+        _ = event_id
+        self.shown.append(content)
         return {"success": True}
 
 
@@ -125,7 +130,7 @@ def test_denied_credits_stop_the_turn_and_bill_the_owning_org(
 
     assert charges == [(TEST_ORG_ID, "buzz_turn")]
     callback.assert_not_called()
-    assert client.sent == [CREDITS_DENIED_MESSAGE]
+    assert client.shown[-1] == CREDITS_DENIED_MESSAGE
 
 
 def test_unconfigured_metering_still_runs_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -140,6 +145,29 @@ def test_unconfigured_metering_still_runs_the_turn(monkeypatch: pytest.MonkeyPat
     _run_turn(_FakeClient(), callback)
 
     callback.assert_called_once()
+
+
+def test_the_ledger_is_never_charged_on_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow ledger must not stall polling or the other turns sharing the loop.
+
+    Buzz dispatches turns as concurrent tasks on a single loop, so a POST made
+    from that loop parks every other in-flight turn, and the poll loop with
+    them, for the credits client timeout. Charging from the turn body keeps it
+    on the executor. Telegram's twin inherits the same property.
+    """
+    loop_thread = threading.current_thread()
+    charged_on: list[threading.Thread] = []
+
+    def record_calling_thread(*_args: object, **_kwargs: object) -> CreditsOutcome:
+        charged_on.append(threading.current_thread())
+        return CreditsOutcome.ALLOWED
+
+    monkeypatch.setattr(inbound_handler, "consume_credits", record_calling_thread)
+
+    _run_turn(_FakeClient(), MagicMock())
+
+    assert charged_on, "the turn was never charged"
+    assert charged_on[0] is not loop_thread, "the ledger POST would block the event loop"
 
 
 def test_a_charged_turn_is_never_left_unacknowledged(monkeypatch: pytest.MonkeyPatch) -> None:

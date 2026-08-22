@@ -30,8 +30,11 @@ TEST_ORG_ID = "org_tg_credits"
 
 
 class _FakeClient:
+    """Records what the chat ends up showing, placeholder edits included."""
+
     def __init__(self) -> None:
         self.sent: list[str] = []
+        self.shown: list[str] = []
 
     def send_chat_action(self, chat_id: str, action: str) -> None:
         _ = (chat_id, action)
@@ -39,12 +42,14 @@ class _FakeClient:
     def send_message(self, chat_id: str, text: str, **_kwargs: Any) -> tuple[bool, str, str]:
         _ = chat_id
         self.sent.append(text)
+        self.shown.append(text)
         return True, "", f"msg-{len(self.sent)}"
 
     def edit_message_text(
         self, chat_id: str, message_id: str, text: str, **_kwargs: Any
     ) -> tuple[bool, str]:
-        _ = (chat_id, message_id, text)
+        _ = (chat_id, message_id)
+        self.shown.append(text)
         return True, ""
 
 
@@ -113,7 +118,7 @@ def test_denied_credits_stop_the_turn_and_bill_the_owning_org(
 
     assert charges == [(TEST_ORG_ID, "telegram_turn")]
     callback.assert_not_called()
-    assert client.sent == [CREDITS_DENIED_MESSAGE]
+    assert client.shown[-1] == CREDITS_DENIED_MESSAGE
 
 
 def test_unconfigured_metering_still_runs_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:

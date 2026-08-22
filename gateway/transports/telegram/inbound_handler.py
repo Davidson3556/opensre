@@ -81,23 +81,6 @@ async def handle_polled_inbound_telegram_message(
             if session is None:
                 return
 
-            # Metering: only an explicit webapp denial (402) blocks the turn.
-            # UNCONFIGURED (dev setups without metering env) and UNAVAILABLE
-            # (webapp outage) proceed, so a billing outage never silences the
-            # bot and a config error never reads to users as "out of credits".
-            #
-            # Charged synchronously, as Slack and Discord do. Awaiting the POST
-            # would turn it into a cancellation point between debiting the
-            # ledger and running the turn that credit paid for.
-            outcome = consume_credits(scope.principal.id, reason="telegram_turn")
-            if outcome is CreditsOutcome.DENIED:
-                logger.info(
-                    "[telegram-gateway] turn denied: out of credits chat=%s",
-                    event.chat_id,
-                )
-                client.send_message(event.chat_id, CREDITS_DENIED_MESSAGE)
-                return
-
             preview = event.text.replace("\n", " ").strip()
             if len(preview) > 80:
                 preview = f"{preview[:77]}..."
@@ -150,7 +133,38 @@ async def handle_polled_inbound_telegram_message(
                 except Exception:
                     logger.debug("[telegram-gateway] user-stop finalize failed", exc_info=True)
 
+            def _turn_is_unpaid() -> bool:
+                """Debit the ledger for this turn; refuse it only on an explicit 402.
+
+                UNCONFIGURED (dev setups without metering env) and UNAVAILABLE
+                (webapp outage) proceed, so a billing outage never silences the
+                bot and a config error never reads as "out of credits".
+                """
+                outcome = consume_credits(scope.principal.id, reason="telegram_turn")
+                if outcome is not CreditsOutcome.DENIED:
+                    return False
+                logger.info(
+                    "[telegram-gateway] turn denied: out of credits chat=%s",
+                    event.chat_id,
+                )
+                if terminal.claim():
+                    try:
+                        output.finalize(CREDITS_DENIED_MESSAGE)
+                    except Exception:
+                        logger.debug(
+                            "[telegram-gateway] credits-denied finalize failed",
+                            exc_info=True,
+                        )
+                return True
+
             def _run_turn() -> None:
+                # Metered on the executor thread, not the loop: the poll loop
+                # awaits this handler inline, so a slow ledger would otherwise
+                # hold up every other chat's inbound. Twin of the Buzz handler,
+                # where fusing the debit to the turn body also keeps a cancelled
+                # shutdown from stranding a consumed credit.
+                if _turn_is_unpaid():
+                    return
                 with (
                     bound_storage_scope(scope),
                     bound_usage_context(
