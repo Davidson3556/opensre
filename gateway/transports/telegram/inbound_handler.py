@@ -6,8 +6,14 @@ import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
 
-from config.constants.gateway import TURN_ERROR_MESSAGE, TURN_TIMEOUT_MESSAGE, USER_STOP_MESSAGE
+from config.constants.gateway import (
+    CREDITS_DENIED_MESSAGE,
+    TURN_ERROR_MESSAGE,
+    TURN_TIMEOUT_MESSAGE,
+    USER_STOP_MESSAGE,
+)
 from config.scope_context import bound_storage_scope
+from gateway.core.billing.credits_client import CreditsOutcome, consume_credits
 from gateway.core.middleware.active_turns import ActiveTurnRegistry
 from gateway.core.middleware.approvals import ApprovalBroker, approval_tool_hooks
 from gateway.core.middleware.terminal_outcome import TerminalOutcomeArbiter
@@ -73,6 +79,26 @@ async def handle_polled_inbound_telegram_message(
                 scope=scope,
             )
             if session is None:
+                return
+
+            # Metering: only an explicit webapp denial (402) blocks the turn.
+            # UNCONFIGURED (dev setups without metering env) and UNAVAILABLE
+            # (webapp outage) proceed, so a billing outage never silences the
+            # bot and a config error never reads to users as "out of credits".
+            #
+            # Off-thread because the Slack/Discord shape this mirrors runs on a
+            # worker thread already, while this is a coroutine: a synchronous
+            # POST here would park the event loop for the client timeout on
+            # every turn whenever the ledger is slow.
+            outcome = await asyncio.to_thread(
+                consume_credits, scope.principal.id, reason="telegram_turn"
+            )
+            if outcome is CreditsOutcome.DENIED:
+                logger.info(
+                    "[telegram-gateway] turn denied: out of credits chat=%s",
+                    event.chat_id,
+                )
+                client.send_message(event.chat_id, CREDITS_DENIED_MESSAGE)
                 return
 
             preview = event.text.replace("\n", " ").strip()

@@ -60,10 +60,8 @@ _REQUIRED_CONCERNS: dict[str, str | tuple[str, ...]] = {
 #: Concerns each existing transport is known to lack. Ledger, not allowlist:
 #: the assertion below is exact equality, so closing a gap requires deleting
 #: its entry here, and nothing can be added for a new transport unnoticed.
-_KNOWN_GAPS: dict[str, frozenset[str]] = {
-    "buzz": frozenset({"credit metering"}),
-    "telegram": frozenset({"credit metering"}),
-}
+#: Empty: every transport implements every concern.
+_KNOWN_GAPS: dict[str, frozenset[str]] = {}
 
 #: Local reimplementations of concerns that were hoisted to ``gateway.core``.
 _FORBIDDEN_LOCAL_COPIES: dict[str, str] = {
