@@ -60,7 +60,9 @@ _REQUIRED_CONCERNS: dict[str, str | tuple[str, ...]] = {
 #: Concerns each existing transport is known to lack. Ledger, not allowlist:
 #: the assertion below is exact equality, so closing a gap requires deleting
 #: its entry here, and nothing can be added for a new transport unnoticed.
-#: Empty: every transport implements every concern.
+#: Empty: every transport implements every concern. Scoped to transports —
+#: scheduled runs reach the agent through ``scheduler_runners`` rather than a
+#: transport, and this file says nothing about them.
 _KNOWN_GAPS: dict[str, frozenset[str]] = {}
 
 #: Local reimplementations of concerns that were hoisted to ``gateway.core``.

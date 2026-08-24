@@ -125,9 +125,13 @@ class TurnRunner:
         ``handle`` call. The keywords carry a caller's terminal context; every
         default is what a chat transport gets, so omitting them all is the
         transport path exactly — including ``on_progress``, which falls back
-        to the compact status line a chat placeholder can hold. Capacity is checked
-        first; the optional admission hook then applies gateway policy before any
-        agent work. A rejecting hook owns its user-facing response.
+        to the compact status line a chat placeholder can hold.
+
+        ``None`` means no agent work ran, for one of three reasons: the capacity
+        gate refused the turn (the at-capacity sentence is already finalized on
+        the output), the host cancelled it before it started, or the optional
+        admission hook rejected it. Only the first finalizes anything here — a
+        cancelling host and a rejecting hook each own their user-facing response.
         """
         with turn_slot(self._gate) as running:
             if not running:
@@ -135,6 +139,11 @@ class TurnRunner:
                 return None
             if host_cancel_requested(output):
                 return None
+            # Admission runs inside the slot on purpose: a hook that meters the
+            # turn must not charge for work capacity would have refused. The
+            # cost is that a blocking hook holds a slot it has not used yet —
+            # on the SMALL profile that is the process's only slot, so a hook
+            # doing I/O should keep its timeout well under a turn's duration.
             if self._admission_check is not None and not self._admission_check():
                 return None
             # Admission may have consumed a credit. From here the turn lifecycle

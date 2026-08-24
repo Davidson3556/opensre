@@ -1,10 +1,10 @@
 """Buzz turns are metered, and a denied turn never reaches the agent.
 
-Twin of ``gateway/tests/telegram/test_credit_metering.py``. Buzz was born as a
-copy of Telegram, and both shipped without the credit gate Slack and Discord
-carry — every turn ran for free. The charge is billed to the silo organization,
-not the sender's pubkey: only an explicit 402 blocks a turn, so a charge posted
-against the wrong account would fail open and never surface.
+Buzz shipped as a copy of Telegram and inherited its missing credit gate, so
+every turn ran for free. The charge is billed to the silo organization, not the
+sender's pubkey: only an explicit 402 blocks a turn, so a charge posted against
+the wrong account would fail open and never surface. Fail-open on the other
+outcomes is pinned once, centrally, in ``gateway/tests/billing``.
 
 The charge must also never be stranded. Buzz acknowledges a mention only once
 its turn body has run, and shutdown cancels turns that outlast the drain
@@ -133,20 +133,6 @@ def test_denied_credits_stop_the_turn_and_bill_the_owning_org(
     assert charges == [(TEST_ORG_ID, "buzz_turn")]
     callback.assert_not_called()
     assert client.shown[-1] == CREDITS_DENIED_MESSAGE
-
-
-def test_unconfigured_metering_still_runs_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Fail-open: a dev box without metering env is not a billing denial."""
-    monkeypatch.setattr(
-        turn_metering,
-        "consume_credits",
-        lambda *_a, **_kw: CreditsOutcome.UNCONFIGURED,
-    )
-    callback = MagicMock()
-
-    _run_turn(_FakeClient(), callback)
-
-    callback.assert_called_once()
 
 
 def test_the_ledger_is_never_charged_on_the_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
