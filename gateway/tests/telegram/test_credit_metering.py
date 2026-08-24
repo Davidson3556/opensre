@@ -9,6 +9,7 @@ silently, since only an explicit 402 blocks a turn.
 from __future__ import annotations
 
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock
@@ -96,6 +97,9 @@ def _run_turn(client: _FakeClient, callback: MagicMock) -> None:
                 turn_semaphore=asyncio.Semaphore(1),
                 approvals=ApprovalBroker(),
                 active_cancels=ActiveTurnRegistry(),
+                # Production dispatch registers the cancel Event before the turn
+                # exists; take that path so metering is pinned where it runs.
+                turn_cancel=threading.Event(),
                 handle_callback_to_gateway_agent=metered_callback(callback),
             )
         )
