@@ -7,12 +7,14 @@ the actionable message shown when the reasoning-client import fails.
 from __future__ import annotations
 
 import sys
+from typing import cast
 
 from core.agent_harness.turns.default_reasoning_client import (
     DefaultReasoningClientProvider,
     _llm_client_unavailable_message,
 )
 from core.llm.internal.preload import preload_llm_clients
+from core.llm.types import StreamingReasoningClient
 
 
 def test_preload_imports_the_llm_client_graph() -> None:
@@ -42,17 +44,25 @@ def test_non_import_error_message_is_unchanged() -> None:
     assert "Restart" not in message
 
 
-def test_reasoning_provider_renders_actionable_message_on_import_error(monkeypatch) -> None:
+def test_reasoning_provider_returns_injected_client() -> None:
+    client = cast(StreamingReasoningClient, object())
+    provider = DefaultReasoningClientProvider(client_factory=lambda: client)
+    assert provider.get() is client
+
+
+def test_reasoning_provider_renders_actionable_message_on_import_error() -> None:
     rendered: list[str] = []
 
     class FakeOutput:
         def render_error(self, message: str) -> None:
             rendered.append(message)
 
-    # Force the lazy import inside get() to fail like a stale process would.
-    monkeypatch.setitem(sys.modules, "core.llm.factory", None)
+    def _raise_import_error() -> StreamingReasoningClient:
+        raise ImportError("cannot import name 'x'")
 
-    provider = DefaultReasoningClientProvider(output=FakeOutput())
+    provider = DefaultReasoningClientProvider(
+        client_factory=_raise_import_error, output=FakeOutput()
+    )
     result = provider.get()
 
     assert result is None

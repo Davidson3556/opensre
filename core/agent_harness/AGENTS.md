@@ -24,7 +24,7 @@ Process boot (`configure_process`) and headless construction
 | Multi-step / keep-going | `start` / `start_embedded_session` → `.chat_until_goal(...)` (`SessionGoal` loop) |
 | Custom host | **`DefaultHeadlessBuild(...).agent(...)`** (or `InMemoryHeadlessBuild` in-memory; the only construction seam) → `agent.handle(text, TurnBinding(...))` per message |
 | Gateway + interactive shell | `TurnRunner` → `SessionAgentPool` → `DefaultHeadlessBuild.agent` once / session → `agent.handle(...)` per message (SessionGoal loop lives in `run_goal`, which `handle` wraps) |
-| CLI `ask` (one-shot) | `AgentSession.start(..., tool_hooks=…)` → `.chat(prompt)` — uses `dispatch`, not the SessionGoal outer loop |
+| CLI `ask` (one-shot) | `AgentSession.start(..., tool_hooks=…)` → `.chat(prompt)` — uses `dispatch`, not the SessionGoal turn loop |
 | Host-specific construction | Optional `AgentBuildConfig` (`agent_build_config.py`) — tools / prompts / gather / capability policy. Expand with `resolve_agent_ports` (shared by the pool and `build_shell_agent`). `None` on a field keeps the host default; `apply_capability_policy=None` means do not mutate the session |
 | Scheduled one-shot | `AgentSession.run_headless_turn(...)` (not the multi-turn pattern) |
 
@@ -165,6 +165,8 @@ subpackage. Default port implementations live with the concern they serve, not i
     and the neutral turn-result models.
   - `default_reasoning_client.py` — `DefaultReasoningClientProvider`, kept with the
     reasoning-client family (`stream_answer`, `StaticReasoningClientProvider`).
+    The client factory is injected at construction; `DefaultHeadlessBuild.reasoning`
+    supplies `default_reasoning_llm_factory`. `get()` swallows factory failures.
 - `tools/` — action-tool wiring over the canonical registry (`action_tools.py`,
   `tool_context.py`) and `tool_provider.py` (`DefaultToolProvider`).
 - `accounting/` — session-scoped token accounting and LLM run metadata, plus the
@@ -320,12 +322,17 @@ a headless agent on every message for the same logical session.
 
 ```python
 from bootstrap.embedded import start_embedded_session
+from tools.investigation.capability import run_investigation_payload
 
 session = start_embedded_session()    # EMBEDDED_PROFILE + default agent
 result = session.chat("…")            # turn 1
 result = session.chat("…")            # turn 2 — same attached agent
-report = session.investigate({…})     # investigation pipeline (separate stage machine)
+report = session.investigate({…}, runner=run_investigation_payload)  # investigation pipeline
 ```
+
+``investigate`` takes its payload runner as an argument because ``core`` may not
+import ``tools``; the caller (a surface, the gateway, or an embedder) supplies
+``run_investigation_payload``.
 
 ``AgentSession.start`` must not import ``bootstrap`` (layer contract). Surfaces
 that already ran another process profile call ``startup()`` (or pass an
@@ -427,8 +434,8 @@ which owns the actual think → call-tools → observe algorithm.
   for the `from core.agent import AgentRunResult` path.
 - `core/agent/react_loop.py` — `ReactLoop` (the loop as a method-object, phases
   `_think` / `_handle_conclusion` / `_observe`) and `run_react_loop` (its thin
-  functional entry). The conclusion phase delegates to `ConclusionHandler` in
-  `core/agent/handle_conclusion.py` (textual-tool-call bounce, host acceptance,
+  functional entry). The conclusion phase delegates to `ConclusionParser` in
+  `core/agent/conclusion_parser.py` (textual-tool-call bounce, host acceptance,
   queued follow-ups, nudges).
 - `core/agent/agent.py` — the `Agent` facade: `__init__` (holds config), `run()`
   (builds the per-run `AgentRunInput` via `_build_run_input` and hands it to

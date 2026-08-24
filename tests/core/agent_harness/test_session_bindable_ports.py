@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any
+from typing import Any, cast
 
 from core.agent_harness.ports import (
     CancelCapableConsole,
@@ -24,6 +24,7 @@ from core.agent_harness.turns.headless_adapters import (
 )
 from core.agent_harness.turns.headless_build import InMemoryHeadlessBuild
 from core.agent_harness.turns.host_cancel import ensure_turn_cancel
+from core.llm.types import StreamingReasoningClient
 
 
 class _SpyTools:
@@ -96,7 +97,9 @@ def test_headless_agent_bind_turn_console_invokes_console_bindable() -> None:
 def test_default_reasoning_provider_is_output_bindable() -> None:
     first = BufferOutputSink()
     second = BufferOutputSink()
-    reasoning = DefaultReasoningClientProvider(output=first)
+    reasoning = DefaultReasoningClientProvider(
+        client_factory=lambda: cast(StreamingReasoningClient, None), output=first
+    )
     assert isinstance(reasoning, OutputBindable)
     assert isinstance(StaticReasoningClientProvider(), OutputBindable)
     reasoning.bind_output(second)
@@ -108,7 +111,9 @@ def test_default_reasoning_provider_is_output_bindable() -> None:
 def test_headless_agent_bind_turn_output_retargets_reasoning() -> None:
     first = BufferOutputSink()
     second = BufferOutputSink()
-    reasoning = DefaultReasoningClientProvider(output=first)
+    reasoning = DefaultReasoningClientProvider(
+        client_factory=lambda: cast(StreamingReasoningClient, None), output=first
+    )
     agent = InMemoryHeadlessBuild(
         session=InMemorySessionState(), output=first, reasoning=reasoning
     ).agent(tools=NullToolProvider())

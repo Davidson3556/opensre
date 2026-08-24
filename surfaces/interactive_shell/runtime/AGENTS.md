@@ -24,11 +24,11 @@ owner module instead of broadening module responsibilities.
   lifecycle), `AgentTurnResources` construction and shutdown, prompt-mediated
   confirmation waiting, turn telemetry, coordination between prompt/background/
   shutdown helpers. Nothing else should own shell lifecycle orchestration.
-- `core/prompt_manager.py` — prompt-toolkit setup, prompt rendering callbacks,
+- `core/prompt_builder.py` — prompt-toolkit setup, prompt rendering callbacks,
   pending prompt defaults, autosubmit handling only.
 - `input/` — prompt input event conversion only: EOF, Ctrl-C, CPR cleanup,
   session resume hints.
-- `utils/input_policy.py` — prompt stdin/spinner gating decisions for turns
+- `input_policy.py` — prompt stdin/spinner gating decisions for turns
   only.
 - `background/workers.py` — alert watcher lifecycle, spinner ticker lifecycle,
   sampler startup, turn-start background-output drains only.
@@ -61,7 +61,7 @@ owner module instead of broadening module responsibilities.
   accounting and run metadata only.
 - Reusable per-agent session state (`Session`) lives in
   `core.agent_harness.session`. Terminal runtime context assembly
-  (`ReplRuntimeContext`, `create_repl_runtime_context`) lives in
+  (`ReplRuntime`, `create_repl_runtime`) lives in
   `interactive_shell.runtime.context`.
 
 ## Data flow contract (locked)

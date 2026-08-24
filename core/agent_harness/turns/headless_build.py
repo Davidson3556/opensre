@@ -26,7 +26,7 @@ from rich.console import Console
 from core.agent_harness.accounting.run_record import DefaultRunRecordFactory
 from core.agent_harness.agent_build_config import AgentBuildConfig
 from core.agent_harness.error_reporting import DefaultErrorReporter
-from core.agent_harness.llm_resolution import default_llm_factory
+from core.agent_harness.llm_resolution import default_llm_factory, default_reasoning_llm_factory
 from core.agent_harness.ports import (
     ErrorReporter,
     LlmFactory,
@@ -170,7 +170,10 @@ class DefaultHeadlessBuild:
 
     def reasoning(self) -> ReasoningClientProvider:
         return DefaultReasoningClientProvider(
-            output=self.output, error_reporter=self._error_reporter, session=self.session
+            client_factory=default_reasoning_llm_factory,
+            output=self.output,
+            error_reporter=self._error_reporter,
+            session=self.session,
         )
 
     def run_factory(self) -> RunRecordFactory:

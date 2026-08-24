@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from config.constants.investigation import MAX_INVESTIGATION_LOOPS
 from config.constants.llm import LLM_PROVIDER_ENV
+from config.llm_auth.provider_catalog import provider_spec
 from infrastructure.analytics.events import Event
 from infrastructure.analytics.investigation_loop import (
     begin_investigation_loop_metrics_scope,
@@ -108,6 +109,27 @@ def _string_value(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def _configured_llm_model() -> str | None:
+    """Return the reasoning/legacy model env for the active LLM provider."""
+    provider = _string_value(os.getenv(LLM_PROVIDER_ENV))
+    candidates: list[str] = []
+    if provider is not None:
+        spec = provider_spec(provider)
+        if spec is not None:
+            candidates.extend(key for key in (spec.model_env, spec.legacy_model_env) if key)
+    if not candidates:
+        for fallback_provider in ("anthropic", "openai"):
+            spec = provider_spec(fallback_provider)
+            if spec is None:
+                continue
+            candidates.extend(key for key in (spec.model_env, spec.legacy_model_env) if key)
+    for key in candidates:
+        value = _string_value(os.getenv(key))
+        if value is not None:
+            return value
+    return None
+
+
 def _mapping_value(mapping: Mapping[str, object], key: str) -> str | None:
     return _string_value(mapping.get(key))
 
@@ -199,9 +221,7 @@ def _investigation_started_properties(
         "evaluate_requested": evaluate_requested,
     }
     llm_provider = _string_value(os.getenv(LLM_PROVIDER_ENV))
-    llm_model = _string_value(os.getenv("ANTHROPIC_MODEL")) or _string_value(
-        os.getenv("OPENAI_MODEL")
-    )
+    llm_model = _configured_llm_model()
     if llm_provider is not None:
         properties["llm_provider"] = llm_provider
     if llm_model is not None:

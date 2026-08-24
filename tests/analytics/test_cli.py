@@ -494,3 +494,24 @@ def test_capture_diagnosis_category_mismatch(monkeypatch: pytest.MonkeyPatch) ->
             },
         )
     ]
+
+
+def test_investigation_started_properties_use_current_model_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+    monkeypatch.setenv("ANTHROPIC_REASONING_MODEL", "claude-opus-4-7")
+    monkeypatch.delenv("ANTHROPIC_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_REASONING_MODEL", raising=False)
+
+    properties = cli._investigation_started_properties(
+        input_path=None,
+        input_json=None,
+        interactive=False,
+        evaluate_requested=False,
+        shared_properties={},
+    )
+
+    assert properties["llm_provider"] == "anthropic"
+    assert properties["llm_model"] == "claude-opus-4-7"

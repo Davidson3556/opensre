@@ -113,6 +113,26 @@ def test_primary_response_text_prefers_assistant() -> None:
     assert empty_assistant.primary_response_text == "from action"
 
 
+def test_default_headless_build_supplies_the_reasoning_client_factory(monkeypatch) -> None:
+    """The default family injects ``default_reasoning_llm_factory`` into the provider."""
+    sentinel = object()
+
+    def _factory() -> object:
+        return sentinel
+
+    monkeypatch.setattr(
+        "core.agent_harness.turns.headless_build.default_reasoning_llm_factory",
+        _factory,
+    )
+    session = SimpleNamespace(
+        configured_integrations=[],
+        resolved_integrations_cache={},
+        session_id="s1",
+    )
+    provider = DefaultHeadlessBuild(session=session, output=BufferOutputSink()).reasoning()
+    assert provider.get() is sentinel
+
+
 def test_default_headless_build_takes_the_hosts_tool_provider_and_forwards_the_llm_factory() -> (
     None
 ):

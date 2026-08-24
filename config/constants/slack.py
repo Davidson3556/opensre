@@ -13,6 +13,10 @@ SLACK_GITHUB_ISSUES_WEBHOOK_URL_ENV = "SLACK_GITHUB_ISSUES_WEBHOOK_URL"
 # Unset preserves the permissive dogfood behaviour (with a warning).
 SLACK_SILO_TEAM_IDS_ENV = "OPENSRE_SILO_TEAM_IDS"
 
+# Socket Mode liveness ticker join during worker stop. Keep this small so
+# in-flight Slack turns keep the rest of the SIGTERM budget.
+SLACK_HEARTBEAT_STOP_TIMEOUT_SECONDS = 2.0
+
 # File hosts we may fetch with the bot token. ``url_private`` points at
 # ``files.slack.com``; downloads redirect within Slack's own domains, and the
 # suffix match covers those. A hop anywhere else is rejected before opening a
@@ -29,6 +33,7 @@ __all__ = [
     "SLACK_DEFAULT_CHAT_ID_ENV",
     "SLACK_FILE_HOST_SUFFIXES",
     "SLACK_GITHUB_ISSUES_WEBHOOK_URL_ENV",
+    "SLACK_HEARTBEAT_STOP_TIMEOUT_SECONDS",
     "SLACK_SILO_TEAM_IDS_ENV",
     "SLACK_WEBHOOK_URL_ENV",
 ]

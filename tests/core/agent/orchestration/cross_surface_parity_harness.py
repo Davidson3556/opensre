@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from rich.console import Console
 
+from core.agent_harness.llm_resolution import default_reasoning_llm_factory
 from core.agent_harness.prompts.grounding import DefaultPromptContextProvider
 from core.agent_harness.runtime import TurnBinding
 from core.agent_harness.session import InMemorySessionStore
@@ -309,7 +310,11 @@ def _dispatch_turn(
 ) -> TurnResult:
     output = BufferOutputSink()
     agent = InMemoryHeadlessBuild(
-        session=session, output=output, reasoning=DefaultReasoningClientProvider(output=output)
+        session=session,
+        output=output,
+        reasoning=DefaultReasoningClientProvider(
+            client_factory=default_reasoning_llm_factory, output=output
+        ),
     ).agent(
         tools=DefaultToolProvider(
             session,

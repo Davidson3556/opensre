@@ -10,6 +10,7 @@ from typing import Any
 
 from config.constants.llm import LLM_PROVIDER_ENV
 from config.constants.paths import OPENSRE_HOME_DIR, PROJECT_ROOT
+from config.env_assignment import env_assignment_key
 
 OPENSRE_PROJECT_ENV_PATH_ENV = "OPENSRE_PROJECT_ENV_PATH"
 INSTALLED_ENV_PATH = OPENSRE_HOME_DIR / ".env"
@@ -52,12 +53,13 @@ def _load_env_file(path: Path, *, override: bool = False) -> None:
         return
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
-        if not line or line.startswith(("#", ";")) or "=" not in line:
+        if not line or line.startswith(("#", ";")):
             continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip('"').strip("'")
-        if key and (override or key not in os.environ):
+        key = env_assignment_key(line)
+        if not key:
+            continue
+        value = line.split("=", 1)[1].strip().strip('"').strip("'")
+        if override or key not in os.environ:
             os.environ[key] = value
 
 

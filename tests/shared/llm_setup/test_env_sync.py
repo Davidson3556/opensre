@@ -541,6 +541,16 @@ def test_sync_provider_env_permission_error(tmp_path) -> None:
         env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="owner-only mode is a POSIX .env write")
+def test_sync_env_values_creates_env_file_with_owner_only_mode(tmp_path) -> None:
+    env_path = tmp_path / ".env"
+
+    sync_env_values({"DD_SITE": "datadoghq.com"}, env_path=env_path)
+
+    mode = stat.S_IMODE(env_path.stat().st_mode)
+    assert mode == 0o600
+
+
 def test_sync_env_values_rejects_sensitive_keys(tmp_path) -> None:
     env_path = tmp_path / ".env"
     env_path.write_text("FOO=bar\n", encoding="utf-8")
@@ -554,6 +564,21 @@ def test_set_env_value_rejects_sensitive_keys_with_value_error() -> None:
 
     with pytest.raises(ValueError, match="sync_env_secret"):
         set_env_value(["FOO=bar\n"], "GITLAB_ACCESS_TOKEN", "secret")
+
+
+def test_set_env_value_rejects_newline_injection() -> None:
+    from config.env_file import set_env_value
+
+    with pytest.raises(ValueError, match="single line"):
+        set_env_value(["FOO=bar\n"], "FOO", "ok\nTELEGRAM_BOT_TOKEN=leaked")
+
+
+def test_set_env_value_replaces_export_prefixed_assignment() -> None:
+    from config.env_file import set_env_value
+
+    lines = set_env_value(["export DD_SITE=old\n"], "DD_SITE", "datadoghq.eu")
+
+    assert lines == ["DD_SITE=datadoghq.eu\n"]
 
 
 def test_sync_env_secret_raises_when_keyring_unavailable(monkeypatch) -> None:
@@ -681,6 +706,21 @@ def test_sync_env_values_empty_update_strips_fallback_secrets(tmp_path) -> None:
     sync_env_values({}, env_path=env_path)
 
     assert env_path.read_text(encoding="utf-8") == ""
+
+
+def test_sync_env_values_strips_export_prefixed_secrets(tmp_path) -> None:
+    """``export KEY=value`` is still an assignment; wizard rewrites must not keep it."""
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        "export TELEGRAM_BOT_TOKEN=manual-fallback-token\nDD_SITE=old\n",
+        encoding="utf-8",
+    )
+
+    sync_env_values({"DD_SITE": "datadoghq.eu"}, env_path=env_path)
+
+    content = env_path.read_text(encoding="utf-8")
+    assert "TELEGRAM_BOT_TOKEN" not in content
+    assert "DD_SITE=datadoghq.eu" in content
 
 
 def test_sync_provider_env_preserves_custom_openai_base_url(tmp_path, monkeypatch) -> None:
