@@ -4,12 +4,13 @@ import asyncio
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from gateway.core.middleware.active_turns import ActiveTurnRegistry
-from gateway.core.middleware.approvals import ApprovalBroker
+from gateway.core.middleware.approvals import MAX_APPROVAL_WAIT_SECONDS, ApprovalBroker
 from gateway.transports.telegram import background
 from gateway.transports.telegram.background import start_telegram_gateway_background
 from gateway.transports.telegram.poller.poller import TelegramPollResult
@@ -281,3 +282,59 @@ async def test_stop_in_same_batch_cancels_the_turn_dispatched_before_it() -> Non
     # and the turn itself observed the cancellation.
     assert resources.client.send_message.call_args_list == []
     assert cancel_seen == [True]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_releases_a_turn_blocked_on_an_approval() -> None:
+    """A turn parked in ``ApprovalBroker.wait`` must be denied, not left to expire.
+
+    Setting the cancel Event does not reach a thread already blocked inside
+    ``wait``: polling has stopped, so no click can arrive, and the executor
+    thread would sit there for ``MAX_APPROVAL_WAIT_SECONDS`` while
+    ``executor.shutdown(wait=True)`` blocks far past the stop budget.
+    """
+    # Arrange — a real executor and a real broker; an asyncio-level fake turn
+    # would not hold the thread that the bug leaks.
+    poller = _FakePoller([TelegramPollResult(messages=[_message()])])
+    resources = _resources()
+    executor = ThreadPoolExecutor(max_workers=1)
+    resources.executor = executor
+    waiting = threading.Event()
+    decisions: list[tuple[bool, str]] = []
+
+    def _block_on_approval(broker: ApprovalBroker) -> None:
+        approval_id = broker.create(platform="telegram", chat_id="chat-1")
+        waiting.set()
+        decisions.append(broker.wait(approval_id, timeout=MAX_APPROVAL_WAIT_SECONDS))
+
+    async def _turn_awaiting_approval(_event, *, approvals, loop, **_kwargs) -> None:
+        await loop.run_in_executor(executor, _block_on_approval, approvals)
+
+    stop_event = threading.Event()
+
+    try:
+        with (
+            patch.object(background, "TelegramPoller", lambda _token: poller),
+            patch.object(
+                background, "handle_polled_inbound_telegram_message", _turn_awaiting_approval
+            ),
+        ):
+            loop_task = _run_loop(
+                resources=resources, stop_event=stop_event, shutdown_drain_seconds=2.0
+            )
+            await _wait_until(waiting.is_set)
+
+            # Act — shut down while the turn is blocked on the approval.
+            stop_event.set()
+            await asyncio.wait_for(loop_task, timeout=5.0)
+            # Snapshot before the teardown below, which would otherwise hand
+            # the waiter the very denial this test is asserting the drain sent.
+            decided_during_shutdown = list(decisions)
+    finally:
+        # Release the thread even if the drain left it blocked, so a failure
+        # reports in seconds instead of hanging the suite for the full expiry.
+        resources.approvals.close()
+        executor.shutdown(wait=False)
+
+    # Assert — the turn came back with a denial it can report, inside the drain.
+    assert decided_during_shutdown == [(False, "")]

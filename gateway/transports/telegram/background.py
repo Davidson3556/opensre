@@ -124,7 +124,7 @@ async def _poll_telegram_until_stopped(
             logger.error("Error while polling Telegram updates", exc_info=True)
             await asyncio.to_thread(stop_event.wait, 2)
 
-    await _drain_active_turns(pending_turns, settings=settings, logger=logger)
+    await _drain_active_turns(pending_turns, resources=resources, settings=settings, logger=logger)
 
 
 async def _dispatch_turn(
@@ -172,17 +172,29 @@ async def _dispatch_turn(
 async def _drain_active_turns(
     pending_turns: dict[asyncio.Task[None], threading.Event],
     *,
+    resources: TelegramPollingRuntime,
     settings: GatewaySettings,
     logger: logging.Logger,
 ) -> None:
     """Let in-flight turns finish before ``asyncio.run`` closes the loop.
 
-    Bounded: polling has stopped, so no click can resolve an approval wait any
-    more. Whatever misses ``shutdown_drain_seconds`` has its cancel Event set
+    Outstanding approvals are denied first: polling has stopped, so no click
+    can resolve one, and the waiting turn holds an executor thread that
+    ``executor.shutdown(wait=True)`` would then block on well past the stop
+    budget. Denying hands those turns back to the loop in time to tell the
+    chat the action was skipped.
+
+    Whatever still misses ``shutdown_drain_seconds`` has its cancel Event set
     before its task is cancelled — the turn body runs on the executor, which
-    cancelling the awaiting task does not reach, so only the Event stops it in
-    time for ``executor.shutdown(wait=True)``.
+    cancelling the awaiting task does not reach.
     """
+    denied = resources.approvals.close()
+    if denied:
+        logger.warning(
+            "[telegram-gateway] denied %d approval(s) still waiting at shutdown",
+            denied,
+        )
+
     if not pending_turns:
         return
 
