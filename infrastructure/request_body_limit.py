@@ -6,8 +6,9 @@ payload is already fully in memory. This sits above routing, rejects an
 oversized ``Content-Length`` outright, and counts bytes as the body streams in
 so a request that understates or omits its length is bounded too.
 
-Hosts that serve any mutating route must install it — see
-``build_alert_intake_app`` and ``gateway.web.webapp``.
+Every host that serves a mutating route must install it. All three do:
+``build_alert_intake_app``, ``gateway.web.webapp``, and the Slack events
+listener in ``build_slack_http_app``.
 """
 
 from __future__ import annotations
