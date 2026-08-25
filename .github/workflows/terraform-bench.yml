@@ -12,10 +12,10 @@ name: terraform-bench (plan)
 on:
   pull_request:
     paths:
-      - "tests/benchmarks/cloudopsbench/infra/**/*.tf"
-      - "tests/benchmarks/cloudopsbench/infra/**/*.tfvars"
+      - "tests/benchmarks/cloudopsbench/infra/**.tf"
+      - "tests/benchmarks/cloudopsbench/infra/**.tfvars"
       - "tests/benchmarks/cloudopsbench/infra/.tflint.hcl"
-      - "tests/benchmarks/cloudopsbench/infra/.tfsec/**"
+      - "tests/benchmarks/cloudopsbench/infra/.tfsec/config.yml"
       - "tests/benchmarks/cloudopsbench/infra/.checkov.yaml"
       - ".github/workflows/terraform-bench.yml"
   workflow_dispatch:
