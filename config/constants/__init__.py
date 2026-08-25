@@ -150,6 +150,7 @@ from config.constants.honeycomb import (
     HONEYCOMB_BASE_URL_ENV,
     HONEYCOMB_DATASET_ENV,
 )
+from config.constants.http import MAX_REQUEST_BODY_BYTES
 from config.constants.incident_io import INCIDENT_IO_API_KEY_ENV, INCIDENT_IO_BASE_URL_ENV
 from config.constants.investigation import (
     ALERT_TEMPLATE_CHOICES,
@@ -569,6 +570,7 @@ __all__ = [
     "INTEGRATIONS_SETUP_PREFIX",
     "INVESTIGATION_TOOL_CACHE_MAX_CHARS",
     "INVESTIGATION_TOOL_CACHE_MAX_ENTRIES",
+    "MAX_REQUEST_BODY_BYTES",
     "MAX_INVESTIGATION_LOOPS",
     "MONGODB_ATLAS_BASE_URL_ENV",
     "MONGODB_ATLAS_PRIVATE_KEY_ENV",
