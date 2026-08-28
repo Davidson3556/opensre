@@ -12,6 +12,7 @@ from config.runtime_metadata import (
 from core.domain.types.tools import ToolSurface
 from core.tool import BaseTool, SideEffectLevel
 from infrastructure.observability.trace.spans import component_span
+from infrastructure.safety.sandbox import python_interpreter_available
 from tools.system.python_execution_tool.credentials import execution_env, github_extract_params
 from tools.system.python_execution_tool.runner import run_python_execution
 
@@ -114,8 +115,8 @@ class PythonExecutionTool(BaseTool):
     }
 
     def is_available(self, _sources: dict[str, dict]) -> bool:
-        """The sandbox itself is local and always available."""
-        return True
+        """Return whether the sandbox has a Python interpreter to execute."""
+        return python_interpreter_available()
 
     def extract_params(self, sources: dict[str, dict]) -> dict[str, Any]:
         """Inject approved credentials from resolved integration sources."""

@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from infrastructure.safety.sandbox.runner import SandboxResult
 from tests.tools.conftest import BaseToolContract
+from tools.investigation.stages.gather_evidence.tools import get_available_tools
 from tools.registry import clear_tool_registry_cache, get_registered_tool_map
 from tools.system.python_execution_tool import execute_python_code
 
@@ -24,6 +25,21 @@ class TestPythonExecutionToolMetadata:
         registered = get_registered_tool_map("chat")["execute_python_code"]
         assert "investigation" in registered.surfaces
         assert "chat" in registered.surfaces
+
+    def test_not_advertised_without_a_python_interpreter(self, monkeypatch) -> None:
+        def _unavailable() -> str:
+            raise FileNotFoundError("Python 3 is not available on PATH")
+
+        monkeypatch.setattr(
+            "infrastructure.safety.sandbox.runner._python_executable",
+            _unavailable,
+        )
+
+        assert execute_python_code.is_available({}) is False
+
+        available_names = {tool.name for tool in get_available_tools({})}
+
+        assert "execute_python_code" not in available_names
 
     def test_github_token_hidden_from_public_schema(self) -> None:
         clear_tool_registry_cache()
