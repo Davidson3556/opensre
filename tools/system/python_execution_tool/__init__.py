@@ -43,10 +43,9 @@ class PythonExecutionTool(BaseTool):
         f"({_RUNTIME_FACT_KEYS}) are already stated in the conversation's environment block — "
         "answer them from there directly and never call this tool just to re-read them; code "
         "already running for another reason can reuse them via `inputs['opensre_runtime']` "
-        "(injected automatically). For filesystem introspection use pure "
-        "Python: `pathlib.Path(...).iterdir()` to list directories, "
-        "`Path('/etc/hostname').read_text()` for the pod name, `psutil.disk_usage('/')` and "
-        "`psutil.virtual_memory()` for disk/memory. "
+        "(injected automatically). For filesystem introspection, use "
+        "`pathlib.Path(...).iterdir()` to list directories and "
+        "`Path('/etc/hostname').read_text()` for the pod name. "
         f"Never run {_NEVER_RUN}, never probe cloud instance metadata over the network, "
         "and never use any other `subprocess` call. When workflow guidance lists skills, "
         "read each skill description and follow the one that matches the user's request."
@@ -56,7 +55,7 @@ class PythonExecutionTool(BaseTool):
         "Run a small API-backed calculation with approved credentials",
         "Parse logs or JSON payloads when a direct tool result needs post-processing",
         "Reuse inputs['opensre_runtime'] inside code that is already computing something else",
-        "List scratchpad files with pathlib; read disk/memory with psutil (no ls/df/free)",
+        "List scratchpad files with pathlib; reuse injected runtime facts for disk/memory",
     ]
     anti_examples = [
         _RUNTIME_FACTS_ANTI_EXAMPLE,

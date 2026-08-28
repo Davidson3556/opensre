@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 from infrastructure.safety.sandbox.runner import SandboxResult
 from tests.tools.conftest import BaseToolContract
-from tools.investigation.stages.gather_evidence.tools import get_available_tools
 from tools.registry import clear_tool_registry_cache, get_registered_tool_map
 from tools.system.python_execution_tool import execute_python_code
 
@@ -35,11 +34,26 @@ class TestPythonExecutionToolMetadata:
             _unavailable,
         )
 
+        clear_tool_registry_cache()
+        registered = get_registered_tool_map("chat")["execute_python_code"]
+
         assert execute_python_code.is_available({}) is False
+        assert registered.is_available({}) is False
 
-        available_names = {tool.name for tool in get_available_tools({})}
+    def test_guidance_does_not_require_bundled_dependencies(self) -> None:
+        clear_tool_registry_cache()
+        registered = get_registered_tool_map("chat")["execute_python_code"]
+        guidance = " ".join(
+            [
+                registered.description,
+                *registered.use_cases,
+                *registered.anti_examples,
+                registered.skill_guidance,
+            ]
+        )
 
-        assert "execute_python_code" not in available_names
+        assert "psutil" not in guidance
+        assert "opensre_runtime" in guidance
 
     def test_github_token_hidden_from_public_schema(self) -> None:
         clear_tool_registry_cache()
