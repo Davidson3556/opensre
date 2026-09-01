@@ -14,7 +14,7 @@ from integrations.yandex_cloud.availability import (
     yc_available_or_backend,
     yc_credentials,
 )
-from integrations.yandex_cloud.mdb_engines import Engine, engine_choices, resolve_engine
+from integrations.yandex_cloud.mdb_catalog import ManagedDatabase, engine_choices, resolve_engine
 from integrations.yandex_cloud.rest_client import YandexCloudClient
 
 SOURCE = "yandex_cloud"
@@ -35,7 +35,7 @@ def _extract_params(sources: dict[str, dict]) -> dict[str, Any]:
     return yc_credentials(sources)
 
 
-def _summarize_cluster(cluster: dict[str, Any], engine: Engine) -> dict[str, Any]:
+def _summarize_cluster(cluster: dict[str, Any], engine: ManagedDatabase) -> dict[str, Any]:
     return {
         "id": cluster.get("id", ""),
         "name": cluster.get("name", ""),
@@ -84,7 +84,7 @@ def _summarize_operation(operation: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _connection_hint(engine: Engine, hosts: list[dict[str, Any]]) -> dict[str, Any]:
+def _connection_hint(engine: ManagedDatabase, hosts: list[dict[str, Any]]) -> dict[str, Any]:
     """Return how to reach the data plane, which is where the real answers are."""
     primary = next(
         (host for host in hosts if str(host.get("role", "")).upper() in {"MASTER", "PRIMARY"}),
@@ -114,7 +114,7 @@ _MAX_PAGES = 5
 
 
 def _list_clusters(
-    client: YandexCloudClient, engine: Engine
+    client: YandexCloudClient, engine: ManagedDatabase
 ) -> tuple[list[dict[str, Any]], str, bool]:
     """Return every cluster of *engine*, an error if the read failed, and completeness.
 
@@ -141,7 +141,7 @@ def _list_clusters(
 
 
 def _read_hosts(
-    client: YandexCloudClient, engine: Engine, cluster_id: str
+    client: YandexCloudClient, engine: ManagedDatabase, cluster_id: str
 ) -> tuple[list[dict[str, Any]], str]:
     """Return every host of *cluster_id* summarized, and why the list is empty if it is.
 
@@ -285,9 +285,9 @@ def list_yc_db_clusters(
     if yc_backend is not None:
         return dict(yc_backend.list_yc_db_clusters(engine))
 
-    from integrations.yandex_cloud.mdb_engines import ENGINES
+    from integrations.yandex_cloud.mdb_catalog import ENGINES
 
-    engines: tuple[Engine, ...] = ENGINES
+    engines: tuple[ManagedDatabase, ...] = ENGINES
     if engine.strip():
         resolved = resolve_engine(engine)
         if resolved is None:

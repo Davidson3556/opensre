@@ -16,8 +16,8 @@ from typing import Final
 
 
 @dataclass(frozen=True)
-class Engine:
-    """One managed database engine."""
+class ManagedDatabase:
+    """One managed database engine, and how to reach it."""
 
     key: str
     """What a caller names, e.g. ``postgresql``."""
@@ -71,9 +71,9 @@ class Engine:
     """
 
 
-ENGINES: Final[tuple[Engine, ...]] = (
+ENGINES: Final[tuple[ManagedDatabase, ...]] = (
     # PostgreSQL answers on 6432, not 5432 — connections go through a pooler.
-    Engine(
+    ManagedDatabase(
         "postgresql",
         "PostgreSQL",
         "managed-postgresql",
@@ -82,7 +82,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         "postgresql",
         log_service_types=("POSTGRESQL", "POOLER", "REPACK"),
     ),
-    Engine(
+    ManagedDatabase(
         "mysql",
         "MySQL",
         "managed-mysql",
@@ -92,7 +92,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         # Error log first: it is what explains a cluster that is misbehaving.
         log_service_types=("MYSQL_ERROR", "MYSQL_GENERAL", "MYSQL_SLOW_QUERY", "MYSQL_AUDIT"),
     ),
-    Engine(
+    ManagedDatabase(
         "clickhouse",
         "ClickHouse",
         "managed-clickhouse",
@@ -103,7 +103,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         # Required here: without it the endpoint refuses the read.
         log_service_types=("CLICKHOUSE", "CLICKHOUSE_KEEPER"),
     ),
-    Engine(
+    ManagedDatabase(
         "valkey",
         "Valkey (was Redis)",
         "managed-redis",
@@ -113,7 +113,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         plaintext_port=6379,
         log_service_types=("REDIS",),
     ),
-    Engine(
+    ManagedDatabase(
         "storedoc",
         "StoreDoc (was MongoDB)",
         "managed-mongodb",
@@ -123,7 +123,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         plaintext_port=27017,
         log_service_types=("MONGOD", "MONGOS", "MONGOCFG", "AUDIT"),
     ),
-    Engine(
+    ManagedDatabase(
         "kafka",
         "Apache Kafka",
         "managed-kafka",
@@ -132,7 +132,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         "kafka",
         plaintext_port=9092,
     ),
-    Engine(
+    ManagedDatabase(
         "opensearch",
         "OpenSearch",
         "managed-opensearch",
@@ -141,7 +141,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
         "opensearch",
         log_service_types=("OPENSEARCH", "DASHBOARDS"),
     ),
-    Engine(
+    ManagedDatabase(
         "greenplum",
         "MPP Analytics (was Greenplum)",
         "managed-greenplum",
@@ -155,7 +155,7 @@ ENGINES: Final[tuple[Engine, ...]] = (
     ),
     # Sharded PostgreSQL is its own service, not a mode of the one above: its
     # own API prefix, its own cluster type, and a router in front of the shards.
-    Engine(
+    ManagedDatabase(
         "spqr",
         "Sharded PostgreSQL (SPQR)",
         "managed-spqr",
@@ -180,10 +180,10 @@ _ALIASES: Final[dict[str, str]] = {
 }
 
 ENGINE_KEYS: Final[tuple[str, ...]] = tuple(engine.key for engine in ENGINES)
-_BY_KEY: Final[dict[str, Engine]] = {engine.key: engine for engine in ENGINES}
+_BY_KEY: Final[dict[str, ManagedDatabase]] = {engine.key: engine for engine in ENGINES}
 
 
-def resolve_engine(name: str) -> Engine | None:
+def resolve_engine(name: str) -> ManagedDatabase | None:
     """Return the engine *name* refers to, accepting former product names."""
     key = name.strip().lower()
     return _BY_KEY.get(_ALIASES.get(key, key))
@@ -194,4 +194,4 @@ def engine_choices() -> str:
     return ", ".join(ENGINE_KEYS)
 
 
-__all__ = ["ENGINES", "ENGINE_KEYS", "Engine", "engine_choices", "resolve_engine"]
+__all__ = ["ENGINES", "ENGINE_KEYS", "ManagedDatabase", "engine_choices", "resolve_engine"]

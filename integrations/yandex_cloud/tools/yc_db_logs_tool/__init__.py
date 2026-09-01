@@ -27,7 +27,7 @@ from integrations.yandex_cloud.availability import (
     yc_available_or_backend,
     yc_credentials,
 )
-from integrations.yandex_cloud.mdb_engines import engine_choices, resolve_engine
+from integrations.yandex_cloud.mdb_catalog import engine_choices, resolve_engine
 
 SOURCE = "yandex_cloud"
 

@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 import pytest
 
-from integrations.yandex_cloud.mdb_engines import ENGINE_KEYS, resolve_engine
+from integrations.yandex_cloud.mdb_catalog import ENGINE_KEYS, resolve_engine
 from integrations.yandex_cloud.tools import get_yc_db_cluster, list_yc_db_clusters
 
 FOLDER = "b1gexamplefolder"
@@ -70,7 +70,7 @@ class TestManagedDatabases:
     def test_every_engine_resolves_to_a_known_endpoint(self) -> None:
         """A key the registry does not carry is refused before the read is sent."""
         from integrations.yandex_cloud.endpoints import STATIC_ENDPOINTS
-        from integrations.yandex_cloud.mdb_engines import ENGINES
+        from integrations.yandex_cloud.mdb_catalog import ENGINES
 
         for engine in ENGINES:
             assert engine.service in STATIC_ENDPOINTS, engine.key

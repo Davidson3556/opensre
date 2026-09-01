@@ -18,7 +18,7 @@ from typing import Any
 import httpx
 import pytest
 
-from integrations.yandex_cloud.mdb_engines import ENGINES, resolve_engine
+from integrations.yandex_cloud.mdb_catalog import ENGINES, resolve_engine
 from tools.registry import get_registered_tool_map
 
 _CREDENTIALS: dict[str, Any] = {"folder_id": "b1gfolder", "iam_token": "t1.token"}
