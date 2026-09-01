@@ -876,6 +876,7 @@ detect_platform() {
   local os
   local arch
 
+  need_cmd uname
   os="$(uname -s)"
   arch="$(uname -m)"
 
@@ -887,9 +888,7 @@ detect_platform() {
       platform="darwin"
       ;;
     MINGW*|MSYS*|CYGWIN*)
-      platform="windows"
-      BIN_NAME="opensre.exe"
-      log "Detected Windows environment (${os})."
+      die "Windows release bundles require the PowerShell installer. Open PowerShell and run: irm https://install.opensre.com | iex"
       ;;
     *)
       die "Unsupported operating system: $os"
@@ -1088,8 +1087,8 @@ finish_install() {
 
 main() {
   parse_args "$@"
-  require_prerequisites
   detect_platform
+  require_prerequisites
   resolve_install_dir
   resolve_release_metadata
   select_archive_asset

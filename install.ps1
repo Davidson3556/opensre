@@ -8,6 +8,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:OpenSreProgressStep = 0
 $script:OpenSreChannelExplicit = $PSBoundParameters.ContainsKey("Channel") -or [bool]$env:OPENSRE_INSTALL_CHANNEL
+$script:OpenSreLauncherMarker = ":: OpenSRE Windows launcher v1"
+$script:OpenSreLayoutMarkerName = "layout-v1.marker"
+$script:OpenSreLayoutMarkerText = "OpenSRE Windows bundle layout v1"
+$script:OpenSreLayoutRootName = ".opensre-app"
+$script:OpenSreCurrentPointerName = "current.txt"
+$script:OpenSreInstallLockName = ".opensre-app.install.lock"
 
 function Test-OpenSreVerboseInstall {
     $value = [string]$env:OPENSRE_INSTALL_VERBOSE
@@ -415,6 +421,208 @@ function Invoke-OpenSreStreamDownload {
 function Get-OpenSreDefaultInstallDir {
     $userHome = if ($HOME) { $HOME } else { [System.Environment]::GetFolderPath("UserProfile") }
     return Join-Path $userHome ".local\bin"
+}
+
+function Get-OpenSreImmediateParentContext {
+    try {
+        $processInfo = $null
+        if (Get-Command Get-CimInstance -ErrorAction SilentlyContinue) {
+            $processInfo = Get-CimInstance `
+                -ClassName Win32_Process `
+                -Filter "ProcessId = $PID" `
+                -ErrorAction Stop
+        }
+        elseif (Get-Command Get-WmiObject -ErrorAction SilentlyContinue) {
+            $processInfo = Get-WmiObject `
+                -Class Win32_Process `
+                -Filter "ProcessId = $PID" `
+                -ErrorAction Stop
+        }
+
+        if (-not $processInfo) {
+            return $null
+        }
+
+        $parentProcessId = [int]$processInfo.ParentProcessId
+        if ($parentProcessId -le 0) {
+            return $null
+        }
+
+        $parentProcess = Get-Process -Id $parentProcessId -ErrorAction Stop
+        $parentPath = [string]$parentProcess.Path
+        if (-not $parentPath -or [System.IO.Path]::GetFileName($parentPath) -ine "opensre.exe") {
+            return $null
+        }
+
+        return [pscustomobject]@{
+            ProcessId = $parentProcessId
+            ExecutablePath = [System.IO.Path]::GetFullPath($parentPath)
+        }
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-OpenSreInstallDirFromExecutable {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ExecutablePath
+    )
+
+    try {
+        $resolvedExecutable = [System.IO.Path]::GetFullPath($ExecutablePath)
+    }
+    catch {
+        throw "Invalid OpenSRE update executable path '$ExecutablePath'."
+    }
+
+    if ([System.IO.Path]::GetFileName($resolvedExecutable) -ine "opensre.exe") {
+        throw "OpenSRE update executable must be named 'opensre.exe': '$resolvedExecutable'."
+    }
+
+    $versionDirectory = Split-Path -Parent $resolvedExecutable
+    $versionsRoot = Split-Path -Parent $versionDirectory
+    $layoutRoot = Split-Path -Parent $versionsRoot
+    $insideManagedLayoutRoot = $false
+    $ancestor = $versionDirectory
+    while ($ancestor) {
+        if ([System.IO.Path]::GetFileName($ancestor) -ieq $script:OpenSreLayoutRootName) {
+            $insideManagedLayoutRoot = $true
+            break
+        }
+        $parent = Split-Path -Parent $ancestor
+        if (-not $parent -or $parent -eq $ancestor) {
+            break
+        }
+        $ancestor = $parent
+    }
+    $looksVersioned = `
+        ([System.IO.Path]::GetFileName($versionsRoot) -ieq "versions") -or `
+        $insideManagedLayoutRoot
+
+    if ($looksVersioned) {
+        $isExpectedShape = `
+            ([System.IO.Path]::GetFileName($versionsRoot) -ieq "versions") -and `
+            ([System.IO.Path]::GetFileName($layoutRoot) -ieq $script:OpenSreLayoutRootName)
+        if (-not $isExpectedShape) {
+            throw "Refusing malformed OpenSRE versioned update path '$resolvedExecutable'."
+        }
+
+        $markerPath = Join-Path $layoutRoot $script:OpenSreLayoutMarkerName
+        $installDir = Split-Path -Parent $layoutRoot
+        $launcherPath = Join-Path $installDir "opensre.cmd"
+        if (-not (Test-OpenSreManagedLayoutMarker -MarkerPath $markerPath) -or
+            -not (Test-OpenSreManagedLauncher -LauncherPath $launcherPath)) {
+            throw "Refusing unowned OpenSRE versioned update path '$resolvedExecutable'."
+        }
+        return $installDir
+    }
+
+    # An unpacked standalone onedir artifact is not an installed legacy onefile.
+    # Updating it should create the normal user installation instead of deleting
+    # the artifact's own entry point and leaving its adjacent _internal behind.
+    if (Test-Path -LiteralPath (Join-Path $versionDirectory "_internal") -PathType Container) {
+        return ""
+    }
+
+    return $versionDirectory
+}
+
+function Get-OpenSreVerifiedLegacyBinaryPath {
+    param(
+        [AllowEmptyString()]
+        [string]$UpdateExecutable,
+        [int]$ParentProcessId,
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir
+    )
+
+    if (-not $UpdateExecutable -or $ParentProcessId -le 0) {
+        return ""
+    }
+
+    try {
+        $resolvedExecutable = [System.IO.Path]::GetFullPath($UpdateExecutable)
+        $resolvedInstallDir = [System.IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
+        $executableDirectory = [System.IO.Path]::GetDirectoryName($resolvedExecutable).TrimEnd('\', '/')
+        if (-not $executableDirectory.Equals(
+                $resolvedInstallDir,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -or
+            [System.IO.Path]::GetFileName($resolvedExecutable) -ine "opensre.exe" -or
+            (Test-Path -LiteralPath (Join-Path $executableDirectory "_internal") -PathType Container)) {
+            return ""
+        }
+
+        $parentContext = Get-OpenSreImmediateParentContext
+        if ($null -eq $parentContext -or
+            [int]$parentContext.ProcessId -ne $ParentProcessId) {
+            return ""
+        }
+        $parentExecutable = [System.IO.Path]::GetFullPath(
+            [string]$parentContext.ExecutablePath
+        )
+        if (-not $parentExecutable.Equals(
+                $resolvedExecutable,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )) {
+            return ""
+        }
+
+        return $resolvedExecutable
+    }
+    catch {
+        return ""
+    }
+}
+
+function Resolve-OpenSreInstallContext {
+    $explicitInstallDir = [string]$env:OPENSRE_INSTALL_DIR
+    $updateExecutable = [string]$env:OPENSRE_UPDATE_EXECUTABLE
+    $updateParentProcessId = 0
+    if ($env:OPENSRE_UPDATE_PARENT_PID) {
+        $parsedParentProcessId = 0
+        if ([int]::TryParse(
+                [string]$env:OPENSRE_UPDATE_PARENT_PID,
+                [ref]$parsedParentProcessId
+            ) -and $parsedParentProcessId -gt 0) {
+            $updateParentProcessId = $parsedParentProcessId
+        }
+    }
+
+    $parentContext = $null
+    if (-not $updateExecutable -or $updateParentProcessId -le 0) {
+        $parentContext = Get-OpenSreImmediateParentContext
+        if ($parentContext) {
+            if (-not $updateExecutable) {
+                $updateExecutable = [string]$parentContext.ExecutablePath
+            }
+            if ($updateParentProcessId -le 0) {
+                $updateParentProcessId = [int]$parentContext.ProcessId
+            }
+        }
+    }
+
+    $installDir = $explicitInstallDir
+    if (-not $installDir -and $updateExecutable) {
+        $installDir = Get-OpenSreInstallDirFromExecutable -ExecutablePath $updateExecutable
+    }
+    if (-not $installDir) {
+        $installDir = Get-OpenSreDefaultInstallDir
+    }
+
+    $legacyBinaryPath = Get-OpenSreVerifiedLegacyBinaryPath `
+        -UpdateExecutable $updateExecutable `
+        -ParentProcessId $updateParentProcessId `
+        -InstallDir $installDir
+
+    return [pscustomobject]@{
+        InstallDir = $installDir
+        ParentProcessId = $updateParentProcessId
+        IsUpdate = [bool]($updateExecutable -or $updateParentProcessId -gt 0)
+        LegacyBinaryPath = $legacyBinaryPath
+    }
 }
 
 function Get-OpenSreRequestHeaders {
@@ -898,7 +1106,9 @@ function Get-OpenSreBinaryPathFromArchive {
         return $directBinaryPath
     }
 
-    $binaryCandidates = @(Get-ChildItem -Path $ExtractionRoot -Recurse -File -Filter $BinaryName)
+    $binaryCandidates = @(
+        Get-ChildItem -LiteralPath $ExtractionRoot -Recurse -File -Filter $BinaryName
+    )
 
     if ($binaryCandidates.Count -eq 1) {
         return $binaryCandidates[0].FullName
@@ -912,6 +1122,1080 @@ function Get-OpenSreBinaryPathFromArchive {
     throw "Archive did not contain '$BinaryName'."
 }
 
+function Test-OpenSreManagedLayoutMarker {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$MarkerPath
+    )
+
+    if (-not (Test-Path -LiteralPath $MarkerPath -PathType Leaf)) {
+        return $false
+    }
+
+    try {
+        $markerText = ([string](Get-Content -LiteralPath $MarkerPath -Raw)).Trim()
+        return $markerText -ceq $script:OpenSreLayoutMarkerText
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-OpenSreManagedLauncherText {
+    return @"
+@echo off
+$($script:OpenSreLauncherMarker)
+setlocal
+set "OPENSRE_APP_ROOT=%~dp0$($script:OpenSreLayoutRootName)"
+set "OPENSRE_CURRENT_FILE=%OPENSRE_APP_ROOT%\$($script:OpenSreCurrentPointerName)"
+if not exist "%OPENSRE_CURRENT_FILE%" (
+  echo OpenSRE installation is incomplete: missing "%OPENSRE_CURRENT_FILE%". 1>&2
+  exit /b 1
+)
+set /p "OPENSRE_INSTALL_ID="<"%OPENSRE_CURRENT_FILE%"
+if not defined OPENSRE_INSTALL_ID (
+  echo OpenSRE installation is incomplete: empty current version pointer. 1>&2
+  exit /b 1
+)
+set "OPENSRE_BINARY=%OPENSRE_APP_ROOT%\versions\%OPENSRE_INSTALL_ID%\opensre.exe"
+if not exist "%OPENSRE_BINARY%" (
+  echo OpenSRE installation is incomplete: missing "%OPENSRE_BINARY%". 1>&2
+  exit /b 1
+)
+"%OPENSRE_BINARY%" %*
+exit /b %ERRORLEVEL%
+"@
+}
+
+function Test-OpenSreManagedLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LauncherPath
+    )
+
+    $extendedLauncherPath = ConvertTo-OpenSreExtendedPath -Path $LauncherPath
+    if (-not [System.IO.File]::Exists($extendedLauncherPath)) {
+        return $false
+    }
+
+    try {
+        $launcherLines = @([System.IO.File]::ReadAllLines($extendedLauncherPath))
+        return (
+            $launcherLines.Count -ge 2 -and
+            $launcherLines[0].Trim() -ieq "@echo off" -and
+            $launcherLines[1].Trim() -ceq $script:OpenSreLauncherMarker
+        )
+    }
+    catch {
+        return $false
+    }
+}
+
+function Test-OpenSreCanonicalLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LauncherPath,
+        [Parameter(Mandatory = $true)]
+        [string]$LauncherText
+    )
+
+    try {
+        $actualBytes = [System.IO.File]::ReadAllBytes(
+            (ConvertTo-OpenSreExtendedPath -Path $LauncherPath)
+        )
+        $expectedBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($LauncherText)
+        if ($actualBytes.Length -ne $expectedBytes.Length) {
+            return $false
+        }
+        for ($index = 0; $index -lt $actualBytes.Length; $index++) {
+            if ($actualBytes[$index] -ne $expectedBytes[$index]) {
+                return $false
+            }
+        }
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
+function Write-OpenSreManagedLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir
+    )
+
+    $launcherPath = Join-Path $InstallDir "opensre.cmd"
+    $extendedLauncherPath = ConvertTo-OpenSreExtendedPath -Path $launcherPath
+    $launcherExists = [System.IO.File]::Exists($extendedLauncherPath)
+    $launcherText = Get-OpenSreManagedLauncherText
+    $previousLauncherWasCanonical = $false
+    if ($launcherExists) {
+        if (-not (Test-OpenSreManagedLauncher -LauncherPath $launcherPath)) {
+            throw "Refusing to replace unowned launcher '$launcherPath'. Move it aside and retry."
+        }
+        $previousLauncherWasCanonical = Test-OpenSreCanonicalLauncher `
+            -LauncherPath $launcherPath `
+            -LauncherText $launcherText
+    }
+
+    $launcherTempPath = "$launcherPath.new-$([System.Guid]::NewGuid().ToString('N'))"
+    $launcherBackupPath = Join-Path `
+        (Join-Path $InstallDir $script:OpenSreLayoutRootName) `
+        ("retired-launcher-$([System.Guid]::NewGuid().ToString('N'))")
+
+    try {
+        [System.IO.File]::WriteAllText(
+            (ConvertTo-OpenSreExtendedPath -Path $launcherTempPath),
+            $launcherText,
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+        if ($launcherExists) {
+            [System.IO.File]::Replace(
+                (ConvertTo-OpenSreExtendedPath -Path $launcherTempPath),
+                $extendedLauncherPath,
+                (ConvertTo-OpenSreExtendedPath -Path $launcherBackupPath),
+                $true
+            )
+        }
+        else {
+            [System.IO.File]::Move(
+                (ConvertTo-OpenSreExtendedPath -Path $launcherTempPath),
+                $extendedLauncherPath
+            )
+        }
+    }
+    finally {
+        try {
+            Remove-OpenSreInstallPath -Path $launcherTempPath
+        }
+        catch {
+            # A later install can remove an abandoned marker-owned temporary file.
+        }
+    }
+
+    return [pscustomobject]@{
+        Created = -not $launcherExists
+        BackupPath = if ($launcherExists) { $launcherBackupPath } else { "" }
+        PreviousLauncherWasCanonical = $previousLauncherWasCanonical
+    }
+}
+
+function Restore-OpenSreManagedLauncher {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LauncherPath,
+        [Parameter(Mandatory = $true)]
+        [psobject]$Transaction
+    )
+
+    $extendedLauncherPath = ConvertTo-OpenSreExtendedPath -Path $LauncherPath
+    if ([bool]$Transaction.Created) {
+        if ([System.IO.File]::Exists($extendedLauncherPath)) {
+            [System.IO.File]::Delete($extendedLauncherPath)
+        }
+        return
+    }
+
+    $backupPath = [string]$Transaction.BackupPath
+    $extendedBackupPath = if ($backupPath) {
+        ConvertTo-OpenSreExtendedPath -Path $backupPath
+    }
+    else {
+        ""
+    }
+    if (-not [bool]$Transaction.PreviousLauncherWasCanonical) {
+        if ($backupPath -and [System.IO.File]::Exists($extendedBackupPath)) {
+            try {
+                Remove-OpenSreInstallPath -Path $backupPath
+            }
+            catch {
+                # A later install can remove an abandoned noncanonical backup.
+            }
+        }
+        return
+    }
+    if (-not $backupPath -or -not [System.IO.File]::Exists($extendedBackupPath)) {
+        throw "The previous OpenSRE launcher backup is missing."
+    }
+    if ([System.IO.File]::Exists($extendedLauncherPath)) {
+        $discardPath = Join-Path `
+            (Split-Path -Parent $backupPath) `
+            ("retired-launcher-$([System.Guid]::NewGuid().ToString('N'))")
+        [System.IO.File]::Replace(
+            $extendedBackupPath,
+            $extendedLauncherPath,
+            (ConvertTo-OpenSreExtendedPath -Path $discardPath),
+            $true
+        )
+        try {
+            Remove-OpenSreInstallPath -Path $discardPath
+        }
+        catch {
+            # A later install can remove an abandoned marker-owned backup.
+        }
+    }
+    else {
+        [System.IO.File]::Move($extendedBackupPath, $extendedLauncherPath)
+    }
+}
+
+function Get-OpenSreCurrentInstallId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LayoutRoot
+    )
+
+    $pointerPath = Join-Path $LayoutRoot $script:OpenSreCurrentPointerName
+    if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) {
+        return ""
+    }
+
+    return ([string](Get-Content -LiteralPath $pointerPath -Raw)).Trim()
+}
+
+function Set-OpenSreCurrentInstallId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LayoutRoot,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[A-Za-z0-9._-]+$')]
+        [string]$InstallId
+    )
+
+    $pointerPath = Join-Path $LayoutRoot $script:OpenSreCurrentPointerName
+    $pointerTempPath = Join-Path $LayoutRoot ("current-$([System.Guid]::NewGuid().ToString('N')).tmp")
+    $pointerBackupPath = Join-Path $LayoutRoot ("current-$([System.Guid]::NewGuid().ToString('N')).bak")
+
+    try {
+        [System.IO.File]::WriteAllText(
+            $pointerTempPath,
+            "$InstallId$([System.Environment]::NewLine)",
+            (New-Object System.Text.UTF8Encoding($false))
+        )
+
+        if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
+            [System.IO.File]::Replace($pointerTempPath, $pointerPath, $pointerBackupPath, $true)
+            Remove-Item -LiteralPath $pointerBackupPath -Force -ErrorAction SilentlyContinue
+        }
+        else {
+            [System.IO.File]::Move($pointerTempPath, $pointerPath)
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $pointerTempPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $pointerBackupPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function New-OpenSreInstallId {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[A-Fa-f0-9]{64}$')]
+        [string]$ArchiveSha256
+    )
+
+    $safeVersion = [System.Text.RegularExpressions.Regex]::Replace(
+        $Version,
+        '[^A-Za-z0-9._-]+',
+        '-'
+    ).Trim("-", ".")
+    if (-not $safeVersion) {
+        $safeVersion = "bundle"
+    }
+
+    $hashPrefix = $ArchiveSha256.Substring(0, 12).ToLowerInvariant()
+    $uniqueSuffix = [System.Guid]::NewGuid().ToString("N").Substring(0, 8)
+    return "$safeVersion-$hashPrefix-$uniqueSuffix"
+}
+
+function Open-OpenSreInstallLock {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $lockPath = Join-Path $InstallDir $script:OpenSreInstallLockName
+    $deadline = [System.DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+
+    while ([System.DateTime]::UtcNow -lt $deadline) {
+        try {
+            return [System.IO.File]::Open(
+                $lockPath,
+                [System.IO.FileMode]::OpenOrCreate,
+                [System.IO.FileAccess]::ReadWrite,
+                [System.IO.FileShare]::None
+            )
+        }
+        catch [System.IO.IOException] {
+            Start-Sleep -Milliseconds 250
+        }
+    }
+
+    throw "Timed out waiting for another OpenSRE installation to finish."
+}
+
+function Get-OpenSreObsoleteVersionPaths {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LayoutRoot,
+        [Parameter(Mandatory = $true)]
+        [string]$ActiveInstallId
+    )
+
+    $versionsRoot = Join-Path $LayoutRoot "versions"
+    if (-not (Test-Path -LiteralPath $versionsRoot -PathType Container)) {
+        return @()
+    }
+
+    $paths = @()
+    foreach ($versionDirectory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force)) {
+        if ($versionDirectory.Name -eq $ActiveInstallId) {
+            continue
+        }
+        $paths += $versionDirectory.FullName
+    }
+    foreach ($ownedCleanupEntry in @(
+            Get-ChildItem -LiteralPath $LayoutRoot -Force |
+                Where-Object { $_.Name -like 'retired-*' -or $_.Name -like 'stage-*' }
+        )) {
+        $paths += $ownedCleanupEntry.FullName
+    }
+    return $paths
+}
+
+function ConvertTo-OpenSreExtendedPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\?\')) {
+        return $fullPath
+    }
+    if ($fullPath.StartsWith('\\')) {
+        return '\\?\UNC\' + $fullPath.Substring(2)
+    }
+    return '\\?\' + $fullPath
+}
+
+function Copy-OpenSreInstallFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $destinationParent = [System.IO.Path]::GetDirectoryName($Destination)
+    if ($destinationParent) {
+        [System.IO.Directory]::CreateDirectory(
+            (ConvertTo-OpenSreExtendedPath -Path $destinationParent)
+        ) | Out-Null
+    }
+    [System.IO.File]::Copy(
+        (ConvertTo-OpenSreExtendedPath -Path $Source),
+        (ConvertTo-OpenSreExtendedPath -Path $Destination),
+        $true
+    )
+}
+
+function Copy-OpenSreInstallTree {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Source,
+        [Parameter(Mandatory = $true)]
+        [string]$Destination
+    )
+
+    $sourcePath = (ConvertTo-OpenSreExtendedPath -Path $Source).TrimEnd('\')
+    $destinationPath = (ConvertTo-OpenSreExtendedPath -Path $Destination).TrimEnd('\')
+    [System.IO.Directory]::CreateDirectory($destinationPath) | Out-Null
+
+    foreach ($sourceDirectory in [System.IO.Directory]::EnumerateDirectories(
+            $sourcePath,
+            '*',
+            [System.IO.SearchOption]::AllDirectories
+        )) {
+        $relativePath = $sourceDirectory.Substring($sourcePath.Length).TrimStart('\')
+        [System.IO.Directory]::CreateDirectory(
+            [System.IO.Path]::Combine($destinationPath, $relativePath)
+        ) | Out-Null
+    }
+    foreach ($sourceFile in [System.IO.Directory]::EnumerateFiles(
+            $sourcePath,
+            '*',
+            [System.IO.SearchOption]::AllDirectories
+        )) {
+        $relativePath = $sourceFile.Substring($sourcePath.Length).TrimStart('\')
+        Copy-OpenSreInstallFile `
+            -Source $sourceFile `
+            -Destination ([System.IO.Path]::Combine($destinationPath, $relativePath))
+    }
+}
+
+function Remove-OpenSreInstallPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $extendedPath = ConvertTo-OpenSreExtendedPath -Path $Path
+    if ([System.IO.Directory]::Exists($extendedPath)) {
+        [System.IO.Directory]::Delete($extendedPath, $true)
+    }
+    elseif ([System.IO.File]::Exists($extendedPath)) {
+        [System.IO.File]::Delete($extendedPath)
+    }
+}
+
+function Move-OpenSreStagedBundle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$StagePath,
+        [Parameter(Mandatory = $true)]
+        [string]$FinalPath,
+        [int]$MaxAttempts = 20,
+        [int]$RetryDelayMilliseconds = 250
+    )
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Move-Item -LiteralPath $StagePath -Destination $FinalPath -ErrorAction Stop
+            return
+        }
+        catch {
+            if (-not (Test-Path -LiteralPath $StagePath) -and
+                (Test-Path -LiteralPath $FinalPath -PathType Container)) {
+                return
+            }
+
+            $exception = $_.Exception
+            $transientMoveFailure = $false
+            while ($null -ne $exception) {
+                if ($exception -is [System.UnauthorizedAccessException] -or
+                    $exception -is [System.IO.IOException]) {
+                    $transientMoveFailure = $true
+                    break
+                }
+                $exception = $exception.InnerException
+            }
+            if (-not $transientMoveFailure -or $attempt -eq $MaxAttempts) {
+                throw
+            }
+
+            Start-Sleep -Milliseconds $RetryDelayMilliseconds
+        }
+    }
+}
+
+function Start-OpenSreDeferredCleanup {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$LayoutRoot,
+        [Parameter(Mandatory = $true)]
+        [string[]]$TargetPaths,
+        [Parameter(Mandatory = $true)]
+        [int]$ParentProcessId
+    )
+
+    if ($TargetPaths.Count -eq 0) {
+        return
+    }
+
+    $cleanupPath = Join-Path $LayoutRoot ("cleanup-$([System.Guid]::NewGuid().ToString('N')).ps1")
+    $targetJson = ConvertTo-Json -InputObject @($TargetPaths) -Compress
+    $targetPayload = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($targetJson))
+    $cleanupScript = @'
+param(
+    [int]$ParentProcessId,
+    [string]$TargetPayload,
+    [string]$CleanupPath
+)
+
+$ErrorActionPreference = "SilentlyContinue"
+$targetsJson = [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($TargetPayload)
+)
+$parsedTargets = ConvertFrom-Json -InputObject $targetsJson
+$targets = @($parsedTargets)
+$layoutRoot = Split-Path -Parent $CleanupPath
+$installDir = Split-Path -Parent $layoutRoot
+$installLockPath = Join-Path $installDir '.opensre-app.install.lock'
+
+function ConvertTo-OpenSreExtendedPath {
+    param([string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\?\')) {
+        return $fullPath
+    }
+    if ($fullPath.StartsWith('\\')) {
+        return '\\?\UNC\' + $fullPath.Substring(2)
+    }
+    return '\\?\' + $fullPath
+}
+
+function Test-OpenSreCleanupTarget {
+    param([string]$Path)
+
+    try {
+        if (Test-Path -LiteralPath $Path) {
+            return $true
+        }
+    }
+    catch {
+        # Fall through to the extended-length path checks.
+    }
+    $extendedPath = ConvertTo-OpenSreExtendedPath -Path $Path
+    return (
+        [System.IO.Directory]::Exists($extendedPath) -or
+        [System.IO.File]::Exists($extendedPath)
+    )
+}
+
+function Remove-OpenSreCleanupTarget {
+    param([string]$Path)
+
+    try {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+        return
+    }
+    catch {
+        $extendedPath = ConvertTo-OpenSreExtendedPath -Path $Path
+        if ([System.IO.Directory]::Exists($extendedPath)) {
+            [System.IO.Directory]::Delete($extendedPath, $true)
+            return
+        }
+        if ([System.IO.File]::Exists($extendedPath)) {
+            [System.IO.File]::Delete($extendedPath)
+        }
+    }
+}
+
+function Test-OpenSrePathContains {
+    param(
+        [string]$Root,
+        [string]$Candidate
+    )
+
+    try {
+        $rootPath = [System.IO.Path]::GetFullPath($Root).TrimEnd('\', '/')
+        $candidatePath = [System.IO.Path]::GetFullPath($Candidate)
+    }
+    catch {
+        return $false
+    }
+    if ($candidatePath.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $true
+    }
+    return $candidatePath.StartsWith(
+        $rootPath + [System.IO.Path]::DirectorySeparatorChar,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+}
+
+function Test-OpenSreTargetInUse {
+    param(
+        [string]$Path,
+        [switch]$TreatAsDirectory
+    )
+
+    $targetIsDirectory = $TreatAsDirectory -or [System.IO.Directory]::Exists(
+        (ConvertTo-OpenSreExtendedPath -Path $Path)
+    )
+    try {
+        $processes = @(
+            Get-Process -ErrorAction Stop |
+                Where-Object { $_.ProcessName -ieq 'opensre' }
+        )
+    }
+    catch {
+        return $true
+    }
+
+    foreach ($process in $processes) {
+        try {
+            $processPath = [string]$process.Path
+        }
+        catch {
+            return $true
+        }
+        if (-not $processPath) {
+            return $true
+        }
+        if ($targetIsDirectory) {
+            if (Test-OpenSrePathContains -Root $Path -Candidate $processPath) {
+                return $true
+            }
+        }
+        else {
+            try {
+                $targetPath = [System.IO.Path]::GetFullPath($Path)
+                $runningPath = [System.IO.Path]::GetFullPath($processPath)
+            }
+            catch {
+                return $true
+            }
+            if ($runningPath.Equals($targetPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                return $true
+            }
+        }
+    }
+    return $false
+}
+
+function Test-OpenSreCurrentVersionTarget {
+    param([string]$Path)
+
+    try {
+        $targetPath = [System.IO.Path]::GetFullPath($Path)
+        $versionsRoot = [System.IO.Path]::GetFullPath((Join-Path $layoutRoot 'versions'))
+        $targetParent = [System.IO.Path]::GetDirectoryName($targetPath)
+        if (-not $targetParent.Equals($versionsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+        $pointerPath = Join-Path $layoutRoot 'current.txt'
+        if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) {
+            return $true
+        }
+        $currentInstallId = ([string](Get-Content -LiteralPath $pointerPath -Raw)).Trim()
+        if (-not $currentInstallId) {
+            return $true
+        }
+        return [System.IO.Path]::GetFileName($targetPath).Equals(
+            $currentInstallId,
+            [System.StringComparison]::OrdinalIgnoreCase
+        )
+    }
+    catch {
+        return $true
+    }
+}
+
+function Move-OpenSreTargetToRetirement {
+    param([string]$Path)
+
+    if (-not (Test-OpenSreCleanupTarget -Path $Path)) {
+        return ''
+    }
+    if (Test-OpenSreCurrentVersionTarget -Path $Path) {
+        return ''
+    }
+    if (Test-OpenSreTargetInUse -Path $Path) {
+        return ''
+    }
+
+    $guard = $null
+    $targetWasDirectory = [System.IO.Directory]::Exists(
+        (ConvertTo-OpenSreExtendedPath -Path $Path)
+    )
+    try {
+        $guardPath = if ($targetWasDirectory) {
+            Join-Path $Path 'opensre.exe'
+        }
+        else {
+            $Path
+        }
+        if ([System.IO.File]::Exists((ConvertTo-OpenSreExtendedPath -Path $guardPath))) {
+            $guard = [System.IO.File]::Open(
+                $guardPath,
+                [System.IO.FileMode]::Open,
+                [System.IO.FileAccess]::Read,
+                [System.IO.FileShare]::Delete
+            )
+        }
+        if (Test-OpenSreTargetInUse -Path $Path) {
+            return ''
+        }
+        if ($null -ne $guard) {
+            $guard.Dispose()
+            $guard = $null
+        }
+
+        $retiredPath = Join-Path $layoutRoot (
+            "retired-$([System.Guid]::NewGuid().ToString('N'))"
+        )
+        Move-Item -LiteralPath $Path -Destination $retiredPath -ErrorAction Stop
+        if ((Test-OpenSreTargetInUse -Path $Path -TreatAsDirectory:$targetWasDirectory) -or
+            (Test-OpenSreTargetInUse -Path $retiredPath -TreatAsDirectory:$targetWasDirectory)) {
+            Move-Item -LiteralPath $retiredPath -Destination $Path -ErrorAction SilentlyContinue
+            return ''
+        }
+        return $retiredPath
+    }
+    catch {
+        return ''
+    }
+    finally {
+        if ($null -ne $guard) {
+            $guard.Dispose()
+        }
+    }
+}
+
+if ($ParentProcessId -gt 0) {
+    $waitDeadline = [System.DateTime]::UtcNow.AddMinutes(10)
+    while (Get-Process -Id $ParentProcessId -ErrorAction SilentlyContinue) {
+        if ([System.DateTime]::UtcNow -ge $waitDeadline) {
+            Remove-Item -LiteralPath $CleanupPath -Force -ErrorAction SilentlyContinue
+            exit 1
+        }
+        Start-Sleep -Milliseconds 250
+    }
+}
+
+$lockHandle = $null
+$lockDeadline = [System.DateTime]::UtcNow.AddSeconds(30)
+while ($null -eq $lockHandle -and [System.DateTime]::UtcNow -lt $lockDeadline) {
+    try {
+        $lockHandle = [System.IO.File]::Open(
+            $installLockPath,
+            [System.IO.FileMode]::OpenOrCreate,
+            [System.IO.FileAccess]::ReadWrite,
+            [System.IO.FileShare]::None
+        )
+    }
+    catch {
+        Start-Sleep -Milliseconds 250
+    }
+}
+if ($null -eq $lockHandle) {
+    Remove-Item -LiteralPath $CleanupPath -Force -ErrorAction SilentlyContinue
+    exit 1
+}
+
+$retiredTargets = @()
+try {
+    foreach ($targetValue in $targets) {
+        $target = [string]$targetValue
+        for ($retireAttempt = 0; $retireAttempt -lt 20; $retireAttempt++) {
+            if (-not (Test-OpenSreCleanupTarget -Path $target) -or
+                (Test-OpenSreCurrentVersionTarget -Path $target)) {
+                break
+            }
+            $retiredPath = Move-OpenSreTargetToRetirement -Path $target
+            if ($retiredPath) {
+                $retiredTargets += $retiredPath
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+finally {
+    $lockHandle.Dispose()
+}
+
+$cleanupDeadline = [System.DateTime]::UtcNow.AddMinutes(10)
+do {
+    foreach ($retiredTarget in $retiredTargets) {
+        if (Test-OpenSreCleanupTarget -Path $retiredTarget) {
+            try {
+                Remove-OpenSreCleanupTarget -Path $retiredTarget
+            }
+            catch {
+                # Retried only after the live path has been atomically retired.
+            }
+        }
+    }
+    $remaining = @(
+        $retiredTargets | Where-Object { Test-OpenSreCleanupTarget -Path ([string]$_) }
+    )
+    if ($remaining.Count -eq 0) {
+        break
+    }
+    Start-Sleep -Milliseconds 500
+} while ([System.DateTime]::UtcNow -lt $cleanupDeadline)
+
+Remove-Item -LiteralPath $CleanupPath -Force -ErrorAction SilentlyContinue
+'@
+    [System.IO.File]::WriteAllText(
+        $cleanupPath,
+        $cleanupScript,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+
+    try {
+        $powershellPath = (Get-Process -Id $PID).Path
+        if (-not $powershellPath) {
+            $powershellPath = Join-Path $PSHOME "powershell.exe"
+        }
+
+        $arguments = @(
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            ('"{0}"' -f $cleanupPath),
+            "-ParentProcessId",
+            [string]$ParentProcessId,
+            "-TargetPayload",
+            $targetPayload,
+            "-CleanupPath",
+            ('"{0}"' -f $cleanupPath)
+        )
+        Start-Process -FilePath $powershellPath -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+    }
+    catch {
+        Remove-Item -LiteralPath $cleanupPath -Force -ErrorAction SilentlyContinue
+        throw
+    }
+}
+
+function Install-OpenSreVerifiedBundle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath,
+        [Parameter(Mandatory = $true)]
+        [string]$InstallDir,
+        [Parameter(Mandatory = $true)]
+        [ValidatePattern('^[A-Za-z0-9._-]+$')]
+        [string]$InstallId,
+        [int]$ParentProcessId = 0,
+        [AllowEmptyString()]
+        [string]$VerifiedLegacyBinaryPath = ""
+    )
+
+    if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
+        throw "Verified binary '$BinaryPath' no longer exists."
+    }
+
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    $layoutRoot = Join-Path $InstallDir $script:OpenSreLayoutRootName
+    $layoutMarkerPath = Join-Path $layoutRoot $script:OpenSreLayoutMarkerName
+    $installLock = Open-OpenSreInstallLock -InstallDir $InstallDir
+    $versionsRoot = Join-Path $layoutRoot "versions"
+    $stagePath = Join-Path $layoutRoot ("stage-$InstallId")
+    $finalPath = Join-Path $versionsRoot $InstallId
+    $launcherPath = Join-Path $InstallDir "opensre.cmd"
+    $currentPointerPath = Join-Path $layoutRoot $script:OpenSreCurrentPointerName
+    $previousInstallId = ""
+    $hadCurrentPointer = $false
+    $launcherTransaction = $null
+    $finalPathCreated = $false
+    $currentPointerActivationAttempted = $false
+    $activationCommitted = $false
+    $legacyBinaryPath = Join-Path $InstallDir "opensre.exe"
+    $retiredLegacyPath = ""
+    $cleanupTargets = @()
+    $cleanupEnumerationFailed = $false
+    $stagedVersionInfo = $null
+    $installedBinaryPath = ""
+
+    try {
+        if (Test-Path -LiteralPath $legacyBinaryPath -PathType Leaf) {
+            $resolvedLegacyBinaryPath = [System.IO.Path]::GetFullPath($legacyBinaryPath)
+            $resolvedVerifiedLegacyPath = if ($VerifiedLegacyBinaryPath) {
+                [System.IO.Path]::GetFullPath($VerifiedLegacyBinaryPath)
+            }
+            else {
+                ""
+            }
+            if (-not $resolvedVerifiedLegacyPath -or
+                -not $resolvedVerifiedLegacyPath.Equals(
+                    $resolvedLegacyBinaryPath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )) {
+                throw "Refusing to replace unverified pre-existing executable '$legacyBinaryPath'. Verify it independently or move it aside and retry; automatic migration is allowed only from an already-running OpenSRE update."
+            }
+        }
+
+        $layoutRootAlreadyExists = Test-Path -LiteralPath $layoutRoot -PathType Container
+        if ($layoutRootAlreadyExists -and
+            -not (Test-OpenSreManagedLayoutMarker -MarkerPath $layoutMarkerPath)) {
+            $existingEntries = @(Get-ChildItem -LiteralPath $layoutRoot -Force)
+            if ($existingEntries.Count -gt 0) {
+                throw "Refusing to use unowned application directory '$layoutRoot'. Move it aside and retry."
+            }
+        }
+
+        New-Item -ItemType Directory -Force -Path $layoutRoot | Out-Null
+        if (-not (Test-OpenSreManagedLayoutMarker -MarkerPath $layoutMarkerPath)) {
+            [System.IO.File]::WriteAllText(
+                $layoutMarkerPath,
+                "$($script:OpenSreLayoutMarkerText)$([System.Environment]::NewLine)",
+                (New-Object System.Text.UTF8Encoding($false))
+            )
+        }
+
+        New-Item -ItemType Directory -Force -Path $versionsRoot | Out-Null
+        if (Test-Path -LiteralPath $stagePath) {
+            throw "Staging directory '$stagePath' already exists."
+        }
+        if (Test-Path -LiteralPath $finalPath) {
+            throw "Install directory '$finalPath' already exists."
+        }
+
+        $hadCurrentPointer = Test-Path -LiteralPath $currentPointerPath -PathType Leaf
+        if ($hadCurrentPointer) {
+            $previousInstallId = Get-OpenSreCurrentInstallId -LayoutRoot $layoutRoot
+        }
+
+        New-Item -ItemType Directory -Path $stagePath | Out-Null
+        $bundleSourceRoot = Split-Path -Parent $BinaryPath
+        $bundleInternalPath = Join-Path $bundleSourceRoot "_internal"
+        if (Test-Path -LiteralPath $bundleInternalPath -PathType Container) {
+            Copy-OpenSreInstallTree -Source $bundleSourceRoot -Destination $stagePath
+        }
+        else {
+            Copy-OpenSreInstallFile `
+                -Source $BinaryPath `
+                -Destination (Join-Path $stagePath "opensre.exe")
+        }
+
+        $stagedBinaryPath = Join-Path $stagePath "opensre.exe"
+        $stagedVersionInfo = Get-OpenSreBinaryVersionInfo -BinaryPath $stagedBinaryPath
+        Test-OpenSreStagedBundle `
+            -BinaryPath $stagedBinaryPath `
+            -IsOnedir:(Test-Path -LiteralPath $bundleInternalPath -PathType Container)
+        Move-OpenSreStagedBundle -StagePath $stagePath -FinalPath $finalPath
+        $finalPathCreated = $true
+
+        $launcherTransaction = Write-OpenSreManagedLauncher -InstallDir $InstallDir
+        $currentPointerActivationAttempted = $true
+        Set-OpenSreCurrentInstallId -LayoutRoot $layoutRoot -InstallId $InstallId
+
+        $installedBinaryPath = Join-Path $finalPath "opensre.exe"
+        $launcherVersionInfo = Get-OpenSreBinaryVersionInfo -BinaryPath $launcherPath
+        if ([string]$launcherVersionInfo.Text -cne [string]$stagedVersionInfo.Text) {
+            throw "Installed launcher version output did not match the verified OpenSRE bundle."
+        }
+
+        if (Test-Path -LiteralPath $legacyBinaryPath -PathType Leaf) {
+            $retiredLegacyPath = Join-Path $layoutRoot (
+                "retired-$([System.Guid]::NewGuid().ToString('N'))"
+            )
+            Move-Item `
+                -LiteralPath $legacyBinaryPath `
+                -Destination $retiredLegacyPath `
+                -ErrorAction Stop
+        }
+
+        $activationCommitted = $true
+        if ($null -ne $launcherTransaction -and [string]$launcherTransaction.BackupPath) {
+            Remove-Item `
+                -LiteralPath ([string]$launcherTransaction.BackupPath) `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
+        try {
+            $cleanupTargets = @(
+                Get-OpenSreObsoleteVersionPaths `
+                    -LayoutRoot $layoutRoot `
+                    -ActiveInstallId $InstallId
+            )
+        }
+        catch {
+            $cleanupEnumerationFailed = $true
+            Write-Warning "OpenSRE was activated, but obsolete Windows files could not be enumerated; a later install will retry safe cleanup."
+        }
+    }
+    catch {
+        if ($activationCommitted) {
+            throw
+        }
+
+        $currentInstallId = Get-OpenSreCurrentInstallId -LayoutRoot $layoutRoot
+        if ($currentInstallId -eq $InstallId) {
+            try {
+                if ($hadCurrentPointer -and $previousInstallId) {
+                    Set-OpenSreCurrentInstallId -LayoutRoot $layoutRoot -InstallId $previousInstallId
+                }
+                elseif (-not $hadCurrentPointer) {
+                    Remove-Item -LiteralPath $currentPointerPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            catch {
+                Write-Warning "Could not roll back the OpenSRE current-version pointer."
+            }
+        }
+
+        try {
+            Remove-OpenSreInstallPath -Path $stagePath
+        }
+        catch {
+            Write-Warning "Could not remove the failed OpenSRE staging directory; a later install will retry it."
+        }
+        $currentInstallId = Get-OpenSreCurrentInstallId -LayoutRoot $layoutRoot
+        if ($retiredLegacyPath -and
+            $currentInstallId -ne $InstallId -and
+            (Test-Path -LiteralPath $retiredLegacyPath -PathType Leaf) -and
+            -not (Test-Path -LiteralPath $legacyBinaryPath)) {
+            try {
+                Move-Item `
+                    -LiteralPath $retiredLegacyPath `
+                    -Destination $legacyBinaryPath `
+                    -ErrorAction Stop
+            }
+            catch {
+                Write-Warning "Could not restore the previous flat OpenSRE executable."
+            }
+        }
+        if ($finalPathCreated -and
+            $currentInstallId -ne $InstallId -and
+            (Test-Path -LiteralPath $finalPath -PathType Container)) {
+            if ($currentPointerActivationAttempted) {
+                Write-Warning "The failed OpenSRE version directory was retained for a later safe cleanup because it had already been activated."
+            }
+            else {
+                try {
+                    Remove-OpenSreInstallPath -Path $finalPath
+                }
+                catch {
+                    Write-Warning "Could not remove the failed OpenSRE version directory; a later install will retry it."
+                }
+            }
+        }
+        if ($null -ne $launcherTransaction -and
+            (-not [bool]$launcherTransaction.Created -or $currentInstallId -ne $InstallId)) {
+            try {
+                Restore-OpenSreManagedLauncher `
+                    -LauncherPath $launcherPath `
+                    -Transaction $launcherTransaction
+            }
+            catch {
+                Write-Warning "Could not restore the previous OpenSRE launcher."
+            }
+        }
+        throw
+    }
+    finally {
+        if ($installLock) {
+            $installLock.Dispose()
+        }
+    }
+
+    $deferredCleanup = $cleanupEnumerationFailed -or $cleanupTargets.Count -gt 0
+    if ($cleanupTargets.Count -gt 0) {
+        try {
+            Start-OpenSreDeferredCleanup `
+                -LayoutRoot $layoutRoot `
+                -TargetPaths $cleanupTargets `
+                -ParentProcessId $ParentProcessId
+        }
+        catch {
+            Write-Warning "OpenSRE was activated, but previous Windows files were retained for a later safe cleanup."
+        }
+    }
+
+    return [pscustomobject]@{
+        BinaryPath = $installedBinaryPath
+        LauncherPath = $launcherPath
+        AppRoot = $finalPath
+        LayoutRoot = $layoutRoot
+        VersionText = [string]$stagedVersionInfo.Text
+        Version = [string]$stagedVersionInfo.Version
+        DeferredCleanup = $deferredCleanup
+    }
+}
+
 function Get-OpenSreBinaryVersionInfo {
     param(
         [Parameter(Mandatory = $true)]
@@ -920,12 +2204,28 @@ function Get-OpenSreBinaryVersionInfo {
 
     try {
         $versionOutput = & $BinaryPath --version 2>&1
+        $versionExitCode = $LASTEXITCODE
     }
     catch {
         throw "Failed to execute '$BinaryPath --version'. $($_.Exception.Message)"
     }
 
     $versionText = ($versionOutput | Out-String).Trim()
+    if ($versionExitCode -ne 0) {
+        throw "Failed to execute '$BinaryPath --version' (exit $versionExitCode). $versionText"
+    }
+    if (-not $versionText) {
+        throw "Failed to validate '$BinaryPath --version': OpenSRE returned empty output."
+    }
+
+    $openSreVersionMatch = [System.Text.RegularExpressions.Regex]::Match(
+        $versionText,
+        '(?i)\Aopensre,\s+version\s+[0-9][0-9A-Za-z.+_-]*(?:\s+\([^\r\n]+\))?\s*\z'
+    )
+    if (-not $openSreVersionMatch.Success) {
+        throw "Failed to validate '$BinaryPath --version': expected valid OpenSRE version output, got '$versionText'."
+    }
+
     $detectedVersion = ""
     $match = [System.Text.RegularExpressions.Regex]::Match($versionText, '\d{4}\.\d{1,2}\.\d{1,2}')
     if ($match.Success) {
@@ -935,6 +2235,86 @@ function Get-OpenSreBinaryVersionInfo {
     return [pscustomobject]@{
         Text = $versionText
         Version = $detectedVersion
+    }
+}
+
+function Test-OpenSreStagedBundle {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath,
+        [switch]$IsOnedir
+    )
+
+    $verificationHome = Join-Path `
+        ([System.IO.Path]::GetTempPath()) `
+        ("opensre-install-verify-$([System.Guid]::NewGuid().ToString('N'))")
+    $environmentOverrides = [ordered]@{
+        OPENSRE_HOME = $verificationHome
+        OPENSRE_IS_TEST = "1"
+        OPENSRE_NO_TELEMETRY = "1"
+        OPENSRE_ANALYTICS_DISABLED = "1"
+        OPENSRE_SENTRY_DISABLED = "1"
+        OPENSRE_DISABLE_KEYRING = "1"
+        OPENSRE_PROJECT_ENV_PATH = Join-Path $verificationHome "no-project.env"
+        GRAFANA_CONFIG_SKIP_ENV_FILE = "1"
+    }
+    $savedEnvironment = @{}
+    foreach ($name in $environmentOverrides.Keys) {
+        $savedEnvironment[$name] = [System.Environment]::GetEnvironmentVariable(
+            $name,
+            [System.EnvironmentVariableTarget]::Process
+        )
+    }
+
+    try {
+        New-Item -ItemType Directory -Force -Path $verificationHome | Out-Null
+        foreach ($name in $environmentOverrides.Keys) {
+            [System.Environment]::SetEnvironmentVariable(
+                $name,
+                [string]$environmentOverrides[$name],
+                [System.EnvironmentVariableTarget]::Process
+            )
+        }
+
+        $smokeArgument = if ($IsOnedir) { "_package-smoke" } else { "--help" }
+        try {
+            $smokeOutput = & $BinaryPath $smokeArgument 2>&1
+            $smokeExitCode = $LASTEXITCODE
+        }
+        catch {
+            throw "Failed to execute staged OpenSRE bundle smoke check. $($_.Exception.Message)"
+        }
+        $smokeText = ($smokeOutput | Out-String).Trim()
+        if ($smokeExitCode -ne 0) {
+            throw "Staged OpenSRE bundle smoke check failed (exit $smokeExitCode). $smokeText"
+        }
+
+        if ($IsOnedir) {
+            try {
+                $smokeResult = ConvertFrom-Json -InputObject $smokeText
+            }
+            catch {
+                throw "Staged OpenSRE package smoke returned invalid JSON."
+            }
+            if ($null -eq $smokeResult -or [string]$smokeResult.status -cne "ok") {
+                throw "Staged OpenSRE package smoke did not report status 'ok'."
+            }
+        }
+    }
+    finally {
+        foreach ($name in $environmentOverrides.Keys) {
+            [System.Environment]::SetEnvironmentVariable(
+                $name,
+                $savedEnvironment[$name],
+                [System.EnvironmentVariableTarget]::Process
+            )
+        }
+        try {
+            Remove-OpenSreInstallPath -Path $verificationHome
+        }
+        catch {
+            # Verification state is isolated and never part of the installed bundle.
+        }
     }
 }
 
@@ -961,7 +2341,7 @@ function Ensure-OpenSreGithubCli {
             }
         }
         catch {
-            # Soft dependency — fall through to the manual hint.
+            # Soft dependency - fall through to the manual hint.
         }
     }
 
@@ -1010,7 +2390,10 @@ function Start-OpenSreOnboardingAfterInstall {
 
 function Install-OpenSre {
     $repo = if ($env:OPENSRE_INSTALL_REPO) { $env:OPENSRE_INSTALL_REPO } else { "Tracer-Cloud/opensre" }
-    $installDir = if ($env:OPENSRE_INSTALL_DIR) { $env:OPENSRE_INSTALL_DIR } else { Get-OpenSreDefaultInstallDir }
+    $installContext = Resolve-OpenSreInstallContext
+    $installDir = [string]$installContext.InstallDir
+    $updateParentProcessId = [int]$installContext.ParentProcessId
+    $verifiedLegacyBinaryPath = [string]$installContext.LegacyBinaryPath
     $binaryName = "opensre.exe"
     $requestedVersion = if ($env:OPENSRE_VERSION) { $env:OPENSRE_VERSION.Trim().TrimStart("v") } else { "" }
     $resolvedChannel = if ($Channel) { $Channel.Trim().ToLowerInvariant() } else { "release" }
@@ -1090,6 +2473,8 @@ function Install-OpenSre {
             }
         }
 
+        $archiveSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+
         $verifiedBinary = Invoke-OpenSreStep -Name "[5/6] Extracting and verifying binary" -Operation {
             Expand-Archive -LiteralPath $archivePath -DestinationPath $tmpDir -Force
 
@@ -1124,27 +2509,39 @@ function Install-OpenSre {
         $binaryVersionText = [string]$verifiedBinary.VersionText
         $binaryVersion = [string]$verifiedBinary.Version
         $version = [string]$verifiedBinary.InstallVersion
+        $installId = New-OpenSreInstallId -Version $version -ArchiveSha256 $archiveSha256
 
-        Invoke-OpenSreStep -Name "[6/6] Installing binary" -Detail (Join-Path $installDir $binaryName) -Operation {
-            New-Item -ItemType Directory -Force -Path $installDir | Out-Null
-            Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $installDir $binaryName) -Force
+        $installedBundle = Invoke-OpenSreStep -Name "[6/6] Installing application bundle" -Detail (Join-Path $installDir "opensre.cmd") -Operation {
+            Install-OpenSreVerifiedBundle `
+                -BinaryPath $binaryPath `
+                -InstallDir $installDir `
+                -InstallId $installId `
+                -ParentProcessId $updateParentProcessId `
+                -VerifiedLegacyBinaryPath $verifiedLegacyBinaryPath
         }
+
+        $installedBinaryPath = [string]$installedBundle.BinaryPath
+        $installedLauncherPath = [string]$installedBundle.LauncherPath
+        $deferredCleanup = [bool]$installedBundle.DeferredCleanup
     }
     finally {
         Remove-Item -LiteralPath $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    $installedBinaryPath = Join-Path $installDir $binaryName
     if ($resolvedChannel -eq "main") {
         if ($binaryVersion) {
-            Write-Host "Installed opensre main build ($binaryVersion) to $installedBinaryPath"
+            Write-Host "Installed opensre main build ($binaryVersion) to $installedLauncherPath"
         }
         else {
-            Write-Host "Installed opensre main build to $installedBinaryPath"
+            Write-Host "Installed opensre main build to $installedLauncherPath"
         }
     }
     else {
-        Write-Host "Installed opensre $version to $installedBinaryPath"
+        Write-Host "Installed opensre $version to $installedLauncherPath"
+    }
+
+    if ($deferredCleanup) {
+        Write-Host "Previous Windows files are pending safe cleanup; a later install can retry retained files."
     }
 
     if (-not (Test-OpenSreDirectoryOnPath -Directory $installDir)) {
@@ -1153,8 +2550,8 @@ function Install-OpenSre {
 
     Ensure-OpenSreGithubCli
 
-    $exe = $binaryName.TrimEnd(".exe")
-    $sep = "────────────────────────────────────────────"
+    $exe = "opensre"
+    $sep = "--------------------------------------------"
 
     Write-Host ""
     Write-Host $sep
@@ -1179,13 +2576,15 @@ function Install-OpenSre {
     Write-Host "     From a normal interactive terminal this starts the interactive shell; type a"
     Write-Host "     prompt or incident description to investigate."
     Write-Host ""
-    Write-Host "  3. Optional — one-shot RCA from a file:"
+    Write-Host "  3. Optional - one-shot RCA from a file:"
     Write-Host "     $exe investigate -i path/to/alert.json"
     Write-Host ""
     Write-Host "Docs: https://www.opensre.com/docs"
     Write-Host ""
 
-    Start-OpenSreOnboardingAfterInstall -BinaryPath $installedBinaryPath -DisplayName $exe
+    if (-not [bool]$installContext.IsUpdate -and -not $deferredCleanup) {
+        Start-OpenSreOnboardingAfterInstall -BinaryPath $installedBinaryPath -DisplayName $exe
+    }
 }
 
 if (-not $SkipMain) {

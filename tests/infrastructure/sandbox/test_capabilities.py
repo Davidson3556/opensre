@@ -95,6 +95,12 @@ def test_every_capability_is_reported() -> None:
 def test_warnings_name_only_the_unavailable_ones() -> None:
     # Arrange: one capability reported unavailable.
     results = probe_capabilities()
+    for capability, result in list(results.items()):
+        results[capability] = result.__class__(
+            capability=capability,
+            available=True,
+            detail="",
+        )
     results[Capability.NETWORK] = results[Capability.NETWORK].__class__(
         capability=Capability.NETWORK, available=False, detail="blocked by policy"
     )

@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
+import subprocess
+import sys
+import zipfile
 from pathlib import Path
+from typing import Any
 
+import pytest
 import yaml
 
 from infrastructure.deployment.packaging.release_manifest import (
@@ -16,6 +22,17 @@ from tools.registry_discovery import INTEGRATION_TOOL_PACKAGES
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RELEASE_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "release.yml"
 _SPEC_FILE = _REPO_ROOT / "opensre.spec"
+
+
+def _release_build_job() -> dict[str, Any]:
+    workflow = yaml.load(_RELEASE_WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
+    assert isinstance(workflow, dict)
+    return workflow["jobs"]["build-binaries"]
+
+
+def _release_build_step(name: str) -> dict[str, Any]:
+    steps = _release_build_job()["steps"]
+    return next(step for step in steps if step.get("name") == name)
 
 
 def test_hidden_imports_cover_runtime_discovered_tool_packages() -> None:
@@ -85,6 +102,98 @@ def test_release_build_uses_checked_in_spec() -> None:
     assert "OPENSRE_PYINSTALLER_MODE: ${{ matrix.pyinstaller_mode }}" in workflow
     assert "release_manifest.py" in spec
     assert "skill_data_entries(ROOT)" in spec
+
+
+def test_windows_release_build_is_strict_onedir() -> None:
+    build_job = _release_build_job()
+    windows = next(
+        entry
+        for entry in build_job["strategy"]["matrix"]["include"]
+        if entry["target"] == "windows-x64"
+    )
+
+    assert windows["runner"] == "windows-latest"
+    assert windows["binary_name"] == "opensre.exe"
+    assert windows["archive_ext"] == "zip"
+    assert windows["pyinstaller_mode"] == "onedir"
+
+    smoke = _release_build_step("Smoke test binary (Windows)")["run"]
+    assert r".\dist\opensre\${{ matrix.binary_name }}" in smoke
+    assert r".\dist\${{ matrix.binary_name }}" not in smoke
+    assert r'Test-Path -LiteralPath ".\dist\opensre\_internal" -PathType Container' in smoke
+    assert "$versionStatus = $LASTEXITCODE" in smoke
+    assert "$helpStatus = $LASTEXITCODE" in smoke
+    assert "$packageSmokeStatus = $LASTEXITCODE" in smoke
+
+
+def test_windows_release_archive_preserves_layout_and_asset_names() -> None:
+    package_step = _release_build_step("Package binary archive (Windows)")
+    package = package_step["run"]
+
+    assert package_step["id"] == "package_windows"
+    assert "\"opensre_$($env:TAG_NAME.TrimStart('v'))_${{ matrix.target }}\"" in package
+    assert '"opensre_main_${{ matrix.target }}"' in package
+    assert 'Compress-Archive -LiteralPath "dist\\opensre"' in package
+    assert 'Compress-Archive -Path "dist\\${{ matrix.binary_name }}"' not in package
+    assert 'Set-Content -Path "${assetBaseName}.zip.sha256"' in package
+    assert (
+        "Add-Content -LiteralPath $env:GITHUB_OUTPUT "
+        '-Value "asset_basename=$assetBaseName"' in package
+    )
+
+    upload = _release_build_step("Upload binary archive")["with"]["path"]
+    assert "opensre_*_${{ matrix.target }}.${{ matrix.archive_ext }}" in upload
+    assert "opensre_*_${{ matrix.target }}.${{ matrix.archive_ext }}.sha256" in upload
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Compress-Archive is Windows-only")
+def test_windows_compress_archive_keeps_the_complete_onedir_root(tmp_path: Path) -> None:
+    powershell = shutil.which("pwsh") or shutil.which("powershell")
+    assert powershell is not None
+    bundle = tmp_path / "dist" / "opensre"
+    internal = bundle / "_internal"
+    internal.mkdir(parents=True)
+    (bundle / "opensre.exe").write_bytes(b"MZ")
+    (internal / "payload.txt").write_text("required", encoding="utf-8")
+    archive = tmp_path / "opensre_main_windows-x64.zip"
+    bundle_literal = "'" + str(bundle).replace("'", "''") + "'"
+    archive_literal = "'" + str(archive).replace("'", "''") + "'"
+
+    completed = subprocess.run(
+        [
+            powershell,
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (f"Compress-Archive -LiteralPath {bundle_literal} -DestinationPath {archive_literal}"),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    with zipfile.ZipFile(archive) as packaged:
+        entries = {name.replace("\\", "/") for name in packaged.namelist()}
+    assert "opensre/opensre.exe" in entries
+    assert "opensre/_internal/payload.txt" in entries
+    assert all(name.startswith("opensre/") for name in entries)
+
+
+def test_windows_release_smokes_the_extracted_zip_outside_checkout() -> None:
+    smoke = _release_build_step("Smoke test packaged archive (Windows)")["run"]
+
+    assert "${{ steps.package_windows.outputs.asset_basename }}.zip" in smoke
+    assert "Expand-Archive -LiteralPath $archivePath -DestinationPath $smokeRoot" in smoke
+    assert 'Join-Path $smokeRoot "opensre\\${{ matrix.binary_name }}"' in smoke
+    assert 'Join-Path $smokeRoot "opensre\\_internal"' in smoke
+    assert "litellm\\model_prices_and_context_window_backup.json" in smoke
+    assert "Push-Location $smokeRoot" in smoke
+    assert "$versionStatus = $LASTEXITCODE" in smoke
+    assert "$helpStatus = $LASTEXITCODE" in smoke
+    assert "$packageSmokeStatus = $LASTEXITCODE" in smoke
 
 
 def test_release_workflow_does_not_run_on_pull_requests() -> None:

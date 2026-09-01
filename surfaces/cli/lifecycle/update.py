@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
+from config.constants.installer import (
+    OPENSRE_AUTO_LAUNCH_ENV,
+    OPENSRE_UPDATE_EXECUTABLE_ENV,
+    OPENSRE_UPDATE_PARENT_PID_ENV,
+)
 from config.version import get_opensre_version
 from infrastructure.process.release_version import (
     MAIN_BUILD_RELEASE_URL,
@@ -26,6 +32,14 @@ def _is_windows() -> bool:
 def _upgrade_via_install_script() -> int:
     """Download and run the official install script on the rolling main channel."""
     if _is_windows():
+        env = os.environ.copy()
+        env[OPENSRE_AUTO_LAUNCH_ENV] = "0"
+        if _is_binary_install():
+            env[OPENSRE_UPDATE_PARENT_PID_ENV] = str(os.getpid())
+            env[OPENSRE_UPDATE_EXECUTABLE_ENV] = sys.executable
+        else:
+            env.pop(OPENSRE_UPDATE_PARENT_PID_ENV, None)
+            env.pop(OPENSRE_UPDATE_EXECUTABLE_ENV, None)
         result = subprocess.run(
             [
                 "powershell",
@@ -38,6 +52,7 @@ def _upgrade_via_install_script() -> int:
                 ),
             ],
             check=False,
+            env=env,
         )
     else:
         result = subprocess.run(

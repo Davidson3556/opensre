@@ -238,6 +238,63 @@ def test_upgrade_via_install_script_uses_main_channel(monkeypatch: pytest.Monkey
     ]
 
 
+def test_windows_upgrade_passes_running_process_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_cmd: list[str] = []
+    captured_env: dict[str, str] = {}
+
+    def fake_run(cmd: list[str], *, check: bool = False, env: dict[str, str] | None = None) -> type:
+        captured_cmd.extend(cmd)
+        captured_env.update(env or {})
+        return type("Result", (), {"returncode": 0})
+
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.subprocess.run", fake_run)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.os.getpid", lambda: 5844)
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.update.sys.executable",
+        r"C:\Program Files\OpenSRE\.opensre-app\versions\build-1\opensre.exe",
+    )
+    monkeypatch.setenv("OPENSRE_TEST_PARENT_VALUE", "preserved")
+
+    rc = _upgrade_via_install_script()
+
+    assert rc == 0
+    assert captured_cmd[:3] == ["powershell", "-NoProfile", "-Command"]
+    assert "OPENSRE_INSTALL_CHANNEL='main'" in captured_cmd[3]
+    assert captured_env["OPENSRE_UPDATE_PARENT_PID"] == "5844"
+    assert captured_env["OPENSRE_UPDATE_EXECUTABLE"] == (
+        r"C:\Program Files\OpenSRE\.opensre-app\versions\build-1\opensre.exe"
+    )
+    assert captured_env["OPENSRE_AUTO_LAUNCH"] == "0"
+    assert captured_env["OPENSRE_TEST_PARENT_VALUE"] == "preserved"
+
+
+def test_windows_non_binary_upgrade_omits_binary_process_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_env: dict[str, str] = {}
+
+    def fake_run(cmd: list[str], *, check: bool = False, env: dict[str, str] | None = None) -> type:
+        captured_env.update(env or {})
+        return type("Result", (), {"returncode": 0})
+
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.subprocess.run", fake_run)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: False)
+    monkeypatch.setenv("OPENSRE_UPDATE_PARENT_PID", "stale-parent")
+    monkeypatch.setenv("OPENSRE_UPDATE_EXECUTABLE", r"C:\stale\opensre.exe")
+
+    rc = _upgrade_via_install_script()
+
+    assert rc == 0
+    assert captured_env["OPENSRE_AUTO_LAUNCH"] == "0"
+    assert "OPENSRE_UPDATE_PARENT_PID" not in captured_env
+    assert "OPENSRE_UPDATE_EXECUTABLE" not in captured_env
+
+
 def test_extract_main_build_version_from_release_body() -> None:
     body = "## Main build\n\n- Version: `0.1.2026.6.29+main.abc1234`\n- Commit: `abc1234`\n"
     assert extract_main_build_version(body) == "0.1.2026.6.29+main.abc1234"
