@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,7 @@ from infrastructure.deployment.packaging.release_manifest import (
     required_skill_files,
     runtime_hidden_imports,
 )
+from surfaces.cli.lifecycle.windows import CLEANUP_SCRIPT_PATH
 from tools.registry_discovery import INTEGRATION_TOOL_PACKAGES
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -240,3 +242,62 @@ def test_spec_bundles_infrastructure_via_the_filtered_helper() -> None:
 
     assert "infrastructure_data_entries(ROOT)" in spec
     assert '(str(ROOT / "infrastructure"), "infrastructure")' not in spec
+
+
+def test_windows_uninstall_worker_ships_in_wheels_and_the_frozen_bundle() -> None:
+    """The detached uninstall worker is a real resource, so packaging must carry it."""
+    assert CLEANUP_SCRIPT_PATH.is_file()
+    assert CLEANUP_SCRIPT_PATH.suffix == ".ps1"
+    assert CLEANUP_SCRIPT_PATH.is_relative_to(_REPO_ROOT / "surfaces" / "cli")
+
+    pyproject = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]
+    assert "*.ps1" in package_data["surfaces.cli.lifecycle.windows"]
+
+    # PyInstaller collects every non-Python file under surfaces.cli, which covers the
+    # worker without a dedicated spec entry.
+    assert 'collect_data_files("surfaces.cli")' in _SPEC_FILE.read_text(encoding="utf-8")
+
+
+def test_windows_uninstall_worker_is_not_embedded_in_python_source() -> None:
+    """Keeps the worker a single reviewable artifact instead of an inline heredoc."""
+    orchestrator = (_REPO_ROOT / "surfaces" / "cli" / "lifecycle" / "uninstall.py").read_text(
+        encoding="utf-8"
+    )
+    assert "param(" not in orchestrator
+    assert "$ErrorActionPreference" not in orchestrator
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32" or shutil.which("powershell") is None,
+    reason="Parsing the uninstall worker requires the Windows PowerShell parser.",
+)
+def test_windows_uninstall_worker_parses_as_powershell() -> None:
+    probe = (
+        "$tokens = $null; $errors = $null; "
+        "$null = [System.Management.Automation.Language.Parser]::ParseFile("
+        f"'{CLEANUP_SCRIPT_PATH}', [ref]$tokens, [ref]$errors); "
+        "if ($errors.Count -gt 0) { $errors | ForEach-Object { $_.ToString() }; exit 1 }; "
+        "Write-Output $tokens.Count"
+    )
+    completed = subprocess.run(
+        [
+            "powershell",
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            probe,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=60,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert int(completed.stdout.strip()) > 0

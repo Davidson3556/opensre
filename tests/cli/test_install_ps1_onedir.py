@@ -19,9 +19,9 @@ from typing import Any
 
 import pytest
 
-from surfaces.cli.lifecycle.uninstall import (
-    _schedule_windows_managed_cleanup,
-    _windows_processes_using_tree,
+from surfaces.cli.lifecycle.windows import (
+    schedule_windows_managed_cleanup,
+    windows_processes_using_tree,
 )
 
 INSTALL_PS1 = Path(__file__).parents[2] / "install.ps1"
@@ -1027,7 +1027,7 @@ def test_uninstall_preflight_detects_two_native_processes_in_managed_tree(
 
     try:
         _wait_until(lambda: first_process.poll() is None and second_process.poll() is None)
-        running, error = _windows_processes_using_tree(app_root, current_pid=os.getpid())
+        running, error = windows_processes_using_tree(app_root, current_pid=os.getpid())
 
         assert error is None
         assert {pid for pid, _path_value in running} >= {
@@ -1067,11 +1067,10 @@ def test_managed_uninstall_worker_retains_complete_tree_used_by_second_process(
     other = subprocess.Popen([str(executable), "hold", "30000"])
 
     try:
-        ok, error = _schedule_windows_managed_cleanup(
+        ok, error = schedule_windows_managed_cleanup(
             executable=executable,
             app_root=app_root,
             launcher=launcher,
-            legacy_executable=None,
             parent_pid=caller.pid,
         )
         assert ok is True
@@ -1095,11 +1094,10 @@ def test_managed_uninstall_worker_retains_complete_tree_used_by_second_process(
         other.wait(timeout=10)
         holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
         try:
-            ok, error = _schedule_windows_managed_cleanup(
+            ok, error = schedule_windows_managed_cleanup(
                 executable=executable,
                 app_root=app_root,
                 launcher=launcher,
-                legacy_executable=None,
                 parent_pid=holder.pid,
             )
             assert ok is True
@@ -1592,11 +1590,10 @@ Write-Output ({_ps_literal(_RESULT_PREFIX)} + ($result | ConvertTo-Json -Compres
     installer: subprocess.Popen[str] | None = None
 
     try:
-        ok, err = _schedule_windows_managed_cleanup(
+        ok, err = schedule_windows_managed_cleanup(
             executable=old_executable,
             app_root=app_root,
             launcher=launcher,
-            legacy_executable=None,
             parent_pid=holder.pid,
         )
         assert ok is True

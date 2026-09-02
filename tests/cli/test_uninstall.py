@@ -14,14 +14,13 @@ import pytest
 from click.testing import CliRunner
 
 from surfaces.cli.app import cli
-from surfaces.cli.lifecycle.uninstall import (
-    _WINDOWS_CLEANUP_SCRIPT,
-    _remove_path,
-    _schedule_windows_cleanup,
-    _schedule_windows_managed_cleanup,
-    _windows_binary_install_paths,
-    _windows_processes_using_tree,
-    run_uninstall,
+from surfaces.cli.lifecycle.uninstall import _remove_path, run_uninstall
+from surfaces.cli.lifecycle.windows import (
+    read_cleanup_script,
+    schedule_windows_cleanup,
+    schedule_windows_managed_cleanup,
+    windows_binary_install_paths,
+    windows_processes_using_tree,
 )
 
 _FAILED_PROCESS_ENUMERATOR = r"""
@@ -323,7 +322,7 @@ def test_windows_install_paths_find_only_owned_layout_files(tmp_path: Path) -> N
     unrelated = install_dir / "keep-me.txt"
     unrelated.write_text("keep", encoding="utf-8")
 
-    paths = _windows_binary_install_paths(executable)
+    paths = windows_binary_install_paths(executable)
 
     assert paths == [launcher, app_root, install_lock]
     assert legacy_executable not in paths
@@ -345,7 +344,7 @@ def test_windows_install_paths_preserve_unowned_launcher(tmp_path: Path) -> None
     launcher = install_dir / "opensre.cmd"
     launcher.write_text("@echo off\r\necho user-owned\r\n", encoding="utf-8")
 
-    paths = _windows_binary_install_paths(executable)
+    paths = windows_binary_install_paths(executable)
 
     assert paths == [app_root]
     assert launcher not in paths
@@ -382,10 +381,10 @@ def test_windows_uninstall_refuses_malformed_managed_layout_before_deleting_data
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_cleanup", _unexpected_schedule
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_cleanup", _unexpected_schedule
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -426,10 +425,10 @@ def test_windows_uninstall_refuses_unmanaged_onedir_before_deleting_data(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_cleanup", _unexpected_schedule
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_cleanup", _unexpected_schedule
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -466,7 +465,7 @@ def test_windows_uninstall_refuses_malformed_managed_executable_path(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_cleanup", _unexpected_schedule
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_cleanup", _unexpected_schedule
     )
 
     rc = run_uninstall(yes=True)
@@ -519,7 +518,7 @@ def test_windows_uninstall_refuses_malformed_current_pointer_before_deleting_dat
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -568,10 +567,10 @@ def test_windows_uninstall_refuses_stale_managed_version_before_deleting_data(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_cleanup", _unexpected_schedule
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_cleanup", _unexpected_schedule
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -627,10 +626,10 @@ def test_windows_uninstall_refuses_second_process_before_deleting_data(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.os.getpid", lambda: 5844)
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._windows_processes_using_tree", _running_processes
+        "surfaces.cli.lifecycle.uninstall.windows_processes_using_tree", _running_processes
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -663,9 +662,9 @@ def test_windows_process_scan_reports_incomplete_enumeration(
         )
         return real_run(injected_args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.subprocess.run", _run)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.processes.subprocess.run", _run)
 
-    running, error = _windows_processes_using_tree(tmp_path, current_pid=os.getpid())
+    running, error = windows_processes_using_tree(tmp_path, current_pid=os.getpid())
 
     assert running == []
     assert error == "could not verify every running OpenSRE process path"
@@ -700,11 +699,11 @@ def test_windows_uninstall_refuses_incomplete_process_scan_before_deleting_data(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._windows_processes_using_tree",
+        "surfaces.cli.lifecycle.uninstall.windows_processes_using_tree",
         lambda _root, **_kwargs: ([], "could not verify every running OpenSRE process path"),
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -768,10 +767,10 @@ def test_windows_uninstall_rechecks_processes_after_confirmation(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.os.getpid", lambda: 5844)
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._windows_processes_using_tree", _running_processes
+        "surfaces.cli.lifecycle.uninstall.windows_processes_using_tree", _running_processes
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         _unexpected_schedule,
     )
 
@@ -825,11 +824,11 @@ def test_run_uninstall_windows_layout_schedules_owned_paths_after_exit(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.os.getpid", lambda: 731)
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._windows_processes_using_tree",
+        "surfaces.cli.lifecycle.uninstall.windows_processes_using_tree",
         lambda _root, **_kwargs: ([], None),
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup", _schedule
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup", _schedule
     )
 
     rc = run_uninstall(yes=True)
@@ -840,7 +839,6 @@ def test_run_uninstall_windows_layout_schedules_owned_paths_after_exit(
             "executable": executable,
             "app_root": app_root,
             "launcher": launcher,
-            "legacy_executable": None,
             "parent_pid": 731,
             "data_paths": [data_dir],
         }
@@ -880,11 +878,11 @@ def test_windows_cleanup_launch_failure_preserves_data_and_installation(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._windows_processes_using_tree",
+        "surfaces.cli.lifecycle.uninstall.windows_processes_using_tree",
         lambda _root, **_kwargs: ([], None),
     )
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._schedule_windows_managed_cleanup",
+        "surfaces.cli.lifecycle.uninstall.schedule_windows_managed_cleanup",
         lambda **_kwargs: (False, "forced launch failure"),
     )
 
@@ -934,7 +932,7 @@ def test_run_uninstall_windows_legacy_binary_defers_exact_executable(
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.sys.executable", str(executable))
     monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.os.getpid", lambda: 812)
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall._schedule_windows_cleanup", _schedule)
+    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.schedule_windows_cleanup", _schedule)
 
     rc = run_uninstall(yes=True)
 
@@ -967,12 +965,12 @@ def test_schedule_windows_cleanup_uses_hidden_background_powershell(
         return object()
 
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._windows_powershell_executable",
+        "surfaces.cli.lifecycle.windows.powershell.windows_powershell_executable",
         lambda: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
     )
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.subprocess.Popen", _popen)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.subprocess.Popen", _popen)
 
-    ok, err = _schedule_windows_cleanup([target], parent_pid=934)
+    ok, err = schedule_windows_cleanup([target], parent_pid=934)
 
     assert ok is True
     assert err is None
@@ -1024,7 +1022,7 @@ def test_schedule_windows_cleanup_removes_path_after_parent_exit(tmp_path: Path)
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
 
     try:
-        ok, err = _schedule_windows_cleanup([target], parent_pid=holder.pid)
+        ok, err = schedule_windows_cleanup([target], parent_pid=holder.pid)
         assert ok is True
         assert err is None
         assert target.exists()
@@ -1073,11 +1071,10 @@ def test_managed_uninstall_removes_long_quarantine_tree(tmp_path: Path) -> None:
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
 
     try:
-        ok, err = _schedule_windows_managed_cleanup(
+        ok, err = schedule_windows_managed_cleanup(
             executable=executable,
             app_root=app_root,
             launcher=launcher,
-            legacy_executable=None,
             parent_pid=holder.pid,
             data_paths=[data_dir],
         )
@@ -1156,15 +1153,14 @@ def test_managed_uninstall_worker_preserves_data_for_residual_entrypoint(
         created_cleanup_scripts.append(Path(name))
         return descriptor, name
 
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.tempfile.mkstemp", _mkstemp)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
 
     try:
-        ok, error = _schedule_windows_managed_cleanup(
+        ok, error = schedule_windows_managed_cleanup(
             executable=executable,
             app_root=app_root,
             launcher=launcher_to_remove,
-            legacy_executable=None,
             parent_pid=holder.pid,
             data_paths=[data_dir],
         )
@@ -1222,11 +1218,10 @@ def test_managed_uninstall_worker_preserves_a_reinstalled_bundle(tmp_path: Path)
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
 
     try:
-        ok, err = _schedule_windows_managed_cleanup(
+        ok, err = schedule_windows_managed_cleanup(
             executable=executable,
             app_root=app_root,
             launcher=launcher,
-            legacy_executable=None,
             parent_pid=holder.pid,
             data_paths=[data_dir],
         )
@@ -1278,11 +1273,11 @@ def test_legacy_uninstall_worker_preserves_data_when_onedir_install_wins_race(
         created_cleanup_scripts.append(Path(name))
         return descriptor, name
 
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.tempfile.mkstemp", _mkstemp)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
     holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
 
     try:
-        ok, error = _schedule_windows_cleanup(
+        ok, error = schedule_windows_cleanup(
             [executable],
             parent_pid=holder.pid,
             data_paths=[data_dir],
@@ -1348,9 +1343,9 @@ def test_managed_uninstall_holds_install_lock_through_data_decision(
     ready = tmp_path / "data-decision-ready"
     release = tmp_path / "data-decision-release"
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._WINDOWS_CLEANUP_SCRIPT",
-        _inject_data_decision_barrier(
-            _WINDOWS_CLEANUP_SCRIPT,
+        "surfaces.cli.lifecycle.windows.cleanup.read_cleanup_script",
+        lambda: _inject_data_decision_barrier(
+            read_cleanup_script(),
             ready=ready,
             release=release,
         ),
@@ -1363,13 +1358,12 @@ def test_managed_uninstall_holds_install_lock_through_data_decision(
         created_cleanup_scripts.append(Path(name))
         return descriptor, name
 
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.tempfile.mkstemp", _mkstemp)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
 
-    ok, error = _schedule_windows_managed_cleanup(
+    ok, error = schedule_windows_managed_cleanup(
         executable=executable,
         app_root=app_root,
         launcher=launcher,
-        legacy_executable=None,
         parent_pid=2_147_483_647,
         data_paths=[data_dir],
     )
@@ -1434,9 +1428,9 @@ def test_managed_uninstall_worker_retains_tree_when_process_scan_fails(
     }
 
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._WINDOWS_CLEANUP_SCRIPT",
-        _inject_failed_process_enumerator(
-            _WINDOWS_CLEANUP_SCRIPT,
+        "surfaces.cli.lifecycle.windows.cleanup.read_cleanup_script",
+        lambda: _inject_failed_process_enumerator(
+            read_cleanup_script(),
             preference="'Stop'",
         ),
     )
@@ -1448,13 +1442,12 @@ def test_managed_uninstall_worker_retains_tree_when_process_scan_fails(
         created_cleanup_scripts.append(Path(name))
         return descriptor, name
 
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.tempfile.mkstemp", _mkstemp)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
 
-    ok, error = _schedule_windows_managed_cleanup(
+    ok, error = schedule_windows_managed_cleanup(
         executable=executable,
         app_root=app_root,
         launcher=launcher,
-        legacy_executable=None,
         parent_pid=0,
         data_paths=[data_dir],
     )
@@ -1507,8 +1500,8 @@ def test_managed_uninstall_worker_failure_preserves_data_and_unrelated_files(
     data_file.write_text("keep", encoding="utf-8")
 
     monkeypatch.setattr(
-        "surfaces.cli.lifecycle.uninstall._WINDOWS_CLEANUP_SCRIPT",
-        _inject_failed_retired_target_removal(_WINDOWS_CLEANUP_SCRIPT),
+        "surfaces.cli.lifecycle.windows.cleanup.read_cleanup_script",
+        lambda: _inject_failed_retired_target_removal(read_cleanup_script()),
     )
     created_cleanup_scripts: list[Path] = []
     real_mkstemp = tempfile.mkstemp
@@ -1518,13 +1511,12 @@ def test_managed_uninstall_worker_failure_preserves_data_and_unrelated_files(
         created_cleanup_scripts.append(Path(name))
         return descriptor, name
 
-    monkeypatch.setattr("surfaces.cli.lifecycle.uninstall.tempfile.mkstemp", _mkstemp)
+    monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
 
-    ok, error = _schedule_windows_managed_cleanup(
+    ok, error = schedule_windows_managed_cleanup(
         executable=executable,
         app_root=app_root,
         launcher=launcher,
-        legacy_executable=None,
         parent_pid=2_147_483_647,
         data_paths=[data_dir],
     )
