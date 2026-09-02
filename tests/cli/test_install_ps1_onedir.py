@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from config.constants.installer import POWERSHELL_MODULE_PATH_ENV
 from surfaces.cli.lifecycle.windows import (
     schedule_windows_managed_cleanup,
     windows_processes_using_tree,
@@ -85,7 +86,10 @@ def _powershell_env() -> dict[str, str]:
     # fail on Get-FileHash and Expand-Archive. Pin the interpreter's own locations.
     system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
     program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
-    env["PSModulePath"] = os.pathsep.join(
+    for name in tuple(env):
+        if name.casefold() == POWERSHELL_MODULE_PATH_ENV.casefold():
+            del env[name]
+    env[POWERSHELL_MODULE_PATH_ENV] = os.pathsep.join(
         [
             str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "Modules"),
             str(Path(program_files) / "WindowsPowerShell" / "Modules"),
@@ -269,6 +273,11 @@ $payload = [ordered]@{{
     AppRoot = [string]$result.AppRoot
     LayoutRoot = if ($result.PSObject.Properties['LayoutRoot']) {{
         [string]$result.LayoutRoot
+    }} else {{
+        ''
+    }}
+    CleanupPath = if ($result.PSObject.Properties['CleanupPath']) {{
+        [string]$result.CleanupPath
     }} else {{
         ''
     }}
@@ -942,8 +951,9 @@ def test_update_retains_complete_old_bundle_used_by_second_process(tmp_path: Pat
         )
         assert second is not None
         short_process.wait(timeout=10)
-        layout_root = install_dir / ".opensre-app"
-        _wait_until(lambda: not list(layout_root.glob("cleanup-*.ps1")))
+        cleanup_path = _path(second, "CleanupPath")
+        assert cleanup_path.is_file()
+        _wait_until(lambda: not cleanup_path.exists())
 
         assert long_process.poll() is None
         assert old_root.is_dir()
@@ -1019,9 +1029,9 @@ def test_update_cleanup_worker_retains_old_tree_when_process_scan_fails(
     )
     assert second is not None
     layout_root = install_dir / ".opensre-app"
-    cleanup_paths = list(layout_root.glob("cleanup-*.ps1"))
-    assert len(cleanup_paths) == 1
-    _wait_until(lambda: not cleanup_paths[0].exists(), timeout=15)
+    cleanup_path = _path(second, "CleanupPath")
+    assert cleanup_path.is_file()
+    _wait_until(lambda: not cleanup_path.exists(), timeout=15)
 
     assert (layout_root / "current.txt").read_text(encoding="utf-8").strip() == ("scan-failure-new")
     assert old_root.is_dir()
@@ -1499,11 +1509,12 @@ def test_deferred_cleanup_never_deletes_a_newer_active_bundle(tmp_path: Path) ->
 
 def test_deferred_upgrade_removes_long_old_version_tree(tmp_path: Path) -> None:
     short_install_dir = tmp_path / "i"
+    old_install_id = "long-old-" + ("o" * 32)
     first_binary = _make_onedir_bundle(tmp_path / "long cleanup first")
     _, first = _install_bundle(
         binary_path=first_binary,
         install_dir=short_install_dir,
-        install_id="long-old",
+        install_id=old_install_id,
         cwd=tmp_path,
     )
     assert first is not None
@@ -1515,9 +1526,17 @@ def test_deferred_upgrade_removes_long_old_version_tree(tmp_path: Path) -> None:
     relative_payload = (payload_dir / "payload.txt").relative_to(short_install_dir)
     (payload_dir / "payload.txt").write_text("old", encoding="utf-8")
 
-    install_dir = tmp_path / ("upgrade path with spaces-" + ("x" * 50))
+    install_name_prefix = "upgrade path with spaces-"
+    unpadded_layout_root = tmp_path / install_name_prefix / ".opensre-app"
+    padding_length = 220 - len(str(unpadded_layout_root))
+    assert padding_length > 0
+    install_dir = tmp_path / (install_name_prefix + ("x" * padding_length))
     short_install_dir.rename(install_dir)
-    old_root = install_dir / ".opensre-app" / "versions" / "long-old"
+    old_root = install_dir / ".opensre-app" / "versions" / old_install_id
+    layout_root = install_dir / ".opensre-app"
+    assert len(str(layout_root / "stage-long-new")) < 248
+    assert len(str(layout_root / ("current-" + ("f" * 32) + ".tmp"))) > 260
+    assert len(str(old_root / "opensre.exe")) >= 260
     assert len(str(install_dir / relative_payload)) > 260
     unrelated = install_dir / "unrelated.txt"
     unrelated.write_text("keep", encoding="utf-8")
@@ -1534,6 +1553,8 @@ def test_deferred_upgrade_removes_long_old_version_tree(tmp_path: Path) -> None:
         )
         assert second is not None
         assert second["DeferredCleanup"] is True
+        cleanup_path = _path(second, "CleanupPath")
+        assert os.path.normcase(str(cleanup_path.parent)) == os.path.normcase(tempfile.gettempdir())
         new_root = _path(second, "AppRoot")
 
         holder.wait(timeout=15)

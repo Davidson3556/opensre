@@ -1406,12 +1406,14 @@ function Get-OpenSreCurrentInstallId {
         [string]$LayoutRoot
     )
 
-    $pointerPath = Join-Path $LayoutRoot $script:OpenSreCurrentPointerName
-    if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) {
+    $pointerPath = ConvertTo-OpenSreExtendedPath -Path (
+        Join-Path $LayoutRoot $script:OpenSreCurrentPointerName
+    )
+    if (-not [System.IO.File]::Exists($pointerPath)) {
         return ""
     }
 
-    return ([string](Get-Content -LiteralPath $pointerPath -Raw)).Trim()
+    return ([System.IO.File]::ReadAllText($pointerPath)).Trim()
 }
 
 function Set-OpenSreCurrentInstallId {
@@ -1423,9 +1425,15 @@ function Set-OpenSreCurrentInstallId {
         [string]$InstallId
     )
 
-    $pointerPath = Join-Path $LayoutRoot $script:OpenSreCurrentPointerName
-    $pointerTempPath = Join-Path $LayoutRoot ("current-$([System.Guid]::NewGuid().ToString('N')).tmp")
-    $pointerBackupPath = Join-Path $LayoutRoot ("current-$([System.Guid]::NewGuid().ToString('N')).bak")
+    $pointerPath = ConvertTo-OpenSreExtendedPath -Path (
+        Join-Path $LayoutRoot $script:OpenSreCurrentPointerName
+    )
+    $pointerTempPath = ConvertTo-OpenSreExtendedPath -Path (
+        Join-Path $LayoutRoot ("current-$([System.Guid]::NewGuid().ToString('N')).tmp")
+    )
+    $pointerBackupPath = ConvertTo-OpenSreExtendedPath -Path (
+        Join-Path $LayoutRoot ("current-$([System.Guid]::NewGuid().ToString('N')).bak")
+    )
 
     try {
         [System.IO.File]::WriteAllText(
@@ -1434,17 +1442,28 @@ function Set-OpenSreCurrentInstallId {
             (New-Object System.Text.UTF8Encoding($false))
         )
 
-        if (Test-Path -LiteralPath $pointerPath -PathType Leaf) {
+        if ([System.IO.File]::Exists($pointerPath)) {
             [System.IO.File]::Replace($pointerTempPath, $pointerPath, $pointerBackupPath, $true)
-            Remove-Item -LiteralPath $pointerBackupPath -Force -ErrorAction SilentlyContinue
+            try {
+                [System.IO.File]::Delete($pointerBackupPath)
+            }
+            catch {
+                # A later pointer update may reuse neither random artifact name.
+            }
         }
         else {
             [System.IO.File]::Move($pointerTempPath, $pointerPath)
         }
     }
     finally {
-        Remove-Item -LiteralPath $pointerTempPath -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath $pointerBackupPath -Force -ErrorAction SilentlyContinue
+        foreach ($artifactPath in @($pointerTempPath, $pointerBackupPath)) {
+            try {
+                [System.IO.File]::Delete($artifactPath)
+            }
+            catch {
+                # Activation or rollback must not be masked by artifact cleanup.
+            }
+        }
     }
 }
 
@@ -1667,14 +1686,17 @@ function Start-OpenSreDeferredCleanup {
         return
     }
 
-    $cleanupPath = Join-Path $LayoutRoot ("cleanup-$([System.Guid]::NewGuid().ToString('N')).ps1")
+    $cleanupPath = Join-Path (
+        [System.IO.Path]::GetTempPath()
+    ) ("opensre-install-cleanup-$([System.Guid]::NewGuid().ToString('N')).ps1")
     $targetJson = ConvertTo-Json -InputObject @($TargetPaths) -Compress
     $targetPayload = [System.Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($targetJson))
     $cleanupScript = @'
 param(
     [int]$ParentProcessId,
     [string]$TargetPayload,
-    [string]$CleanupPath
+    [string]$CleanupPath,
+    [string]$LayoutRoot
 )
 
 $ErrorActionPreference = "SilentlyContinue"
@@ -1683,8 +1705,7 @@ $targetsJson = [System.Text.Encoding]::UTF8.GetString(
 )
 $parsedTargets = ConvertFrom-Json -InputObject $targetsJson
 $targets = @($parsedTargets)
-$layoutRoot = Split-Path -Parent $CleanupPath
-$installDir = Split-Path -Parent $layoutRoot
+$installDir = Split-Path -Parent $LayoutRoot
 $installLockPath = Join-Path $installDir '.opensre-app.install.lock'
 
 function ConvertTo-OpenSreExtendedPath {
@@ -1734,6 +1755,23 @@ function Remove-OpenSreCleanupTarget {
         if ([System.IO.File]::Exists($extendedPath)) {
             [System.IO.File]::Delete($extendedPath)
         }
+    }
+}
+
+function Move-OpenSreCleanupTarget {
+    param(
+        [string]$Path,
+        [string]$Destination,
+        [switch]$TreatAsDirectory
+    )
+
+    $sourcePath = ConvertTo-OpenSreExtendedPath -Path $Path
+    $destinationPath = ConvertTo-OpenSreExtendedPath -Path $Destination
+    if ($TreatAsDirectory) {
+        [System.IO.Directory]::Move($sourcePath, $destinationPath)
+    }
+    else {
+        [System.IO.File]::Move($sourcePath, $destinationPath)
     }
 }
 
@@ -1819,11 +1857,13 @@ function Test-OpenSreCurrentVersionTarget {
         if (-not $targetParent.Equals($versionsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
             return $false
         }
-        $pointerPath = Join-Path $layoutRoot 'current.txt'
-        if (-not (Test-Path -LiteralPath $pointerPath -PathType Leaf)) {
+        $pointerPath = ConvertTo-OpenSreExtendedPath -Path (
+            Join-Path $LayoutRoot 'current.txt'
+        )
+        if (-not [System.IO.File]::Exists($pointerPath)) {
             return $true
         }
-        $currentInstallId = ([string](Get-Content -LiteralPath $pointerPath -Raw)).Trim()
+        $currentInstallId = ([System.IO.File]::ReadAllText($pointerPath)).Trim()
         if (-not $currentInstallId) {
             return $true
         }
@@ -1861,9 +1901,10 @@ function Move-OpenSreTargetToRetirement {
         else {
             $Path
         }
-        if ([System.IO.File]::Exists((ConvertTo-OpenSreExtendedPath -Path $guardPath))) {
+        $extendedGuardPath = ConvertTo-OpenSreExtendedPath -Path $guardPath
+        if ([System.IO.File]::Exists($extendedGuardPath)) {
             $guard = [System.IO.File]::Open(
-                $guardPath,
+                $extendedGuardPath,
                 [System.IO.FileMode]::Open,
                 [System.IO.FileAccess]::Read,
                 [System.IO.FileShare]::Delete
@@ -1877,13 +1918,24 @@ function Move-OpenSreTargetToRetirement {
             $guard = $null
         }
 
-        $retiredPath = Join-Path $layoutRoot (
+        $retiredPath = Join-Path $LayoutRoot (
             "retired-$([System.Guid]::NewGuid().ToString('N'))"
         )
-        Move-Item -LiteralPath $Path -Destination $retiredPath -ErrorAction Stop
+        Move-OpenSreCleanupTarget `
+            -Path $Path `
+            -Destination $retiredPath `
+            -TreatAsDirectory:$targetWasDirectory
         if ((Test-OpenSreTargetInUse -Path $Path -TreatAsDirectory:$targetWasDirectory) -or
             (Test-OpenSreTargetInUse -Path $retiredPath -TreatAsDirectory:$targetWasDirectory)) {
-            Move-Item -LiteralPath $retiredPath -Destination $Path -ErrorAction SilentlyContinue
+            try {
+                Move-OpenSreCleanupTarget `
+                    -Path $retiredPath `
+                    -Destination $Path `
+                    -TreatAsDirectory:$targetWasDirectory
+            }
+            catch {
+                # Leaving the complete tree retired is safer than partial deletion.
+            }
             return ''
         }
         return $retiredPath
@@ -1972,10 +2024,11 @@ do {
     Start-Sleep -Milliseconds 500
 } while ([System.DateTime]::UtcNow -lt $cleanupDeadline)
 
-Remove-Item -LiteralPath $CleanupPath -Force -ErrorAction SilentlyContinue
+[System.IO.File]::Delete((ConvertTo-OpenSreExtendedPath -Path $CleanupPath))
 '@
+    $extendedCleanupPath = ConvertTo-OpenSreExtendedPath -Path $cleanupPath
     [System.IO.File]::WriteAllText(
-        $cleanupPath,
+        $extendedCleanupPath,
         $cleanupScript,
         (New-Object System.Text.UTF8Encoding($false))
     )
@@ -1999,12 +2052,20 @@ Remove-Item -LiteralPath $CleanupPath -Force -ErrorAction SilentlyContinue
             "-TargetPayload",
             $targetPayload,
             "-CleanupPath",
-            ('"{0}"' -f $cleanupPath)
+            ('"{0}"' -f $cleanupPath),
+            "-LayoutRoot",
+            ('"{0}"' -f $LayoutRoot)
         )
         Start-Process -FilePath $powershellPath -ArgumentList $arguments -WindowStyle Hidden | Out-Null
+        return $cleanupPath
     }
     catch {
-        Remove-Item -LiteralPath $cleanupPath -Force -ErrorAction SilentlyContinue
+        try {
+            [System.IO.File]::Delete((ConvertTo-OpenSreExtendedPath -Path $cleanupPath))
+        }
+        catch {
+            # Preserve the cleanup-launch failure that the caller needs to report.
+        }
         throw
     }
 }
@@ -2047,6 +2108,7 @@ function Install-OpenSreVerifiedBundle {
     $legacyBinaryPath = Join-Path $InstallDir "opensre.exe"
     $retiredLegacyPath = ""
     $cleanupTargets = @()
+    $cleanupWorkerPath = ""
     $cleanupEnumerationFailed = $false
     $stagedVersionInfo = $null
     $installedBinaryPath = ""
@@ -2252,10 +2314,12 @@ function Install-OpenSreVerifiedBundle {
     $deferredCleanup = $cleanupEnumerationFailed -or $cleanupTargets.Count -gt 0
     if ($cleanupTargets.Count -gt 0) {
         try {
-            Start-OpenSreDeferredCleanup `
-                -LayoutRoot $layoutRoot `
-                -TargetPaths $cleanupTargets `
-                -ParentProcessId $ParentProcessId
+            $cleanupWorkerPath = [string](
+                Start-OpenSreDeferredCleanup `
+                    -LayoutRoot $layoutRoot `
+                    -TargetPaths $cleanupTargets `
+                    -ParentProcessId $ParentProcessId
+            )
         }
         catch {
             Write-Warning "OpenSRE was activated, but previous Windows files were retained for a later safe cleanup."
@@ -2269,6 +2333,7 @@ function Install-OpenSreVerifiedBundle {
         LayoutRoot = $layoutRoot
         VersionText = [string]$stagedVersionInfo.Text
         Version = [string]$stagedVersionInfo.Version
+        CleanupPath = $cleanupWorkerPath
         DeferredCleanup = $deferredCleanup
     }
 }
