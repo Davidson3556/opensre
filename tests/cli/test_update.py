@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
+import surfaces.cli.lifecycle.windows.powershell as windows_powershell
 from config.constants.installer import (
+    OPENSRE_INSTALL_CHANNEL_ENV,
+    OPENSRE_INSTALL_DIR_ENV,
     OPENSRE_UPDATE_EXECUTABLE_ENV,
     OPENSRE_UPDATE_PARENT_PID_ENV,
+    OPENSRE_VERSION_ENV,
+    POWERSHELL_MODULE_PATH_ENV,
 )
 from infrastructure.process.release_version import (
     development_install_doctor_version_detail,
@@ -14,6 +24,10 @@ from infrastructure.process.release_version import (
     is_update_available,
 )
 from surfaces.cli.lifecycle.update import _upgrade_via_install_script, run_update
+from surfaces.cli.lifecycle.windows.layout import (
+    MalformedWindowsInstallError,
+    WindowsBinaryInstall,
+)
 
 
 def test_already_up_to_date(
@@ -247,6 +261,7 @@ def test_windows_upgrade_passes_running_process_context(
 ) -> None:
     captured_cmd: list[str] = []
     captured_env: dict[str, str] = {}
+    powershell = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
 
     def fake_run(cmd: list[str], *, check: bool = False, env: dict[str, str] | None = None) -> type:
         captured_cmd.extend(cmd)
@@ -256,6 +271,10 @@ def test_windows_upgrade_passes_running_process_context(
     monkeypatch.setattr("surfaces.cli.lifecycle.update.subprocess.run", fake_run)
     monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
     monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: True)
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.powershell.windows_powershell_executable",
+        lambda: powershell,
+    )
     monkeypatch.setattr("surfaces.cli.lifecycle.update.os.getpid", lambda: 5844)
     monkeypatch.setattr(
         "surfaces.cli.lifecycle.update.sys.executable",
@@ -266,7 +285,7 @@ def test_windows_upgrade_passes_running_process_context(
     rc = _upgrade_via_install_script()
 
     assert rc == 0
-    assert captured_cmd[:3] == ["powershell", "-NoProfile", "-Command"]
+    assert captured_cmd[:3] == [powershell, "-NoProfile", "-Command"]
     assert "OPENSRE_INSTALL_CHANNEL='main'" in captured_cmd[3]
     assert captured_env["OPENSRE_UPDATE_PARENT_PID"] == "5844"
     assert captured_env["OPENSRE_UPDATE_EXECUTABLE"] == (
@@ -274,6 +293,73 @@ def test_windows_upgrade_passes_running_process_context(
     )
     assert captured_env["OPENSRE_AUTO_LAUNCH"] == "0"
     assert captured_env["OPENSRE_TEST_PARENT_VALUE"] == "preserved"
+
+
+def test_windows_upgrade_drops_inherited_powershell_module_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_cmd: list[str] = []
+    captured_env: dict[str, str] = {}
+
+    def fake_run(cmd: list[str], *, check: bool = False, env: dict[str, str] | None = None) -> type:
+        captured_cmd.extend(cmd)
+        captured_env.update(env or {})
+        return type("Result", (), {"returncode": 0})
+
+    powershell = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.subprocess.run", fake_run)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: False)
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.powershell.windows_powershell_executable",
+        lambda: powershell,
+    )
+    monkeypatch.setenv(POWERSHELL_MODULE_PATH_ENV.upper(), r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("OPENSRE_TEST_PARENT_VALUE", "preserved")
+
+    rc = _upgrade_via_install_script()
+
+    assert rc == 0
+    assert captured_cmd[0] == powershell
+    assert not any(
+        name.casefold() == POWERSHELL_MODULE_PATH_ENV.casefold() for name in captured_env
+    )
+    assert os.environ[POWERSHELL_MODULE_PATH_ENV.upper()] == (
+        r"C:\Program Files\PowerShell\7\Modules"
+    )
+    assert captured_env["OPENSRE_TEST_PARENT_VALUE"] == "preserved"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell regression")
+def test_windows_powershell_environment_resolves_installer_cmdlets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(POWERSHELL_MODULE_PATH_ENV, r"C:\Program Files\PowerShell\7\Modules")
+
+    completed = subprocess.run(
+        [
+            windows_powershell.windows_powershell_executable(),
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            (
+                "Write-Output $env:PSModulePath; "
+                "Get-Command Get-FileHash,Expand-Archive | Select-Object -ExpandProperty Name"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        env=windows_powershell.windows_powershell_environment(),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert r"WindowsPowerShell\v1.0\Modules" in completed.stdout
+    assert {"Get-FileHash", "Expand-Archive"}.issubset(set(completed.stdout.splitlines()))
 
 
 def test_windows_non_binary_upgrade_omits_binary_process_context(
@@ -395,25 +481,93 @@ def test_development_install_doctor_detail_editable_and_uv_run(
     )
 
 
-def test_windows_retry_hint_is_a_command_a_user_can_actually_run(
+def test_windows_retry_hint_omits_unreproducible_process_handoff(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The manual retry hint must be the plain interactive installer invocation.
-
-    A user cannot reproduce the update handoff (`OPENSRE_UPDATE_EXECUTABLE` plus the
-    parent PID), so the hint must not depend on it. install.ps1 covers that case with
-    an interactive confirmation instead.
-    """
+    """The manual retry must not expose process-identity values a user cannot reproduce."""
     monkeypatch.setattr("surfaces.cli.lifecycle.update.get_opensre_version", lambda: "1.0.0")
     monkeypatch.setattr("surfaces.cli.lifecycle.update.fetch_latest_version", lambda: "1.2.3")
     monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: False)
     monkeypatch.setattr("surfaces.cli.lifecycle.update._upgrade_via_install_script", lambda: 1)
 
     rc = run_update(yes=True)
 
     assert rc == 1
     err = capsys.readouterr().err
-    assert "$env:OPENSRE_INSTALL_CHANNEL='main'; irm https://install.opensre.com | iex" in err
+    assert "open a new Windows PowerShell window and run" in err
+    assert f'$env:{POWERSHELL_MODULE_PATH_ENV}="$PSHOME\\Modules"' in err
+    assert f"$env:{OPENSRE_INSTALL_CHANNEL_ENV}='main'" in err
+    assert f"Remove-Item Env:{OPENSRE_VERSION_ENV} -ErrorAction SilentlyContinue" in err
+    assert "irm https://install.opensre.com | iex" in err
     assert OPENSRE_UPDATE_EXECUTABLE_ENV not in err
     assert OPENSRE_UPDATE_PARENT_PID_ENV not in err
+
+
+@pytest.mark.parametrize("managed", [False, True], ids=["legacy-onefile", "managed-onedir"])
+def test_windows_retry_hint_preserves_custom_binary_install_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    *,
+    managed: bool,
+) -> None:
+    install_dir = tmp_path / "O'Brien custom install"
+    executable = install_dir / ".opensre-app" / "versions" / "build-1" / "opensre.exe"
+    app_root = install_dir / ".opensre-app" if managed else None
+    if not managed:
+        executable = install_dir / "opensre.exe"
+    installation = WindowsBinaryInstall(
+        executable=executable,
+        app_root=app_root,
+        launcher=None,
+        paths=(executable,),
+    )
+
+    def _classify(_executable: Path) -> WindowsBinaryInstall:
+        return installation
+
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.get_opensre_version", lambda: "1.0.0")
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.fetch_latest_version", lambda: "1.2.3")
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._upgrade_via_install_script", lambda: 1)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.classify_windows_binary_install", _classify)
+
+    rc = run_update(yes=True)
+
+    assert rc == 1
+    escaped_install_dir = str(install_dir).replace("'", "''")
+    err = capsys.readouterr().err
+    assert f"$env:{OPENSRE_INSTALL_DIR_ENV}='{escaped_install_dir}'" in err
+    assert f"Remove-Item Env:{OPENSRE_VERSION_ENV} -ErrorAction SilentlyContinue" in err
+    assert "irm https://install.opensre.com | iex" in err
+    assert OPENSRE_UPDATE_EXECUTABLE_ENV not in err
+    assert OPENSRE_UPDATE_PARENT_PID_ENV not in err
+
+
+def test_windows_retry_hint_falls_back_for_malformed_binary_layout(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def _raise_malformed(_executable: Path) -> WindowsBinaryInstall:
+        raise MalformedWindowsInstallError("invalid marker")
+
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.get_opensre_version", lambda: "1.0.0")
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.fetch_latest_version", lambda: "1.2.3")
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_binary_install", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._upgrade_via_install_script", lambda: 1)
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.update.classify_windows_binary_install", _raise_malformed
+    )
+
+    rc = run_update(yes=True)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert f"$env:{OPENSRE_INSTALL_DIR_ENV}" not in err
+    assert f"$env:{OPENSRE_INSTALL_CHANNEL_ENV}='main'" in err
+    assert f"Remove-Item Env:{OPENSRE_VERSION_ENV} -ErrorAction SilentlyContinue" in err
+    assert "irm https://install.opensre.com | iex" in err

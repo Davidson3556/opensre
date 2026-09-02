@@ -96,6 +96,7 @@ def _schedule_payload(
             close_fds=True,
             creationflags=creationflags,
             cwd=tempfile.gettempdir(),
+            env=powershell.windows_powershell_environment(),
         )
     except OSError as exc:
         cleanup_path.unlink(missing_ok=True)

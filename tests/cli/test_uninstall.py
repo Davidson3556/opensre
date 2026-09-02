@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 from click.testing import CliRunner
 
+from config.constants.installer import POWERSHELL_MODULE_PATH_ENV
 from surfaces.cli.app import cli
 from surfaces.cli.lifecycle.uninstall import _remove_path, run_uninstall
 from surfaces.cli.lifecycle.windows import (
@@ -652,8 +653,16 @@ def test_windows_process_scan_reports_incomplete_enumeration(
     tmp_path: Path,
 ) -> None:
     real_run = subprocess.run
+    monkeypatch.setenv(POWERSHELL_MODULE_PATH_ENV.upper(), r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("OPENSRE_TEST_PARENT_VALUE", "preserved")
 
     def _run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        child_env = kwargs.get("env")
+        assert isinstance(child_env, dict)
+        assert not any(
+            name.casefold() == POWERSHELL_MODULE_PATH_ENV.casefold() for name in child_env
+        )
+        assert child_env["OPENSRE_TEST_PARENT_VALUE"] == "preserved"
         injected_args = list(args)
         command_index = injected_args.index("-Command") + 1
         injected_args[command_index] = _inject_failed_process_enumerator(
@@ -958,6 +967,8 @@ def test_schedule_windows_cleanup_uses_hidden_background_powershell(
 ) -> None:
     target = tmp_path / "path with spaces" / "opensre.cmd"
     captured: dict[str, object] = {}
+    monkeypatch.setenv(POWERSHELL_MODULE_PATH_ENV.upper(), r"C:\Program Files\PowerShell\7\Modules")
+    monkeypatch.setenv("OPENSRE_TEST_PARENT_VALUE", "preserved")
 
     def _popen(args: list[str], **kwargs: object) -> object:
         captured["args"] = args
@@ -1001,6 +1012,10 @@ def test_schedule_windows_cleanup_uses_hidden_background_powershell(
     assert captured["stdin"] is subprocess.DEVNULL
     assert captured["stdout"] is subprocess.DEVNULL
     assert captured["stderr"] is subprocess.DEVNULL
+    child_env = captured["env"]
+    assert isinstance(child_env, dict)
+    assert not any(name.casefold() == POWERSHELL_MODULE_PATH_ENV.casefold() for name in child_env)
+    assert child_env["OPENSRE_TEST_PARENT_VALUE"] == "preserved"
     assert Path(str(captured["cwd"])) == cleanup_path.parent
     assert isinstance(captured["creationflags"], int)
     assert captured["creationflags"] != 0

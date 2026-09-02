@@ -97,6 +97,7 @@ foreach ($process in $processes) {
             errors="replace",
             timeout=15,
             creationflags=creationflags,
+            env=powershell.windows_powershell_environment(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return [], f"could not inspect running OpenSRE processes: {exc}"
