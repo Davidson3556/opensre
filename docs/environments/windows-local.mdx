@@ -17,6 +17,22 @@ irm https://install.opensre.com | iex
 
 If a new window doesn't see `opensre`, close and reopen PowerShell so PATH updates apply.
 
+If an older OpenSRE release left an `opensre.exe` directly in the install directory,
+the installer shows that exact path and asks before replacing it. Answer `y` to
+continue; anything else leaves the file and the install directory untouched. The
+installer never runs the existing file.
+
+Unattended installs (CI, provisioning scripts) get no prompt and stop instead. To
+allow the replacement there, set the opt-in first:
+
+```powershell
+$env:OPENSRE_INSTALL_REPLACE_EXISTING_BINARY = "1"
+irm https://install.opensre.com | iex
+```
+
+`opensre update` does not need the opt-in — it hands its own executable to the
+installer, which verifies it by process identity.
+
 ### 2. Set things up
 
 ```powershell

@@ -2092,3 +2092,273 @@ def test_install_preserves_unrelated_install_directory_entries(tmp_path: Path) -
     assert result is not None
     assert sentinel.read_bytes() == b"do not replace"
     assert nested_sentinel.read_text(encoding="utf-8") == '{"owned_by":"someone_else"}'
+
+
+_E2E_RELEASE_VERSION = "0.1.2026.8.31"
+_CONFIRMATION_PROMPT_PREFIX = "__OPENSRE_CONFIRMATION_PROMPT__"
+
+
+def _make_release_archive(root: Path, *, payload: dict[str, str] | None = None) -> Path:
+    """Build a release-format zip that contains the complete onedir bundle."""
+    bundle_root = root / "release bundle"
+    _make_onedir_bundle(bundle_root, payload=payload)
+    archive = root / "opensre-windows-x86_64.zip"
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle_zip:
+        for path in sorted(bundle_root.rglob("*")):
+            if path.is_file():
+                bundle_zip.write(path, path.relative_to(bundle_root).as_posix())
+    return archive
+
+
+def _install_e2e_overrides(archive: Path, *, confirmation: str | None) -> str:
+    """Stub only release discovery and download so install-context resolution stays real."""
+    interactive_override = ""
+    if confirmation is not None:
+        interactive_override = f"""
+function Test-OpenSreInteractiveHost {{
+    return $true
+}}
+function Read-OpenSreConfirmationResponse {{
+    param([Parameter(Mandatory = $true)][string]$Prompt)
+    Write-Host ({_ps_literal(_CONFIRMATION_PROMPT_PREFIX)} + $Prompt)
+    return {_ps_literal(confirmation)}
+}}
+"""
+    return f"""
+function Get-OpenSreReleaseMetadata {{
+    param([string]$Repo, [string]$Channel, [string]$RequestedVersion)
+    return [pscustomobject]@{{
+        Version = {_ps_literal(_E2E_RELEASE_VERSION)}
+        Release = [pscustomobject]@{{ tag_name = 'main-build' }}
+    }}
+}}
+function Resolve-OpenSreArchiveDownload {{
+    param($Release, [string]$Version, [string]$Channel, [string]$TargetArch)
+    return [pscustomobject]@{{
+        ArchiveName = 'opensre-windows-x86_64.zip'
+        ArchiveUrl = {_ps_literal(archive)}
+        ChecksumUrl = ''
+        ChecksumName = ''
+        ResolvedArch = $TargetArch
+    }}
+}}
+function Invoke-OpenSreDownloadFileWithProgress {{
+    param([string]$Uri, [string]$OutFile, [string]$Label)
+    Copy-Item -LiteralPath $Uri -Destination $OutFile -Force
+}}
+function Ensure-OpenSreGithubCli {{ }}
+function Test-OpenSreDirectoryOnPath {{
+    param([string]$Directory)
+    return $true
+}}
+function Start-OpenSreOnboardingAfterInstall {{
+    param([string]$BinaryPath, [string]$DisplayName)
+}}
+{interactive_override}
+"""
+
+
+def _install_end_to_end(
+    *,
+    archive: Path,
+    install_dir: Path,
+    cwd: Path,
+    confirmation: str | None,
+    opt_in: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run the full installer entry point through normal install-context resolution."""
+    opt_in_line = (
+        f"$env:OPENSRE_INSTALL_REPLACE_EXISTING_BINARY = {_ps_literal(opt_in)}"
+        if opt_in is not None
+        else "Remove-Item Env:OPENSRE_INSTALL_REPLACE_EXISTING_BINARY -ErrorAction SilentlyContinue"
+    )
+    script = f"""
+$ErrorActionPreference = 'Stop'
+. {_ps_literal(INSTALL_PS1)} -SkipMain
+{_install_e2e_overrides(archive, confirmation=confirmation)}
+$env:OPENSRE_INSTALL_DIR = {_ps_literal(install_dir)}
+Remove-Item Env:OPENSRE_UPDATE_EXECUTABLE -ErrorAction SilentlyContinue
+Remove-Item Env:OPENSRE_UPDATE_PARENT_PID -ErrorAction SilentlyContinue
+{opt_in_line}
+Install-OpenSre
+"""
+    return _run_powershell(script, cwd=cwd)
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        key = str(path.relative_to(root))
+        snapshot[key] = _sha256(path) if path.is_file() else "<dir>"
+    return snapshot
+
+
+def _preexisting_flat_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Create a historical flat installation and guard its executable against execution."""
+    install_dir = tmp_path / "historical install dir"
+    install_dir.mkdir()
+    preexisting_binary = install_dir / "opensre.exe"
+    shutil.copy2(_fake_opensre_executable(), preexisting_binary)
+    (install_dir / "unrelated-tool.txt").write_text("keep me", encoding="utf-8")
+    monkeypatch.setenv("OPENSRE_TEST_GUARDED_EXECUTABLE", str(preexisting_binary))
+    monkeypatch.setenv(
+        "OPENSRE_TEST_EXECUTION_MARKER", str(tmp_path / "preexisting-executable-ran.txt")
+    )
+    return install_dir
+
+
+def test_reinstall_over_flat_install_replaces_only_after_confirmation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_dir = _preexisting_flat_install(tmp_path, monkeypatch)
+    preexisting_binary = install_dir / "opensre.exe"
+    archive = _make_release_archive(tmp_path / "release")
+
+    completed = _install_end_to_end(
+        archive=archive,
+        install_dir=install_dir,
+        cwd=tmp_path,
+        confirmation="y",
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    prompts = [
+        line
+        for line in completed.stdout.splitlines()
+        if line.startswith(_CONFIRMATION_PROMPT_PREFIX)
+    ]
+    assert len(prompts) == 1
+    assert "[y/N]" in prompts[0]
+    assert str(preexisting_binary) in completed.stdout
+    assert not preexisting_binary.exists()
+    assert (install_dir / "opensre.cmd").is_file()
+    assert (install_dir / ".opensre-app" / "current.txt").is_file()
+    assert (install_dir / "unrelated-tool.txt").read_text(encoding="utf-8") == "keep me"
+    assert not (tmp_path / "preexisting-executable-ran.txt").exists()
+
+
+def test_reinstall_over_flat_install_declined_changes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_dir = _preexisting_flat_install(tmp_path, monkeypatch)
+    archive = _make_release_archive(tmp_path / "release")
+    before = _tree_snapshot(install_dir)
+
+    completed = _install_end_to_end(
+        archive=archive,
+        install_dir=install_dir,
+        cwd=tmp_path,
+        confirmation="n",
+    )
+
+    assert completed.returncode != 0
+    assert "Refusing to replace unverified pre-existing executable" in completed.stderr
+    assert _tree_snapshot(install_dir) == before
+    assert not (tmp_path / "preexisting-executable-ran.txt").exists()
+
+
+def test_reinstall_over_flat_install_is_fail_closed_without_a_tty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_dir = _preexisting_flat_install(tmp_path, monkeypatch)
+    archive = _make_release_archive(tmp_path / "release")
+    before = _tree_snapshot(install_dir)
+
+    completed = _install_end_to_end(
+        archive=archive,
+        install_dir=install_dir,
+        cwd=tmp_path,
+        confirmation=None,
+    )
+
+    assert completed.returncode != 0
+    assert "Refusing to replace unverified pre-existing executable" in completed.stderr
+    assert "OPENSRE_INSTALL_REPLACE_EXISTING_BINARY=1" in completed.stderr
+    assert _tree_snapshot(install_dir) == before
+    assert not (tmp_path / "preexisting-executable-ran.txt").exists()
+
+
+def test_reinstall_over_flat_install_honors_the_automation_opt_in(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_dir = _preexisting_flat_install(tmp_path, monkeypatch)
+    preexisting_binary = install_dir / "opensre.exe"
+    archive = _make_release_archive(tmp_path / "release")
+
+    completed = _install_end_to_end(
+        archive=archive,
+        install_dir=install_dir,
+        cwd=tmp_path,
+        confirmation=None,
+        opt_in="1",
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not any(
+        line.startswith(_CONFIRMATION_PROMPT_PREFIX) for line in completed.stdout.splitlines()
+    )
+    assert not preexisting_binary.exists()
+    assert (install_dir / "opensre.cmd").is_file()
+    assert (install_dir / "unrelated-tool.txt").read_text(encoding="utf-8") == "keep me"
+    assert not (tmp_path / "preexisting-executable-ran.txt").exists()
+
+
+def test_update_migration_from_flat_install_needs_no_confirmation(tmp_path: Path) -> None:
+    """`opensre update` migration stays authorized by process identity, with no prompt."""
+    assert _POWERSHELL is not None
+    install_dir = tmp_path / "historical update install"
+    install_dir.mkdir()
+    legacy_executable = install_dir / "opensre.exe"
+    shutil.copy2(Path(os.environ["COMSPEC"]), legacy_executable)
+    archive = _make_release_archive(tmp_path / "release")
+
+    probe_script = tmp_path / "update-migration-probe.ps1"
+    probe_script.write_text(
+        f"""
+$ErrorActionPreference = 'Stop'
+. {_ps_literal(INSTALL_PS1)} -SkipMain
+{_install_e2e_overrides(archive, confirmation=None)}
+Remove-Item Env:OPENSRE_INSTALL_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:OPENSRE_UPDATE_EXECUTABLE -ErrorAction SilentlyContinue
+Remove-Item Env:OPENSRE_UPDATE_PARENT_PID -ErrorAction SilentlyContinue
+Remove-Item Env:OPENSRE_INSTALL_REPLACE_EXISTING_BINARY -ErrorAction SilentlyContinue
+Install-OpenSre
+""",
+        encoding="utf-8",
+    )
+    command = (
+        f"{_POWERSHELL} -NoLogo -NoProfile -NonInteractive "
+        f"-ExecutionPolicy Bypass -File {probe_script}"
+    )
+    env = _powershell_env()
+    for name in (
+        "OPENSRE_INSTALL_DIR",
+        "OPENSRE_UPDATE_EXECUTABLE",
+        "OPENSRE_UPDATE_PARENT_PID",
+        "OPENSRE_INSTALL_REPLACE_EXISTING_BINARY",
+    ):
+        env.pop(name, None)
+
+    completed = subprocess.run(
+        [str(legacy_executable), "/d", "/s", "/c", command],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert not any(
+        line.startswith(_CONFIRMATION_PROMPT_PREFIX) for line in completed.stdout.splitlines()
+    )
+    assert (install_dir / "opensre.cmd").is_file()
+    assert (install_dir / ".opensre-app" / "current.txt").is_file()
+    assert not legacy_executable.exists()

@@ -14,6 +14,7 @@ $script:OpenSreLayoutMarkerText = "OpenSRE Windows bundle layout v1"
 $script:OpenSreLayoutRootName = ".opensre-app"
 $script:OpenSreCurrentPointerName = "current.txt"
 $script:OpenSreInstallLockName = ".opensre-app.install.lock"
+$script:OpenSreReplaceExistingBinaryEnv = "OPENSRE_INSTALL_REPLACE_EXISTING_BINARY"
 
 function Test-OpenSreVerboseInstall {
     $value = [string]$env:OPENSRE_INSTALL_VERBOSE
@@ -575,6 +576,65 @@ function Get-OpenSreVerifiedLegacyBinaryPath {
     catch {
         return ""
     }
+}
+
+function Get-OpenSreLegacyReplacementRefusalMessage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    $optIn = $script:OpenSreReplaceExistingBinaryEnv
+    return "Refusing to replace unverified pre-existing executable '$BinaryPath'. Nothing was changed. Re-run 'irm https://install.opensre.com | iex' in an interactive PowerShell window and confirm the replacement, or set $optIn=1 for unattended installs."
+}
+
+function Test-OpenSreLegacyReplacementOptIn {
+    $value = [string]$env:OPENSRE_INSTALL_REPLACE_EXISTING_BINARY
+    return ($value -ieq "1" -or $value -ieq "true" -or $value -ieq "yes")
+}
+
+function Read-OpenSreConfirmationResponse {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Prompt
+    )
+
+    return [string](Read-Host -Prompt $Prompt)
+}
+
+function Confirm-OpenSreLegacyBinaryReplacement {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$BinaryPath
+    )
+
+    if (Test-OpenSreLegacyReplacementOptIn) {
+        Write-Host "Replacing the pre-existing OpenSRE executable because $($script:OpenSreReplaceExistingBinaryEnv) is set:"
+        Write-Host "    $BinaryPath"
+        return $true
+    }
+
+    if (-not (Test-OpenSreInteractiveHost)) {
+        return $false
+    }
+
+    Write-Host ""
+    Write-Host "An OpenSRE executable already exists at:"
+    Write-Host "    $BinaryPath"
+    Write-Host ""
+    Write-Host "Installing retires that file and replaces it with the managed launcher."
+    Write-Host "The installer never runs it. Answer No if you do not recognize this file."
+
+    $answer = ""
+    try {
+        $answer = [string](Read-OpenSreConfirmationResponse -Prompt "Replace it? [y/N]")
+    }
+    catch {
+        return $false
+    }
+
+    $answer = $answer.Trim()
+    return ($answer -ieq "y" -or $answer -ieq "yes")
 }
 
 function Resolve-OpenSreInstallContext {
@@ -1960,7 +2020,9 @@ function Install-OpenSreVerifiedBundle {
         [string]$InstallId,
         [int]$ParentProcessId = 0,
         [AllowEmptyString()]
-        [string]$VerifiedLegacyBinaryPath = ""
+        [string]$VerifiedLegacyBinaryPath = "",
+        [AllowEmptyString()]
+        [string]$ApprovedLegacyBinaryPath = ""
     )
 
     if (-not (Test-Path -LiteralPath $BinaryPath -PathType Leaf)) {
@@ -1998,12 +2060,27 @@ function Install-OpenSreVerifiedBundle {
             else {
                 ""
             }
-            if (-not $resolvedVerifiedLegacyPath -or
-                -not $resolvedVerifiedLegacyPath.Equals(
+            $resolvedApprovedLegacyPath = if ($ApprovedLegacyBinaryPath) {
+                [System.IO.Path]::GetFullPath($ApprovedLegacyBinaryPath)
+            }
+            else {
+                ""
+            }
+            # Replacement is authorized either by an already-running OpenSRE update
+            # (process-identity handoff) or by an explicit user confirmation taken
+            # before anything was downloaded. Re-checked here because the file may
+            # have appeared after that decision was made.
+            $legacyReplacementAuthorized = `
+                ($resolvedVerifiedLegacyPath -and $resolvedVerifiedLegacyPath.Equals(
                     $resolvedLegacyBinaryPath,
                     [System.StringComparison]::OrdinalIgnoreCase
-                )) {
-                throw "Refusing to replace unverified pre-existing executable '$legacyBinaryPath'. Verify it independently or move it aside and retry; automatic migration is allowed only from an already-running OpenSRE update."
+                )) -or `
+                ($resolvedApprovedLegacyPath -and $resolvedApprovedLegacyPath.Equals(
+                    $resolvedLegacyBinaryPath,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                ))
+            if (-not $legacyReplacementAuthorized) {
+                throw (Get-OpenSreLegacyReplacementRefusalMessage -BinaryPath $legacyBinaryPath)
             }
         }
 
@@ -2404,6 +2481,21 @@ function Install-OpenSre {
     }
 
     Write-OpenSreHeader -Channel $resolvedChannel -RequestedVersion $requestedVersion -InstallDir $installDir -Repo $repo
+
+    # Decide about a pre-existing flat executable before downloading anything, so a
+    # declined or unattended reinstall leaves the executable and layout untouched.
+    $existingFlatBinary = Join-Path $installDir $binaryName
+    $approvedLegacyBinaryPath = ""
+    if ((Test-Path -LiteralPath $existingFlatBinary -PathType Leaf) -and
+        -not $verifiedLegacyBinaryPath) {
+        if (Confirm-OpenSreLegacyBinaryReplacement -BinaryPath $existingFlatBinary) {
+            $approvedLegacyBinaryPath = [System.IO.Path]::GetFullPath($existingFlatBinary)
+        }
+        else {
+            throw (Get-OpenSreLegacyReplacementRefusalMessage -BinaryPath $existingFlatBinary)
+        }
+    }
+
     Enable-OpenSreTls
 
     $targetArch = Resolve-OpenSreWindowsArchitecture
@@ -2517,7 +2609,8 @@ function Install-OpenSre {
                 -InstallDir $installDir `
                 -InstallId $installId `
                 -ParentProcessId $updateParentProcessId `
-                -VerifiedLegacyBinaryPath $verifiedLegacyBinaryPath
+                -VerifiedLegacyBinaryPath $verifiedLegacyBinaryPath `
+                -ApprovedLegacyBinaryPath $approvedLegacyBinaryPath
         }
 
         $installedBinaryPath = [string]$installedBundle.BinaryPath

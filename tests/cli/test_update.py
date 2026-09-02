@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from config.constants.installer import (
+    OPENSRE_UPDATE_EXECUTABLE_ENV,
+    OPENSRE_UPDATE_PARENT_PID_ENV,
+)
 from infrastructure.process.release_version import (
     development_install_doctor_version_detail,
     extract_main_build_sha,
@@ -389,3 +393,27 @@ def test_development_install_doctor_detail_editable_and_uv_run(
     assert detail == (
         "2026.4.5 (editable install + uv run; skipped comparing to latest main build)"
     )
+
+
+def test_windows_retry_hint_is_a_command_a_user_can_actually_run(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The manual retry hint must be the plain interactive installer invocation.
+
+    A user cannot reproduce the update handoff (`OPENSRE_UPDATE_EXECUTABLE` plus the
+    parent PID), so the hint must not depend on it. install.ps1 covers that case with
+    an interactive confirmation instead.
+    """
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.get_opensre_version", lambda: "1.0.0")
+    monkeypatch.setattr("surfaces.cli.lifecycle.update.fetch_latest_version", lambda: "1.2.3")
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._is_windows", lambda: True)
+    monkeypatch.setattr("surfaces.cli.lifecycle.update._upgrade_via_install_script", lambda: 1)
+
+    rc = run_update(yes=True)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "$env:OPENSRE_INSTALL_CHANNEL='main'; irm https://install.opensre.com | iex" in err
+    assert OPENSRE_UPDATE_EXECUTABLE_ENV not in err
+    assert OPENSRE_UPDATE_PARENT_PID_ENV not in err
