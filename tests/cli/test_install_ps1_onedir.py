@@ -1554,7 +1554,7 @@ def test_deferred_upgrade_removes_long_old_version_tree(tmp_path: Path) -> None:
         assert second is not None
         assert second["DeferredCleanup"] is True
         cleanup_path = _path(second, "CleanupPath")
-        assert os.path.normcase(str(cleanup_path.parent)) == os.path.normcase(tempfile.gettempdir())
+        assert os.path.samefile(cleanup_path.parent, tempfile.gettempdir())
         new_root = _path(second, "AppRoot")
 
         holder.wait(timeout=15)
