@@ -80,6 +80,17 @@ def _powershell_env() -> dict[str, str]:
     env = os.environ.copy()
     env["OPENSRE_AUTO_LAUNCH"] = "0"
     env["OPENSRE_SKIP_GH_INSTALL"] = "1"
+    # A PSModulePath inherited from a different host - PowerShell 7 on a CI runner -
+    # can stop Windows PowerShell resolving its own modules, which makes install.ps1
+    # fail on Get-FileHash and Expand-Archive. Pin the interpreter's own locations.
+    system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
+    program_files = os.environ.get("PROGRAMFILES", r"C:\Program Files")
+    env["PSModulePath"] = os.pathsep.join(
+        [
+            str(Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "Modules"),
+            str(Path(program_files) / "WindowsPowerShell" / "Modules"),
+        ]
+    )
     return env
 
 
@@ -2185,6 +2196,12 @@ def _install_end_to_end(
     script = f"""
 $ErrorActionPreference = 'Stop'
 . {_ps_literal(INSTALL_PS1)} -SkipMain
+Write-Host (
+    '__OPENSRE_PS_DIAG__' +
+    $PSVersionTable.PSVersion.ToString() + '|' +
+    [string][bool](Get-Command Get-FileHash -ErrorAction SilentlyContinue) + '|' +
+    [string]$env:PSModulePath
+)
 {_install_e2e_overrides(archive, confirmation=confirmation)}
 $env:OPENSRE_INSTALL_DIR = {_ps_literal(install_dir)}
 Remove-Item Env:OPENSRE_UPDATE_EXECUTABLE -ErrorAction SilentlyContinue
