@@ -48,7 +48,20 @@ def _inject_failed_process_enumerator(source: str, *, preference: str) -> str:
 
 
 def _powershell() -> str | None:
-    return shutil.which("pwsh") or shutil.which("powershell")
+    """Resolve Windows PowerShell, which is the interpreter the product itself uses.
+
+    ``install.ps1`` is only ever invoked through Windows PowerShell (``opensre
+    update`` and the documented ``irm | iex`` command), so the tests exercise it
+    there too. PowerShell 7 is also unusable here: ``Add-Type -OutputType
+    ConsoleApplication`` builds the fake ``opensre.exe`` and is unsupported on
+    .NET Core.
+    """
+    system_root = os.environ.get("SYSTEMROOT")
+    if system_root:
+        candidate = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which("powershell.exe")
 
 
 _POWERSHELL = _powershell()
