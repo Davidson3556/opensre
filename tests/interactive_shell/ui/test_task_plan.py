@@ -93,8 +93,7 @@ def test_prompt_region_keeps_the_checklist_above_invoking_tools() -> None:
     assert "● Trace 502s to the last deploy" in rendered
     assert SpinnerState.INVOKING_TOOLS_PHASE in rendered
     assert rendered.index("Plan · 2/3") < rendered.index(SpinnerState.INVOKING_TOOLS_PHASE)
-    assert "Auto (High)" in rendered
-    assert rendered.index(SpinnerState.INVOKING_TOOLS_PHASE) < rendered.index("Auto (High)")
+    assert "Auto (High)" not in rendered
     assert re.search(
         rf"  ○ Confirm checkout returns 2xx\n\n[^\n]*"
         rf"{re.escape(SpinnerState.INVOKING_TOOLS_PHASE)}",
@@ -111,7 +110,7 @@ def test_idle_prompt_region_shows_plan_without_thinking_or_ready_hint() -> None:
     assert "Plan · 2/3" in rendered
     assert "Ready" not in rendered  # no recurring idle hint line
     assert rendered.index("Plan · 2/3") < rendered.index("Auto (High)")
-    assert "  ○ Confirm checkout returns 2xx\n\nAuto (High)" in rendered
+    assert "  ○ Confirm checkout returns 2xx\n\nAuto (High) · Allow all" in rendered
 
 
 def test_clearing_the_plan_resets_expanded_state() -> None:
@@ -238,12 +237,16 @@ def test_plan_breakdown_dims_work_notes_and_accents_checked_steps() -> None:
     """Droid/Cursor/Claude: checklist steps primary; ``↳`` work notes dim."""
     import io
 
+    from rich.color import ColorSystem
     from rich.console import Console
+    from rich.style import Style
 
     import infrastructure.terminal.theme as ui_theme
     from surfaces.interactive_shell.ui.task_plan import render_plan_breakdown
 
     ui_theme.set_active_theme("amber")
+    # A 16-color render of theme DIM must not pin work notes to bright-black.
+    Style.parse(str(ui_theme.DIM))._make_ansi_codes(ColorSystem.STANDARD)
     breakdown = (
         "Plan complete · 2/2\n"
         "  ✓ Confirm repository\n"
@@ -268,6 +271,7 @@ def test_plan_breakdown_dims_work_notes_and_accents_checked_steps() -> None:
     assert "↳ GitHub CLI · gh repo view" in plain
     # Work notes use DIM; checked glyphs use HIGHLIGHT — not one flat color.
     assert ui_theme.DIM_ANSI in out
+    assert "\x1b[90m" not in out
     assert ui_theme.HIGHLIGHT_ANSI in out
     assert ui_theme.TEXT_ANSI in out
     # Caption is secondary, distinct from step body and work notes.
