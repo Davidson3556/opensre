@@ -31,8 +31,7 @@ class AlarmDispatcherPort(Protocol):
 
     Both :class:`integrations.telegram.alarms.AlarmDispatcher` and
     :class:`integrations.rocketchat.alarms.RocketChatAlarmDispatcher` satisfy
-    this structurally — the sink stays behind a local protocol (matching
-    ``tools.system.watch_dog.monitor.AlarmDispatcherPort``) so it never
+    this structurally — the sink stays behind a local protocol so it never
     imports a specific provider's dispatcher.
     """
 

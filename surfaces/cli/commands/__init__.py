@@ -29,7 +29,6 @@ from surfaces.cli.commands.posthog_report import posthog_command
 from surfaces.cli.commands.remote_sync import remote_sync_command
 from surfaces.cli.commands.sentry_digest import sentry_command
 from surfaces.cli.commands.setup import setup_command
-from surfaces.cli.commands.watchdog import watchdog_command
 from surfaces.cli.commands.work import work_command
 
 _COMMANDS: tuple[click.Command, ...] = (
@@ -47,7 +46,6 @@ _COMMANDS: tuple[click.Command, ...] = (
     cron_command,
     sentry_command,
     posthog_command,
-    watchdog_command,
     work_command,
     debug_command,
     gateway_command,

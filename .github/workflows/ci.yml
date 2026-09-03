@@ -159,7 +159,6 @@ jobs:
               tests/filestorage
               tests/utils
               tests/masking
-              tests/watch_dog
           - os: ubuntu-latest
             shard: tools-runtime-2
             extra_pytest_args: >-
@@ -177,7 +176,6 @@ jobs:
               tests/filestorage
               tests/utils
               tests/masking
-              tests/watch_dog
           - os: ubuntu-latest
             shard: tools-runtime-3
             extra_pytest_args: >-
@@ -195,7 +193,6 @@ jobs:
               tests/filestorage
               tests/utils
               tests/masking
-              tests/watch_dog
           - os: ubuntu-latest
             shard: tools-runtime-4
             extra_pytest_args: >-
@@ -213,7 +210,6 @@ jobs:
               tests/filestorage
               tests/utils
               tests/masking
-              tests/watch_dog
           - os: ubuntu-latest
             shard: tools-runtime-5
             extra_pytest_args: >-
@@ -231,7 +227,6 @@ jobs:
               tests/filestorage
               tests/utils
               tests/masking
-              tests/watch_dog
           - os: ubuntu-latest
             shard: tools-runtime-6
             extra_pytest_args: >-
@@ -249,7 +244,6 @@ jobs:
               tests/filestorage
               tests/utils
               tests/masking
-              tests/watch_dog
           - os: ubuntu-latest
             shard: cli-runtime-1
             # Live shell action-agent contracts are validated on openai,

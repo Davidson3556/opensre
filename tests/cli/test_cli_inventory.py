@@ -37,7 +37,6 @@ EXPECTED_VISIBLE_COMMANDS = frozenset(
         "uninstall",
         "update",
         "version",
-        "watchdog",
         "work",
     }
 )

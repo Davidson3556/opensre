@@ -36,7 +36,6 @@ surfaces/interactive_shell/runtime/slash_adapter.py|class|ReplSlashPorts
 surfaces/interactive_shell/runtime/slash_adapter.py|class|SlashPorts
 surfaces/interactive_shell/runtime/task_cancel_adapter.py|class|ReplTaskCancelPorts
 surfaces/interactive_shell/runtime/task_cancel_adapter.py|class|TaskCancelPorts
-tools/system/watch_dog/monitor.py|class|AlarmDispatcherPort
 
 # context
 config/constants/paths.py|class|ContextRootOwnerMismatchError
