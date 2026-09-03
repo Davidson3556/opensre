@@ -240,7 +240,34 @@ def test_install_sh_verify_binary_failure_includes_diagnostics(tmp_path: Path) -
     assert str(fake_binary) in output
 
 
-def test_install_sh_installs_pyinstaller_onedir_app(tmp_path: Path) -> None:
+def test_install_sh_tar_extraction_disables_archived_owner_and_permissions() -> None:
+    result = _run_logging_snippet(
+        """
+        platform="linux"
+        tar() { printf '%s\n' "$@"; }
+        extract_archive "/tmp/opensre.tar.gz" "/tmp/extracted"
+        """
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "--no-same-owner",
+        "--no-same-permissions",
+        "-xzf",
+        "/tmp/opensre.tar.gz",
+        "-C",
+        "/tmp/extracted",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("platform", "preserves_identity"),
+    (("darwin", True), ("linux", False)),
+)
+def test_install_sh_uses_move_on_darwin_and_copy_on_linux(
+    tmp_path: Path, platform: str, preserves_identity: bool
+) -> None:
+    """Darwin retains file identity; Linux stages a fresh copy."""
     app_root = tmp_path / "opensre-app"
     app_root.mkdir()
     app_binary = app_root / "opensre"
@@ -249,12 +276,14 @@ def test_install_sh_installs_pyinstaller_onedir_app(tmp_path: Path) -> None:
     internal = app_root / "_internal"
     internal.mkdir()
     (internal / "payload.txt").write_text("bundled", encoding="utf-8")
+    source_stat = app_binary.stat()
+    source_identity = (source_stat.st_dev, source_stat.st_ino)
     install_dir = tmp_path / "bin"
     destination = install_dir / "opensre"
 
     result = _run_logging_snippet(
         f"""
-        platform="linux"
+        platform={shlex.quote(platform)}
         BIN_NAME="opensre"
         INSTALL_DIR={shlex.quote(str(install_dir))}
         install_verified_binary {shlex.quote(str(app_binary))} {shlex.quote(str(destination))}
@@ -267,6 +296,14 @@ def test_install_sh_installs_pyinstaller_onedir_app(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert "opensre test" in result.stdout
+    installed_stat = destination.resolve().stat()
+    installed_identity = (installed_stat.st_dev, installed_stat.st_ino)
+    if preserves_identity:
+        assert not app_root.exists()
+        assert installed_identity == source_identity
+    else:
+        assert app_root.exists()
+        assert installed_identity != source_identity
 
 
 def test_install_sh_uses_concise_unnumbered_install_messages() -> None:

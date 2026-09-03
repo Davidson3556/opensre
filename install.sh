@@ -496,7 +496,7 @@ extract_archive() {
   fi
 
   need_cmd tar
-  tar -xzf "$archive_path" -C "$destination_dir"
+  tar --no-same-owner --no-same-permissions -xzf "$archive_path" -C "$destination_dir"
 }
 
 verify_checksum() {
@@ -574,7 +574,16 @@ install_binary_app() {
   local app_old_dir="${app_destination_dir}.old.$$"
 
   rm -rf "$app_tmp_dir" "$app_old_dir"
-  cp -R "$app_root" "$app_tmp_dir"
+  if [ "$platform" = "darwin" ]; then
+    # Preserve file identity after verify_binary_version() on same-filesystem
+    # installs. Retaining the verified executable's inode avoids the repeated
+    # cold security-assessment delay observed when an ad-hoc-signed bundle is
+    # copied. ``mv`` falls back to copy/remove semantics across filesystems.
+    mv "$app_root" "$app_tmp_dir"
+  else
+    # A fresh Linux copy inherits destination SELinux labels and default ACLs.
+    cp -R "$app_root" "$app_tmp_dir"
+  fi
   chmod -R u+rwX,go+rX "$app_tmp_dir" 2>/dev/null || true
 
   if [ -e "$app_destination_dir" ]; then
