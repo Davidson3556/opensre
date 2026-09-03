@@ -13,9 +13,9 @@ Release availability is separate from default CI coverage. Use the install path 
 
 | OS | Architecture | Install paths | Notes |
 | --- | --- | --- | --- |
-| macOS | arm64, x86_64 | [curl installer](https://install.opensre.com), [Homebrew](https://github.com/tracer-cloud/homebrew-tap) | See the [macOS / Linux Quickstart tab](docs/quickstart.mdx#install-opensre). |
-| Linux | x86_64, arm64 | [curl installer](https://install.opensre.com), [release tarball](https://github.com/Tracer-Cloud/opensre/releases) | See the [macOS / Linux Quickstart tab](docs/quickstart.mdx#install-opensre). |
-| Windows | x64 | [PowerShell installer](https://install.opensre.com), [release ZIP](https://github.com/Tracer-Cloud/opensre/releases) | See the [Windows Quickstart tab](docs/quickstart.mdx#install-opensre). |
+| macOS | arm64, x86_64 | [curl installer](https://install.opensre.com), [Homebrew](https://github.com/tracer-cloud/homebrew-tap) | See the [macOS / Linux Quickstart tab](https://www.opensre.com/docs/quickstart#install-opensre). |
+| Linux | x86_64, arm64 | [curl installer](https://install.opensre.com), [release tarball](https://github.com/Tracer-Cloud/opensre/releases) | See the [macOS / Linux Quickstart tab](https://www.opensre.com/docs/quickstart#install-opensre). |
+| Windows | x64 | [PowerShell installer](https://install.opensre.com), [release ZIP](https://github.com/Tracer-Cloud/opensre/releases) | See the [Windows Quickstart tab](https://www.opensre.com/docs/quickstart#install-opensre). |
 | Windows | arm64 | — | **Unsupported.** It is not in the default release matrix because `cryptography` does not publish Windows arm64 wheels; source installs are best effort only. |
 
 Main CI runs mostly on `ubuntu-latest`. Windows CI is optional and runs only when a PR has the `ci:windows` label, so it is useful signal rather than a guarantee that every platform is covered by default.
