@@ -79,8 +79,8 @@ def run_cli_command(
     action agent reads it back as its tool observation. Capture is the default
     because most delegated commands are non-interactive printers; only commands
     that prompt on the real TTY (``onboard``, ``login``, ``uninstall``), stream
-    their own progress UI (``update``), or block indefinitely (``cron start``,
-    ``watchdog``) must pass ``capture_output=False``.
+    their own progress UI (``update``), or block indefinitely (``cron start``)
+    must pass ``capture_output=False``.
 
     **Return value:** Reports subprocess success for headless/gateway sessions
     (``session`` with no terminal facet) so slash analytics can show failure.
@@ -314,11 +314,6 @@ def _cmd_posthog(session: Session, console: Console, args: list[str]) -> bool:
     return run_cli_command(console, ["posthog", *args], capture_output=True, session=session)
 
 
-def _cmd_watchdog(session: Session, console: Console, args: list[str]) -> bool:
-    # Blocking monitor loop; streams sampled state until interrupted.
-    return run_cli_command(console, ["watchdog", *args], capture_output=False, session=session)
-
-
 def _cmd_debug(session: Session, console: Console, args: list[str]) -> bool:
     return run_cli_command(console, ["debug", *args], session=session)
 
@@ -443,13 +438,6 @@ COMMANDS: list[SlashCommand] = [
             "/posthog report schedule run <id>",
             "/posthog report schedule remove <id>",
         ),
-    ),
-    SlashCommand(
-        "/watchdog",
-        "Monitor one process and send threshold alarms.",
-        _cmd_watchdog,
-        usage=("/watchdog --pid <pid> [--max-rss <size>] [--max-cpu <percent>]",),
-        examples=("/watchdog --pid 123 --max-rss 1G",),
     ),
     SlashCommand(
         "/debug",

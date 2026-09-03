@@ -540,7 +540,6 @@ RULES: tuple[PathRule, ...] = (
     PathRule("surfaces/cli/", ("tests/cli/",)),
     PathRule("surfaces/interactive_shell/", ("tests/interactive_shell/",)),
     PathRule("gateway/", ("gateway/tests/",)),
-    PathRule("tools/system/watch_dog/", ("tests/watch_dog/",)),
     PathRule("tools/", ("tests/tools/",)),
     PathRule("infrastructure/analytics/", ("tests/analytics/",)),
     # Without this rule a change under infrastructure/filestorage/ matches nothing,

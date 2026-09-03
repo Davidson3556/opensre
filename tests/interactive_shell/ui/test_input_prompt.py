@@ -270,7 +270,7 @@ class TestResolvePromptPlaceholder:
         session = Session()
         session.terminal.trust_mode = True
         session.resumed_from_name = "redis-incident"
-        task = session.task_registry.create(TaskKind.WATCHDOG)
+        task = session.task_registry.create(TaskKind.CLI_COMMAND)
         task.mark_running()
         text = _placeholder_text(session)
         assert "trust on" in text
