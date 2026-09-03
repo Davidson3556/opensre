@@ -60,7 +60,9 @@ def test_launch_banner_is_borderless_centered_hero(monkeypatch: object) -> None:
     # in place of the old TIP line.
     assert "Welcome to OpenSRE CLI" in output
     assert "AI-powered DevOps agent" in output
-    assert "/ commands" in output
+    # Banner is install health, not a shortcut dump (those live on ``?``).
+    assert "/ commands" not in output
+    assert "Enter send" not in output
     # Only the two capability items — no MCPs or AGENTS.md line.
     assert "MCPs" not in output
     assert "AGENTS.md" not in output
@@ -219,10 +221,10 @@ def test_integration_count_includes_all_configured(monkeypatch: object) -> None:
     # Every configured integration counts (not just MCP ones), any health state.
     monkeypatch.setattr(
         "integrations.catalog.configured_integration_health",
-        lambda: [("datadog", "ok"), ("github", "ok"), ("openclaw", "incomplete")],
+        lambda: [("datadog", "ok"), ("github", "ok")],
     )
 
-    assert banner_state_module._count_configured_integrations() == 3
+    assert banner_state_module._count_configured_integrations() == 2
 
 
 def test_status_probes_survive_loader_failures(monkeypatch: object) -> None:

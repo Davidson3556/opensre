@@ -159,7 +159,6 @@ from config.constants.helm import (
     HELM_PATH_ENV,
     OSRE_HELM_INTEGRATION_ENV,
 )
-from config.constants.hermes import HERMES_LOG_PATH_ENV
 from config.constants.honeycomb import (
     HONEYCOMB_API_KEY_ENV,
     HONEYCOMB_BASE_URL_ENV,
@@ -237,13 +236,6 @@ from config.constants.new_relic import (
     NEW_RELIC_INSTANCES_ENV,
     NEW_RELIC_NRQL_LIMIT_MAX,
     NEW_RELIC_NRQL_TIMEOUT_SECONDS,
-)
-from config.constants.openclaw import (
-    OPENCLAW_MCP_ARGS_ENV,
-    OPENCLAW_MCP_AUTH_TOKEN_ENV,
-    OPENCLAW_MCP_COMMAND_ENV,
-    OPENCLAW_MCP_MODE_ENV,
-    OPENCLAW_MCP_URL_ENV,
 )
 from config.constants.opensearch import (
     OPENSEARCH_API_KEY_ENV,
@@ -331,10 +323,12 @@ from config.constants.redis import (
 )
 from config.constants.repl_autonomy import (
     AUTO_LEVEL_ASK_TOOL_TYPES,
+    AUTO_LEVEL_BAR_CAPTIONS,
     AUTO_LEVEL_CAPTIONS,
     AUTO_LEVEL_TITLES,
     DEFAULT_AUTO_LEVEL,
     AutoLevel,
+    format_auto_status_bar,
     format_auto_status_plain,
     parse_auto_level,
 )
@@ -549,10 +543,12 @@ __all__ = [
     "DEFAULT_REMOTE_SYNC_PROVIDER",
     "DEFAULT_THEME_NAME",
     "AUTO_LEVEL_ASK_TOOL_TYPES",
+    "AUTO_LEVEL_BAR_CAPTIONS",
     "AUTO_LEVEL_CAPTIONS",
     "AUTO_LEVEL_TITLES",
     "AutoLevel",
     "DEFAULT_AUTO_LEVEL",
+    "format_auto_status_bar",
     "format_auto_status_plain",
     "parse_auto_level",
     "SOUND_MIN_TURN_SECONDS",
@@ -616,7 +612,6 @@ __all__ = [
     "HELM_NAMESPACE_ENV",
     "HELM_PATH_ENV",
     "OSRE_HELM_INTEGRATION_ENV",
-    "HERMES_LOG_PATH_ENV",
     "HONEYCOMB_API_KEY_ENV",
     "HONEYCOMB_BASE_URL_ENV",
     "HONEYCOMB_DATASET_ENV",
@@ -670,11 +665,6 @@ __all__ = [
     "NEW_RELIC_INSTANCES_ENV",
     "NEW_RELIC_NRQL_LIMIT_MAX",
     "NEW_RELIC_NRQL_TIMEOUT_SECONDS",
-    "OPENCLAW_MCP_ARGS_ENV",
-    "OPENCLAW_MCP_AUTH_TOKEN_ENV",
-    "OPENCLAW_MCP_COMMAND_ENV",
-    "OPENCLAW_MCP_MODE_ENV",
-    "OPENCLAW_MCP_URL_ENV",
     "OPENSEARCH_API_KEY_ENV",
     "OPENSEARCH_PASSWORD_ENV",
     "OPENSEARCH_URL_ENV",

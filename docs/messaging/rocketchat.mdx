@@ -198,14 +198,6 @@ The tool resolves credentials internally from the integration store, then the sa
 
 Delivery is an external side effect but does not require a separate approval. The result includes a stable `status`, `sent`, `error_type`, `channel`, and `message_length` shape so follow-up tool calls can tell configuration failures from Rocket.Chat delivery failures.
 
-### Hermes incident escalation
-
-```bash
-opensre hermes watch --provider rocketchat --chat-id "#incidents"
-```
-
-Hermes incident escalation uses the same per-incident-fingerprint cooldown (`--cooldown-seconds`). See [Hermes](/hermes).
-
 ### Scheduled deliveries (cron)
 
 ```bash
