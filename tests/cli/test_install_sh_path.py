@@ -342,6 +342,36 @@ def test_install_sh_preserves_directory_at_launcher_path(tmp_path: Path) -> None
     assert not list(install_dir.rglob("opensre.old.*"))
 
 
+def test_install_sh_replaces_dangling_app_symlink(tmp_path: Path) -> None:
+    candidate_root = tmp_path / "candidate"
+    candidate_binary = _write_fake_onedir_app(candidate_root, "candidate")
+    install_dir = tmp_path / "bin"
+    install_dir.mkdir()
+    app_destination = install_dir / ".opensre-app"
+    app_destination.symlink_to(tmp_path / "missing-app", target_is_directory=True)
+    destination = install_dir / "opensre"
+    destination.symlink_to(app_destination / "opensre")
+
+    result = _run_logging_snippet(
+        f"""
+        platform="darwin"
+        BIN_NAME="opensre"
+        INSTALL_DIR={shlex.quote(str(install_dir))}
+        install_binary_app {shlex.quote(str(candidate_binary.parent))} {shlex.quote(str(destination))} || exit "$?"
+        {shlex.quote(str(destination))}
+        """
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "candidate\n"
+    assert app_destination.is_dir()
+    assert not app_destination.is_symlink()
+    assert not list(install_dir.rglob(".opensre-app.new.*"))
+    assert not list(install_dir.rglob(".opensre-app.old.*"))
+    assert not list(install_dir.rglob("opensre.new.*"))
+    assert not list(install_dir.rglob("opensre.old.*"))
+
+
 def test_install_sh_cleans_staged_app_when_backing_up_existing_app_fails(
     tmp_path: Path,
 ) -> None:
@@ -449,6 +479,98 @@ def test_install_sh_rolls_back_app_and_launcher_when_launcher_activation_fails(
 
     assert result.returncode != 0
     assert "injected launcher activation failure" in result.stderr
+    assert destination.is_symlink()
+    assert (
+        subprocess.run([destination], capture_output=True, text=True, check=True).stdout == "old\n"
+    )
+    assert not list(install_dir.rglob(".opensre-app.new.*"))
+    assert not list(install_dir.rglob(".opensre-app.old.*"))
+    assert not list(install_dir.rglob("opensre.new.*"))
+    assert not list(install_dir.rglob("opensre.old.*"))
+
+
+def test_install_sh_exit_cleanup_removes_staged_darwin_app_on_term(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    candidate_root = workspace / "candidate"
+    candidate_binary = _write_fake_onedir_app(candidate_root, "candidate")
+    install_dir = tmp_path / "bin"
+    old_root = install_dir / ".opensre-app"
+    old_binary = _write_fake_onedir_app(old_root, "old")
+    destination = install_dir / "opensre"
+    destination.symlink_to(old_binary)
+
+    result = _run_logging_snippet(
+        f"""
+        platform="darwin"
+        BIN_NAME="opensre"
+        INSTALL_DIR={shlex.quote(str(install_dir))}
+        tmp_dir={shlex.quote(str(workspace))}
+        trap cleanup EXIT
+        is_interactive_status_terminal() {{ return 0; }}
+        mv() {{
+          command mv "$@"
+          if [[ "$1" == "$tmp_dir/candidate" && "$2" == "$INSTALL_DIR/.opensre-app.new."* ]]; then
+            printf 'checkpoint: Darwin app staged\n'
+            kill -TERM "$$"
+          fi
+        }}
+        run_with_dots "Installing OpenSRE" \
+          install_binary_app {shlex.quote(str(candidate_binary.parent))} {shlex.quote(str(destination))} \
+          || exit "$?"
+        """
+    )
+
+    assert result.returncode == 130
+    assert "checkpoint: Darwin app staged" in result.stdout
+    assert not workspace.exists()
+    assert destination.is_symlink()
+    assert (
+        subprocess.run([destination], capture_output=True, text=True, check=True).stdout == "old\n"
+    )
+    assert not list(install_dir.rglob(".opensre-app.new.*"))
+    assert not list(install_dir.rglob(".opensre-app.old.*"))
+    assert not list(install_dir.rglob("opensre.new.*"))
+    assert not list(install_dir.rglob("opensre.old.*"))
+
+
+def test_install_sh_exit_cleanup_restores_app_and_launcher_after_backup_on_int(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    candidate_root = workspace / "candidate"
+    candidate_binary = _write_fake_onedir_app(candidate_root, "candidate")
+    install_dir = tmp_path / "bin"
+    old_root = install_dir / ".opensre-app"
+    old_binary = _write_fake_onedir_app(old_root, "old")
+    destination = install_dir / "opensre"
+    destination.symlink_to(old_binary)
+
+    result = _run_logging_snippet(
+        f"""
+        platform="darwin"
+        BIN_NAME="opensre"
+        INSTALL_DIR={shlex.quote(str(install_dir))}
+        tmp_dir={shlex.quote(str(workspace))}
+        trap cleanup EXIT
+        is_interactive_status_terminal() {{ return 0; }}
+        mv() {{
+          command mv "$@"
+          if [[ "$1" == "$INSTALL_DIR/opensre" && "$2" == "$INSTALL_DIR/opensre.old."* ]]; then
+            printf 'checkpoint: app and launcher backed up\n'
+            kill -INT "$$"
+          fi
+        }}
+        run_with_dots "Installing OpenSRE" \
+          install_binary_app {shlex.quote(str(candidate_binary.parent))} {shlex.quote(str(destination))} \
+          || exit "$?"
+        """
+    )
+
+    assert result.returncode == 130
+    assert "checkpoint: app and launcher backed up" in result.stdout
+    assert not workspace.exists()
     assert destination.is_symlink()
     assert (
         subprocess.run([destination], capture_output=True, text=True, check=True).stdout == "old\n"
