@@ -566,34 +566,111 @@ install_binary() {
   chmod 0755 "$destination_path" 2>/dev/null || true
 }
 
+rollback_binary_app_install() {
+  local app_destination_dir="$1"
+  local app_tmp_dir="$2"
+  local app_old_dir="$3"
+  local app_promoted="$4"
+  local previous_app_moved="$5"
+  local destination_path="$6"
+  local destination_tmp_path="$7"
+  local destination_old_path="$8"
+  local previous_destination_moved="$9"
+
+  if [ "$app_promoted" -eq 1 ]; then
+    if ! mv "$app_destination_dir" "$app_tmp_dir"; then
+      rm -rf "$app_destination_dir" || true
+    fi
+  fi
+  if [ "$previous_app_moved" -eq 1 ] && ! mv "$app_old_dir" "$app_destination_dir"; then
+    warn "Could not restore the previous OpenSRE app; it remains at '${app_old_dir}'."
+  fi
+  if [ "$previous_destination_moved" -eq 1 ] \
+    && ! mv "$destination_old_path" "$destination_path"; then
+    warn "Could not restore the previous OpenSRE launcher; it remains at '${destination_old_path}'."
+  fi
+
+  rm -rf "$app_tmp_dir" || true
+  rm -f "$destination_tmp_path" || true
+}
+
 install_binary_app() {
   local app_root="$1"
   local destination_path="$2"
   local app_destination_dir="${INSTALL_DIR}/.${BIN_NAME}-app"
   local app_tmp_dir="${app_destination_dir}.new.$$"
   local app_old_dir="${app_destination_dir}.old.$$"
+  local destination_tmp_path="${destination_path}.new.$$"
+  local destination_old_path="${destination_path}.old.$$"
+  local app_promoted=0
+  local previous_app_moved=0
+  local previous_destination_moved=0
 
-  rm -rf "$app_tmp_dir" "$app_old_dir"
+  if [ -d "$destination_path" ] && [ ! -L "$destination_path" ]; then
+    warn "Cannot install OpenSRE because '${destination_path}' is a directory."
+    return 1
+  fi
+
+  rm -rf "$app_tmp_dir" "$app_old_dir" || return 1
+  rm -f "$destination_tmp_path" "$destination_old_path" || return 1
   if [ "$platform" = "darwin" ]; then
     # Preserve file identity after verify_binary_version() on same-filesystem
     # installs. Retaining the verified executable's inode avoids the repeated
     # cold security-assessment delay observed when an ad-hoc-signed bundle is
     # copied. ``mv`` falls back to copy/remove semantics across filesystems.
-    mv "$app_root" "$app_tmp_dir"
+    if ! mv "$app_root" "$app_tmp_dir"; then
+      rm -rf "$app_tmp_dir" || true
+      return 1
+    fi
   else
     # A fresh Linux copy inherits destination SELinux labels and default ACLs.
-    cp -R "$app_root" "$app_tmp_dir"
+    if ! cp -R "$app_root" "$app_tmp_dir"; then
+      rm -rf "$app_tmp_dir" || true
+      return 1
+    fi
   fi
   chmod -R u+rwX,go+rX "$app_tmp_dir" 2>/dev/null || true
+  if ! ln -s "$app_destination_dir/${BIN_NAME}" "$destination_tmp_path"; then
+    rm -rf "$app_tmp_dir" || true
+    return 1
+  fi
 
   if [ -e "$app_destination_dir" ]; then
-    mv "$app_destination_dir" "$app_old_dir"
+    if ! mv "$app_destination_dir" "$app_old_dir"; then
+      rm -rf "$app_tmp_dir" || true
+      rm -f "$destination_tmp_path" || true
+      return 1
+    fi
+    previous_app_moved=1
   fi
-  mv "$app_tmp_dir" "$app_destination_dir"
-  rm -rf "$app_old_dir"
+  if [ -e "$destination_path" ] || [ -L "$destination_path" ]; then
+    if ! mv "$destination_path" "$destination_old_path"; then
+      rollback_binary_app_install \
+        "$app_destination_dir" "$app_tmp_dir" "$app_old_dir" "$app_promoted" \
+        "$previous_app_moved" "$destination_path" "$destination_tmp_path" \
+        "$destination_old_path" "$previous_destination_moved"
+      return 1
+    fi
+    previous_destination_moved=1
+  fi
+  if ! mv "$app_tmp_dir" "$app_destination_dir"; then
+    rollback_binary_app_install \
+      "$app_destination_dir" "$app_tmp_dir" "$app_old_dir" "$app_promoted" \
+      "$previous_app_moved" "$destination_path" "$destination_tmp_path" \
+      "$destination_old_path" "$previous_destination_moved"
+    return 1
+  fi
+  app_promoted=1
+  if ! mv "$destination_tmp_path" "$destination_path"; then
+    rollback_binary_app_install \
+      "$app_destination_dir" "$app_tmp_dir" "$app_old_dir" "$app_promoted" \
+      "$previous_app_moved" "$destination_path" "$destination_tmp_path" \
+      "$destination_old_path" "$previous_destination_moved"
+    return 1
+  fi
 
-  rm -f "$destination_path"
-  ln -s "$app_destination_dir/${BIN_NAME}" "$destination_path"
+  rm -rf "$app_old_dir" || warn "Could not remove '${app_old_dir}'."
+  rm -f "$destination_old_path" || warn "Could not remove '${destination_old_path}'."
 }
 
 install_verified_binary() {
