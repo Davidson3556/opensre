@@ -9,14 +9,16 @@
 
 ## Supported platforms and architectures
 
-Release availability is separate from default CI coverage. Use the install path for your platform below, then follow the matching [Quickstart](docs/quickstart.mdx) tab for the first-run flow.
+Release availability is separate from default CI coverage. Use the install path for your platform below, then follow the matching install guide for the first-run flow. The [Quickstart](docs/quickstart.mdx) has the same flow with screenshots.
 
 | OS | Architecture | Install paths | Notes |
 | --- | --- | --- | --- |
-| macOS | arm64, x86_64 | [curl installer](https://install.opensre.com), [Homebrew](https://github.com/tracer-cloud/homebrew-tap) | See the [macOS / Linux Quickstart tab](https://www.opensre.com/docs/quickstart#install-opensre). |
-| Linux | x86_64, arm64 | [curl installer](https://install.opensre.com), [release tarball](https://github.com/Tracer-Cloud/opensre/releases) | See the [macOS / Linux Quickstart tab](https://www.opensre.com/docs/quickstart#install-opensre). |
-| Windows | x64 | [PowerShell installer](https://install.opensre.com), [release ZIP](https://github.com/Tracer-Cloud/opensre/releases) | See the [Windows Quickstart tab](https://www.opensre.com/docs/quickstart#install-opensre). |
+| macOS | arm64, x86_64 | [curl installer](https://install.opensre.com), [Homebrew](https://github.com/tracer-cloud/homebrew-tap), binaries: [arm64](https://github.com/Tracer-Cloud/opensre/releases/download/main-build/opensre_main_darwin-arm64.tar.gz), [x86_64](https://github.com/Tracer-Cloud/opensre/releases/download/main-build/opensre_main_darwin-x64.tar.gz) | See the [macOS install guide](https://www.opensre.com/docs/environments/macos#1-install). |
+| Linux | x86_64, arm64 | [curl installer](https://install.opensre.com), binaries: [x86_64](https://github.com/Tracer-Cloud/opensre/releases/download/main-build/opensre_main_linux-x64.tar.gz), [arm64](https://github.com/Tracer-Cloud/opensre/releases/download/main-build/opensre_main_linux-arm64.tar.gz) | See the [Linux install guide](https://www.opensre.com/docs/environments/linux-local#1-install). |
+| Windows | x64 | [PowerShell installer](https://install.opensre.com), binary: [x64 ZIP](https://github.com/Tracer-Cloud/opensre/releases/download/main-build/opensre_main_windows-x64.zip) | See the [Windows install guide](https://www.opensre.com/docs/environments/windows-local#1-install). |
 | Windows | arm64 | — | **Unsupported.** It is not in the default release matrix because `cryptography` does not publish Windows arm64 wheels; source installs are best effort only. |
+
+The binary links above are the rolling `main` build — the same channel `install.opensre.com` uses by default. For a pinned version, download the matching `opensre_<version>_<target>` asset from the [releases page](https://github.com/Tracer-Cloud/opensre/releases/latest). Each archive ships a `.sha256` file next to it.
 
 Main CI runs mostly on `ubuntu-latest`. Windows CI is optional and runs only when a PR has the `ci:windows` label, so it is useful signal rather than a guarantee that every platform is covered by default.
 
