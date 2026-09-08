@@ -51,6 +51,9 @@ _REQUIRED_CONCERNS: dict[str, str | tuple[str, ...]] = {
     "stop command handling": "is_stop_command",
     # Turns bind their charge for the shared runner to apply after capacity.
     "credit metering": "bound_turn_metering",
+    # ... and name the delivery being charged, so a replay after a crash
+    # repeats one key instead of debiting twice (#5691).
+    "metering binds a per-delivery idempotency key": "idempotency_key=",
     # Turn output cooperates with host-side cancellation instead of relying
     # on the harness patching the attribute on — declared directly, or inherited
     # from the shared ``SingleMessageTurnOutput`` base.

@@ -352,6 +352,7 @@ class SlackTurnDispatcher:
                         bound_turn_metering(
                             organization_id=scope.principal.id,
                             reason="slack_turn",
+                            idempotency_key=f"{UsageSurface.SLACK.value}:{inbound.ts}",
                             on_denied=_on_credit_denied,
                         ),
                     ):

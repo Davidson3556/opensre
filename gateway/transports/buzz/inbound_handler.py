@@ -175,6 +175,7 @@ async def handle_polled_inbound_buzz_message(
                     bound_turn_metering(
                         organization_id=scope.principal.id,
                         reason="buzz_turn",
+                        idempotency_key=f"{UsageSurface.BUZZ.value}:{event.event_id}",
                         on_denied=_on_credit_denied,
                     ),
                 ):

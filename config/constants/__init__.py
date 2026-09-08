@@ -147,6 +147,9 @@ if TYPE_CHECKING:
         CREDITS_HTTP_TIMEOUT_SECONDS as CREDITS_HTTP_TIMEOUT_SECONDS,
     )
     from config.constants.billing import (
+        CREDITS_IDEMPOTENCY_HEADER as CREDITS_IDEMPOTENCY_HEADER,
+    )
+    from config.constants.billing import (
         MACHINE_SECRET_ENV as MACHINE_SECRET_ENV,
     )
     from config.constants.billing import (
