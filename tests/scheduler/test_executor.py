@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -379,7 +380,12 @@ class TestExecutor:
             ),
             ThreadPoolExecutor(max_workers=1) as pool,
         ):
-            future = pool.submit(_scheduled_job, task.id, real_runners())
+            future = pool.submit(
+                _scheduled_job,
+                task.id,
+                real_runners(),
+                scheduled_run_time=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+            )
             try:
                 assert started.wait(_SYNC_TIMEOUT_SECONDS)
                 if mutation == "delete":

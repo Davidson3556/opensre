@@ -10,9 +10,8 @@ from infrastructure.scheduling.scheduler.loop_constants import LOOP_PROMPT_PARAM
 from infrastructure.scheduling.scheduler.runner import (
     _compute_fire_time,
     _make_trigger,
-    _on_job_submitted,
-    _pending_fire_times,
     _register_jobs,
+    _scheduled_job,
     compute_next_run,
     refresh_background_scheduler,
     resync_scheduler_jobs,
@@ -81,20 +80,6 @@ class TestMakeTrigger:
         assert trigger is not None
 
 
-class TestOnJobSubmitted:
-    def test_stores_fire_time_from_scheduled_run_times(self) -> None:
-        from datetime import UTC, datetime
-        from types import SimpleNamespace
-
-        _pending_fire_times.clear()
-        event = SimpleNamespace(
-            job_id="task-1",
-            scheduled_run_times=[datetime(2026, 1, 15, 9, 0, tzinfo=UTC)],
-        )
-        _on_job_submitted(event)
-        assert _pending_fire_times["task-1"] == "2026-01-15T09:00Z"
-
-
 class TestComputeFireTime:
     def test_with_utc_datetime(self) -> None:
         from datetime import UTC, datetime
@@ -113,10 +98,39 @@ class TestComputeFireTime:
         # 14:30 IST = 09:00 UTC
         assert result == "2026-01-15T09:00Z"
 
-    def test_with_none_falls_back_to_utc_now(self) -> None:
-        result = _compute_fire_time(None)
-        assert result.endswith("Z")
-        assert "T" in result
+    def test_scheduled_job_uses_callback_fire_time(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from datetime import UTC, datetime
+
+        task = ScheduledTask(
+            id="task-1",
+            kind=TaskKind.MANUAL_LOOP,
+            cron="0 9 * * *",
+            provider=Provider.SLACK,
+        )
+        observed: list[str] = []
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.get_task",
+            lambda _task_id: task,
+        )
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.execute_task",
+            lambda _task, fire_time, _runners: observed.append(fire_time) or False,
+        )
+
+        _scheduled_job(
+            task.id,
+            real_runners(),
+            scheduled_run_time=datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+        )
+
+        assert observed == ["2026-01-15T09:00Z"]
+
+    def test_scheduled_job_rejects_missing_fire_time(self) -> None:
+        with pytest.raises(RuntimeError, match="scheduled_run_time"):
+            _scheduled_job("task-1", real_runners())
 
 
 class TestComputeNextRun:
@@ -136,6 +150,79 @@ class TestComputeNextRun:
 
 
 class TestRegisterJobs:
+    def test_real_scheduler_registers_and_passes_fire_time(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+        from threading import Event
+
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.date import DateTrigger
+
+        from infrastructure.scheduling.scheduler.apscheduler_executor import (
+            ScheduledThreadPoolExecutor,
+        )
+
+        task = ScheduledTask(
+            id="real-scheduler-task",
+            kind=TaskKind.MANUAL_LOOP,
+            cron="* * * * *",
+            provider=Provider.TELEGRAM,
+        )
+        scheduled_run_time = datetime.now(UTC) + timedelta(seconds=2)
+        observed_fire_times: list[str] = []
+        execution_finished = Event()
+
+        def _make_date_trigger(_task: ScheduledTask) -> DateTrigger:
+            return DateTrigger(run_date=scheduled_run_time)
+
+        def _execute_task(
+            _task: ScheduledTask,
+            fire_time: str,
+            _runners: object,
+        ) -> bool:
+            observed_fire_times.append(fire_time)
+            execution_finished.set()
+            return False
+
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.list_tasks",
+            lambda: [task],
+        )
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.get_task",
+            lambda _task_id: task,
+        )
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner._make_trigger",
+            _make_date_trigger,
+        )
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.update_task",
+            lambda _task: None,
+        )
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.execute_task",
+            _execute_task,
+        )
+
+        scheduler = BackgroundScheduler(
+            executors={"default": ScheduledThreadPoolExecutor(max_workers=1)}
+        )
+        started = False
+        try:
+            assert _register_jobs(scheduler, real_runners()) == 1
+            scheduler.start()
+            started = True
+            assert execution_finished.wait(10)
+        finally:
+            if started:
+                scheduler.shutdown(wait=True)
+
+        expected_fire_time = scheduled_run_time.strftime("%Y-%m-%dT%H:%MZ")
+        assert observed_fire_times == [expected_fire_time]
+
     def test_applies_task_filter(
         self,
         tmp_path,
@@ -147,9 +234,6 @@ class TestRegisterJobs:
         class _FakeScheduler:
             def __init__(self) -> None:
                 self.job_ids: list[str] = []
-
-            def add_listener(self, *_args: object) -> None:
-                return None
 
             def add_job(self, *args: object, **kwargs: object) -> None:
                 _ = args
@@ -202,9 +286,6 @@ class TestRegisterJobs:
         class _FakeScheduler:
             def __init__(self) -> None:
                 self.jobs: dict[str, _FakeJob] = {"stale": _FakeJob("stale")}
-
-            def add_listener(self, *_args: object) -> None:
-                return None
 
             def add_job(self, *args: object, **kwargs: object) -> None:
                 _ = args
@@ -398,6 +479,9 @@ class TestStartSchedulerIdle:
         started: list[bool] = []
 
         class _FakeScheduler:
+            def __init__(self, **_kwargs: object) -> None:
+                pass
+
             def start(self) -> None:
                 started.append(True)  # no-op instead of blocking forever
 
