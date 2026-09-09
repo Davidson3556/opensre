@@ -184,57 +184,37 @@ def _from_snapshot(
     window: int,
     console: Any,
     *,
-    include_benchmarks: bool = False,
+    include_benchmarks: bool = True,
     compact: bool = False,
-) -> dict[str, Any]:
-    """Answer from a same-day snapshot with the same renderer as a live analysis."""
-    generated = str(snapshot.get("generated_at", ""))[:16].replace("T", " ")
+) -> dict[str, Any] | None:
+    """Answer from a same-day snapshot, or ``None`` when it holds no usable report.
+
+    A snapshot written before the report object was saved cannot produce the
+    comparison, so it counts as a miss and the caller reads GitHub instead.
+    """
     saved = snapshot.get("report")
     report = report_from_dict(saved) if isinstance(saved, dict) else None
+    if report is None:
+        return None
+    generated = str(snapshot.get("generated_at", ""))[:16].replace("T", " ")
     if console is not None:
         console.print(
             f"  [dim]Using the CI reliability snapshot of {escape(f'{owner}/{repo}')} "
             f"from {generated} UTC (same {window}-day window).[/dim]"
         )
         console.print()
-    if report is not None:
-        result = _result(
-            report,
-            owner,
-            repo,
-            window,
-            console,
-            include_benchmarks=include_benchmarks,
-            compact=compact,
-        )
-        result["summary"] += f" Figures as of {generated} UTC, from the saved snapshot."
-        result["from_snapshot"] = snapshot.get("generated_at")
-        return result
-    # An older snapshot without the report object: the figures only.
-    figures = {
-        key: value
-        for key, value in snapshot.items()
-        if key not in {"generated_at", "headline", "snapshot_path", "window_days", "markdown"}
-    }
-    summary = (
-        f"{owner}/{repo}: {snapshot.get('executions')} runs in {window} days, "
-        f"{snapshot.get('pr_failures')} of {snapshot.get('pr_executions')} PR runs failed, "
-        f"{snapshot.get('reliability_failures')} CI-caused. "
-        f"Figures as of {generated} UTC, from the saved snapshot."
+    result = _result(
+        report,
+        owner,
+        repo,
+        window,
+        console,
+        include_benchmarks=include_benchmarks,
+        compact=compact,
     )
-    return {
-        "source": _SOURCE,
-        "success": True,
-        "owner": owner,
-        "repo": repo,
-        "window_days": window,
-        "summary": summary,
-        "headline": str(snapshot.get("headline", "")),
-        "from_snapshot": snapshot.get("generated_at"),
-        "rendered_in_shell": False,
-        **figures,
-        "response_text": summary,
-    }
+    result["summary"] += f" Figures as of {generated} UTC, from the saved snapshot."
+    result["from_snapshot"] = snapshot.get("generated_at")
+    return result
 
 
 def report_text_from_snapshot(
@@ -257,7 +237,7 @@ def report_text_from_snapshot(
     result = _from_snapshot(
         snapshot, owner, repo, window, None, include_benchmarks=include_benchmarks, compact=True
     )
-    if not result.get("success"):
+    if result is None or not result.get("success"):
         return "", ""
     return str(result.get("response_text") or "").strip(), str(snapshot.get("generated_at", ""))
 
@@ -334,13 +314,12 @@ def _result(
     window: int,
     console: Any,
     *,
-    include_benchmarks: bool = False,
+    include_benchmarks: bool = True,
     compact: bool = False,
 ) -> dict[str, Any]:
     """The tool's return for ``report``: painted in the shell, markdown elsewhere.
 
-    ``compact`` drops the counts appendix from the markdown; the shell painter
-    already drops it whenever the comparison table follows.
+    ``compact`` drops the counts appendix from both forms.
     """
     summary = (
         f"{owner}/{repo}: {report.executions} runs in {window} days, "
@@ -365,7 +344,7 @@ def _result(
     if console is not None:
         # The painted report is the turn's output; a reply restating its figures
         # would print them twice.
-        render_report(console, report, compact=include_benchmarks)
+        render_report(console, report, compact=compact)
         result = {**base, "coverage_notices": list(report.coverage_notices)}
     else:
         result = {
@@ -388,7 +367,10 @@ def _result(
         "CI-caused (same commit passed later) versus source-code, developer time "
         "blocked by unreliable CI on merged PRs, and default-branch red time. "
         "Read-only. A same-day snapshot answers without a token; a live GitHub "
-        "read needs a token."
+        "read needs a token. Every report also carries a comparison with "
+        "apache/airflow and fastapi/fastapi built from same-day snapshots: it "
+        "costs no extra request and cannot be turned off, so never offer to skip "
+        "it. The report is painted on screen — do not restate its figures."
     ),
     use_cases=[
         "Analyze a repository's CI/CD performance and reliability",
@@ -412,7 +394,7 @@ def _result(
         "headline": "One sentence naming the biggest cost (already painted; do not repeat)",
         "key_results": "The five takeaway rows, red time first, even when the shell painted the report",
         "response_text": "The rendered report, or a one-line summary when the shell painted it",
-        "benchmarks": "When include_benchmarks is true: Airflow and FastAPI rows from the same window",
+        "benchmarks": "Airflow and FastAPI rows from the same window, when a snapshot exists",
     },
     surfaces=(ToolSurface.CHAT, ToolSurface.ACTION),
     side_effect_level=SideEffectLevel.READ_ONLY,
@@ -439,11 +421,12 @@ def _result(
                 "type": "string",
                 "description": "Local checkout used to detect owner/repo when not given.",
             },
-            "include_benchmarks": {
+            "compact": {
                 "type": "boolean",
                 "description": (
-                    "Also compare this repository with apache/airflow and fastapi/fastapi "
-                    "over the same window. Default false."
+                    "Key results and the comparison only, without the counts appendix "
+                    "(executions, failure classification, blocked time, workflows). "
+                    "Use for a first-look report. Default false."
                 ),
             },
             "github_token": {"type": "string"},
@@ -460,7 +443,7 @@ def analyze_github_ci_reliability(
     repo: str | None = None,
     days: int | None = None,
     workspace: str | None = None,
-    include_benchmarks: bool = False,
+    compact: bool = False,
     github_token: str | None = None,
     context: Any = None,
     **_kwargs: Any,
@@ -470,11 +453,13 @@ def analyze_github_ci_reliability(
     In the interactive shell the report is painted straight to the console so
     every figure the user sees is the computed one; the returned
     ``response_text`` then only summarizes. Other surfaces get the markdown.
-    When ``include_benchmarks`` is true the same call also paints one comparison
-    table against apache/airflow and fastapi/fastapi (snapshots first).
+    The same call also paints one comparison table against apache/airflow and
+    fastapi/fastapi, built from same-day snapshots only — never a live fetch. The
+    comparison is not the model's choice to make; ``compact`` drops the counts
+    appendix.
     """
     window = min(max(int(days or _DEFAULT_WINDOW_DAYS), _MIN_WINDOW_DAYS), _MAX_WINDOW_DAYS)
-    compare = _flag(include_benchmarks)
+    brief = _flag(compact)
     repo_owner = (owner or "").strip()
     repo_name = (repo or "").strip().removesuffix(".git")
     if not repo_owner or not repo_name:
@@ -494,14 +479,16 @@ def analyze_github_ci_reliability(
     )
     token = resolve_github_token(github_token)
     if snapshot is not None:
-        return _from_snapshot(
+        answered = _from_snapshot(
             snapshot,
             repo_owner,
             repo_name,
             window,
             console,
-            include_benchmarks=compare,
+            compact=brief,
         )
+        if answered is not None:
+            return answered
     if not token:
         message = (
             f"A GitHub token is required to read the Actions history of {repo_owner}/{repo_name}. "
@@ -567,7 +554,7 @@ def analyze_github_ci_reliability(
         repo_name,
         window,
         console,
-        include_benchmarks=compare,
+        compact=brief,
     )
 
 
