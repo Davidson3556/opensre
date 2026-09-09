@@ -1475,7 +1475,9 @@ function Get-OpenSreLegacyReplacementRefusalMessage {
 }
 
 function Test-OpenSreLegacyReplacementOptIn {
-    $value = [string]$env:OPENSRE_INSTALL_REPLACE_EXISTING_BINARY
+    $value = [string][System.Environment]::GetEnvironmentVariable(
+        $script:OpenSreReplaceExistingBinaryEnv
+    )
     return $value -ceq "1"
 }
 
@@ -1526,7 +1528,9 @@ function Confirm-OpenSreLegacyBinaryReplacement {
 function Resolve-OpenSreInstallContext {
     $explicitInstallDir = [string]$env:OPENSRE_INSTALL_DIR
     $updateExecutable = [string]$env:OPENSRE_UPDATE_EXECUTABLE
-    $updateParentStarted = [string]$env:OPENSRE_UPDATE_PARENT_STARTED
+    $updateParentStarted = [string][System.Environment]::GetEnvironmentVariable(
+        $script:OpenSreUpdateParentStartedEnv
+    )
     $updateParentProcessId = 0
     if ($env:OPENSRE_UPDATE_PARENT_PID) {
         $parsedParentProcessId = 0

@@ -1439,7 +1439,7 @@ function Move-OpenSreTargetIfUnused {
             try {
                 if ([System.IO.File]::Exists((ConvertTo-OpenSreExtendedPath -Path $retiredExecutable))) {
                     $guard = [System.IO.File]::Open(
-                        $retiredExecutable,
+                        (ConvertTo-OpenSreExtendedPath -Path $retiredExecutable),
                         [System.IO.FileMode]::Open,
                         [System.IO.FileAccess]::Read,
                         [System.IO.FileShare]::Delete
@@ -1771,7 +1771,7 @@ if ($null -ne $managed) {
                         $versionExecutable.Substring($appRoot.Length).TrimStart('\', '/')
                     )
                     $versionGuards += [System.IO.File]::Open(
-                        $retiredExecutable,
+                        (ConvertTo-OpenSreExtendedPath -Path $retiredExecutable),
                         [System.IO.FileMode]::Open,
                         [System.IO.FileAccess]::Read,
                         [System.IO.FileShare]::Delete

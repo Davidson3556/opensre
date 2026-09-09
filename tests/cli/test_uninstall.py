@@ -3776,6 +3776,82 @@ def test_cleanup_worker_treats_dangling_junction_as_an_existing_guard(
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows deferred cleanup only")
+@pytest.mark.parametrize("managed", [False, True], ids=("legacy", "managed"))
+def test_cleanup_worker_opens_long_retired_executable_with_extended_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    managed: bool,
+) -> None:
+    from tests.cli.test_install_ps1_onedir import _fake_opensre_executable
+
+    relative_executable = (
+        Path(".opensre-app") / "versions" / "build-1" / "opensre.exe"
+        if managed
+        else Path("legacy-bundle") / "opensre.exe"
+    )
+    retirement_suffix_length = len(".uninstall-") + 32
+    install_dir = tmp_path / ("managed long guard" if managed else "legacy long guard")
+    while len(str(install_dir / relative_executable)) + retirement_suffix_length <= 260:
+        install_dir /= "x"
+
+    executable = install_dir / relative_executable
+    executable.parent.mkdir(parents=True)
+    shutil.copy2(_fake_opensre_executable(), executable)
+    assert len(str(executable)) < 260
+    assert len(str(executable)) + retirement_suffix_length > 260
+
+    install_lock = install_dir / ".opensre-app.install.lock"
+    launcher: Path | None = None
+    app_root: Path | None = None
+    target = executable.parent
+    if managed:
+        app_root = install_dir / ".opensre-app"
+        target = app_root
+        (app_root / "layout-v1.marker").write_text(
+            "OpenSRE Windows bundle layout v1\n", encoding="utf-8"
+        )
+        (app_root / "current.txt").write_text("build-1\n", encoding="utf-8")
+        launcher = install_dir / "opensre.cmd"
+        launcher.write_text("@echo off\n:: OpenSRE Windows launcher v1\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.cleanup.windows_process_identity",
+        _missing_process_identity,
+    )
+    workers = _capture_cleanup_workers(monkeypatch)
+
+    try:
+        if managed:
+            assert app_root is not None
+            ok, error = schedule_windows_managed_cleanup(
+                executable=executable,
+                app_root=app_root,
+                launcher=launcher,
+                parent_pid=2_147_483_647,
+            )
+        else:
+            ok, error = schedule_windows_cleanup(
+                [target],
+                parent_pid=2_147_483_647,
+                install_lock_path=install_lock,
+            )
+
+        assert ok is True, error
+        assert len(workers) == 1
+        output, _ = workers[0].communicate(timeout=90)
+        assert workers[0].returncode == 0, output.decode("utf-8", errors="replace")
+        assert not target.exists()
+        assert not install_lock.exists()
+        if launcher is not None:
+            assert not launcher.exists()
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows deferred cleanup only")
 def test_managed_uninstall_removes_long_quarantine_tree(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

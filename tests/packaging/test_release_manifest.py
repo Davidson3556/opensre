@@ -14,6 +14,10 @@ from typing import Any
 import pytest
 import yaml
 
+from config.constants import (
+    OPENSRE_INSTALL_REPLACE_EXISTING_BINARY_ENV,
+    OPENSRE_UPDATE_PARENT_STARTED_ENV,
+)
 from infrastructure.deployment.packaging.release_manifest import (
     infrastructure_data_entries,
     required_skill_files,
@@ -370,3 +374,19 @@ def test_windows_cleanup_worker_ships_in_wheels_and_frozen_bundles() -> None:
 def test_windows_installer_embeds_canonical_lifecycle_constants() -> None:
     source = (_REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
     assert source.count(render_installer_constants()) == 1
+
+
+def test_windows_installer_consumes_canonical_environment_names() -> None:
+    source = (_REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
+    bindings = {
+        "OpenSreReplaceExistingBinaryEnv": OPENSRE_INSTALL_REPLACE_EXISTING_BINARY_ENV,
+        "OpenSreUpdateParentStartedEnv": OPENSRE_UPDATE_PARENT_STARTED_ENV,
+    }
+
+    for variable, environment_name in bindings.items():
+        assert source.count(f'"{environment_name}"') == 1
+        assert f"$env:{environment_name}" not in source
+        assert (
+            f"[System.Environment]::GetEnvironmentVariable(\n        $script:{variable}\n    )"
+            in source
+        )
