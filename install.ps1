@@ -3824,6 +3824,24 @@ function Test-OpenSreCleanupTreeSafe {
     }
 }
 
+function Get-OpenSreCapturedProcessState {
+    param([object]$Process)
+
+    try {
+        $hasExited = $Process.HasExited
+    }
+    catch {
+        return 'unknown'
+    }
+    if ($hasExited -isnot [bool]) {
+        return 'unknown'
+    }
+    if ($hasExited -eq $true) {
+        return 'exited'
+    }
+    return 'running'
+}
+
 function Open-OpenSreCleanupDeletionLease {
     param(
         [string]$Path,
@@ -3931,40 +3949,62 @@ function Get-OpenSreTargetUseState {
         }
         foreach ($process in $processes) {
             try {
-                if ($process.ProcessName -ine 'opensre') {
-                    continue
-                }
-                $processPath = [string]$process.Path
+                $processName = [string]$process.ProcessName
             }
             catch {
+                if ((Get-OpenSreCapturedProcessState -Process $process) -ceq 'exited') {
+                    continue
+                }
                 return 'unknown'
             }
-            if (-not $processPath) {
+            if ([string]::IsNullOrWhiteSpace($processName)) {
+                if ((Get-OpenSreCapturedProcessState -Process $process) -ceq 'exited') {
+                    continue
+                }
                 return 'unknown'
             }
-            if ($targetIsDirectory) {
-                try {
-                    if (Test-OpenSrePathContains -Root $Path -Candidate $processPath) {
-                        return 'busy'
-                    }
-                }
-                catch {
-                    return 'unknown'
-                }
+            if ($processName -ine 'opensre') {
+                continue
             }
-            else {
-                try {
-                    $sameFile = [OpenSreCleanup.NativePathApi]::SameFile(
+            $processState = Get-OpenSreCapturedProcessState -Process $process
+            if ($processState -ceq 'exited') {
+                continue
+            }
+            if ($processState -cne 'running') {
+                return 'unknown'
+            }
+            try {
+                $processPath = [string]$process.Path
+                if (-not $processPath) {
+                    throw 'The OpenSRE process path is unavailable.'
+                }
+                if ($targetIsDirectory) {
+                    $sameTarget = Test-OpenSrePathContains `
+                        -Root $Path `
+                        -Candidate $processPath
+                }
+                else {
+                    $sameTarget = [OpenSreCleanup.NativePathApi]::SameFile(
                         (ConvertTo-OpenSreExtendedPath -Path $Path),
                         (ConvertTo-OpenSreExtendedPath -Path $processPath)
                     )
                 }
-                catch {
-                    return 'unknown'
+            }
+            catch {
+                if ((Get-OpenSreCapturedProcessState -Process $process) -ceq 'exited') {
+                    continue
                 }
-                if ($sameFile) {
-                    return 'busy'
-                }
+                return 'unknown'
+            }
+            $processState = Get-OpenSreCapturedProcessState -Process $process
+            if ($processState -ceq 'exited') {
+                continue
+            }
+            if ($processState -cne 'running') {
+                return 'unknown'
+            }
+            if ($sameTarget) {
+                return 'busy'
             }
         }
         return 'safe'
@@ -4263,6 +4303,13 @@ function Get-OpenSreParentIdentityState {
         if ($null -eq $parentProcess) {
             return 'unknown'
         }
+        $parentState = Get-OpenSreCapturedProcessState -Process $parentProcess
+        if ($parentState -ceq 'exited') {
+            return 'exited'
+        }
+        if ($parentState -cne 'running') {
+            return 'unknown'
+        }
         if (-not $ParentExecutablePath -or -not $ParentStarted) {
             # Older direct callers supplied only a PID. Its continued presence
             # can require waiting, but never authorizes deletion.
@@ -4318,14 +4365,8 @@ function Get-OpenSreParentIdentityState {
             }
         }
         catch {
-            try {
-                $hasExited = $parentProcess.HasExited
-                if ($hasExited -is [bool] -and $hasExited -eq $true) {
-                    return 'exited'
-                }
-            }
-            catch {
-                # An inspection error is not proof that the process exited.
+            if ((Get-OpenSreCapturedProcessState -Process $parentProcess) -ceq 'exited') {
+                return 'exited'
             }
             return 'unknown'
         }
@@ -4336,7 +4377,7 @@ function Get-OpenSreParentIdentityState {
             # The scheduled parent exited and Windows reused its PID.
             return 'exited'
         }
-        return 'running'
+        return Get-OpenSreCapturedProcessState -Process $parentProcess
     }
     finally {
         Close-OpenSreCleanupProcess -Process $parentProcess

@@ -72,7 +72,12 @@ def _inject_empty_process_enumerator(source: str) -> str:
     return source.replace(anchor, anchor + _EMPTY_PROCESS_ENUMERATOR, 1)
 
 
-def _inject_parent_metadata_failure(source: str, *, has_exited: str) -> str:
+def _inject_parent_process_state(
+    source: str,
+    *,
+    has_exited: str,
+    readable_metadata: bool = False,
+) -> str:
     anchor = "$ErrorActionPreference = 'Stop'\n"
     assert source.count(anchor) == 1
     property_body = {
@@ -80,20 +85,116 @@ def _inject_parent_metadata_failure(source: str, *, has_exited: str) -> str:
         "false": "return $false",
         "non-bool": "return 'true'",
         "throw": "throw 'forced HasExited inspection failure'",
+        "false-then-true": (
+            "$script:openSreTestHasExitedReads += 1\n"
+            "        return ($script:openSreTestHasExitedReads -ge 2)"
+        ),
     }[has_exited]
+    if readable_metadata:
+        metadata_setup = r"""
+    $parent = [pscustomobject]@{
+        ProcessName = 'opensre'
+        Path = [string]$payload.parent.path
+        StartTime = [System.DateTime]::FromFileTimeUtc(
+            [int64]$payload.parent.started_filetime_utc
+        )
+    }
+"""
+    else:
+        metadata_setup = r"""
+    $parent = [pscustomobject]@{ ProcessName = 'opensre' }
+    $parent | Add-Member -MemberType ScriptProperty -Name Path -Value {
+        throw 'forced parent metadata failure'
+    }
+"""
     process_override = rf"""
+$script:openSreTestHasExitedReads = 0
 function Get-Process {{
     [CmdletBinding()]
     param([int]$Id, [string]$Name)
     if (-not $PSBoundParameters.ContainsKey('Id')) {{ return @() }}
-    $parent = [pscustomobject]@{{ ProcessName = 'opensre' }}
-    $parent | Add-Member -MemberType ScriptProperty -Name Path -Value {{
-        throw 'forced parent metadata failure'
-    }}
+{metadata_setup}
     $parent | Add-Member -MemberType ScriptProperty -Name HasExited -Value {{
         {property_body}
     }}
     return $parent
+}}
+"""
+    return source.replace(anchor, anchor + process_override, 1)
+
+
+def _inject_scan_process_state(
+    source: str,
+    *,
+    target: Path,
+    process_name: str,
+    process_path: str,
+    has_exited: str,
+    include_busy_process: bool,
+) -> str:
+    anchor = "$ErrorActionPreference = 'Stop'\n"
+    assert source.count(anchor) == 1
+    property_body = {
+        "true": "return $true",
+        "false": "return $false",
+        "throw": "throw 'forced HasExited inspection failure'",
+        "false-then-true": (
+            "$script:openSreTestScanHasExitedReads += 1\n"
+            "        return ($script:openSreTestScanHasExitedReads -ge 2)"
+        ),
+    }[has_exited]
+    process_name_body = {
+        "opensre": "return 'opensre'",
+        "empty": "return $null",
+        "throw": "throw 'forced ProcessName inspection failure'",
+    }[process_name]
+    target_payload = base64.b64encode(str(target).encode("utf-8")).decode("ascii")
+    if process_path == "target":
+        process_path_setup = (
+            "    $exited | Add-Member -MemberType NoteProperty -Name Path -Value $testTargetPath\n"
+        )
+    else:
+        assert process_path == "throw"
+        process_path_setup = r"""
+    $exited | Add-Member -MemberType ScriptProperty -Name Path -Value {
+        throw 'forced process path inspection failure'
+    }
+"""
+    busy_process = ""
+    if include_busy_process:
+        busy_process = r"""
+    $busy = [pscustomobject]@{
+        ProcessName = 'opensre'
+        Path = $testTargetPath
+        HasExited = $false
+    }
+    return @($exited, $busy)
+"""
+    else:
+        busy_process = "    return @($exited)\n"
+    process_override = rf"""
+$script:openSreTestScanHasExitedReads = 0
+function Get-Process {{
+    [CmdletBinding()]
+    param([int]$Id, [string]$Name)
+    if ($PSBoundParameters.ContainsKey('Id')) {{
+        return Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
+    }}
+    $testTargetPath = [System.Text.Encoding]::UTF8.GetString(
+        [System.Convert]::FromBase64String('{target_payload}')
+    )
+    $exited = [pscustomobject]@{{}}
+    $exited | Add-Member -MemberType ScriptProperty -Name ProcessName -Value {{
+        {process_name_body}
+    }}
+{process_path_setup}
+    $exited | Add-Member -MemberType ScriptProperty -Name HasExited -Value {{
+        {property_body}
+    }}
+{busy_process}}}
+function Start-Sleep {{
+    param([int]$Milliseconds)
+    $script:lockDeadline = [System.DateTime]::MinValue
 }}
 """
     return source.replace(anchor, anchor + process_override, 1)
@@ -1886,19 +1987,29 @@ def test_schedule_windows_cleanup_removes_path_after_parent_exit(tmp_path: Path)
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows deferred cleanup only")
 @pytest.mark.parametrize(
-    ("has_exited", "expected_exit", "target_removed"),
+    ("has_exited", "readable_metadata", "expected_exit", "target_removed"),
     [
-        ("true", 0, True),
-        ("false", 1, False),
-        ("non-bool", 1, False),
-        ("throw", 1, False),
+        ("true", False, 0, True),
+        ("false-then-true", False, 0, True),
+        ("false-then-true", True, 0, True),
+        ("false", False, 1, False),
+        ("non-bool", False, 1, False),
+        ("throw", False, 1, False),
     ],
-    ids=("confirmed-exit", "still-running", "non-boolean", "inspection-error"),
+    ids=(
+        "confirmed-exit",
+        "exit-during-metadata-error",
+        "exit-after-readable-metadata",
+        "still-running",
+        "non-boolean",
+        "inspection-error",
+    ),
 )
-def test_cleanup_worker_parent_metadata_failure_requires_confirmed_exit(
+def test_cleanup_worker_parent_process_state_requires_confirmed_exit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     has_exited: str,
+    readable_metadata: bool,
     expected_exit: int,
     target_removed: bool,
 ) -> None:
@@ -1907,9 +2018,10 @@ def test_cleanup_worker_parent_metadata_failure_requires_confirmed_exit(
     install_lock = tmp_path / f"parent-metadata-{has_exited}.lock"
     monkeypatch.setattr(
         "surfaces.cli.lifecycle.windows.cleanup.read_cleanup_script",
-        lambda: _inject_parent_metadata_failure(
+        lambda: _inject_parent_process_state(
             read_cleanup_script(),
             has_exited=has_exited,
+            readable_metadata=readable_metadata,
         ),
     )
     monkeypatch.setattr(
@@ -1926,6 +2038,84 @@ def test_cleanup_worker_parent_metadata_failure_requires_confirmed_exit(
         return worker
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.subprocess.Popen", _capture_worker)
+
+    try:
+        ok, error = schedule_windows_cleanup(
+            [target],
+            parent_pid=2_147_483_647,
+            install_lock_path=install_lock,
+        )
+        assert ok is True, error
+        assert len(workers) == 1
+        output, _ = workers[0].communicate(timeout=30)
+        assert workers[0].returncode == expected_exit, output.decode("utf-8", errors="replace")
+        assert target.exists() is (not target_removed)
+        assert install_lock.exists() is (not target_removed)
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows deferred cleanup only")
+@pytest.mark.parametrize(
+    (
+        "process_name",
+        "process_path",
+        "has_exited",
+        "include_busy_process",
+        "expected_exit",
+        "target_removed",
+    ),
+    [
+        ("opensre", "throw", "false-then-true", False, 0, True),
+        ("opensre", "throw", "false-then-true", True, 1, False),
+        ("opensre", "target", "false-then-true", False, 0, True),
+        ("opensre", "throw", "false", False, 1, False),
+        ("opensre", "throw", "throw", False, 1, False),
+        ("empty", "throw", "false", False, 1, False),
+        ("throw", "throw", "true", False, 0, True),
+    ],
+    ids=(
+        "exit-during-path-inspection-is-skipped",
+        "later-busy-entry-still-blocks",
+        "exit-after-path-comparison-is-skipped",
+        "inaccessible-live-entry-fails-closed",
+        "unknown-exit-state-fails-closed",
+        "empty-name-fails-closed",
+        "exited-entry-with-unreadable-name-is-skipped",
+    ),
+)
+def test_cleanup_worker_scan_requires_confirmed_process_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    process_name: str,
+    process_path: str,
+    has_exited: str,
+    include_busy_process: bool,
+    expected_exit: int,
+    target_removed: bool,
+) -> None:
+    target = tmp_path / f"scan-process-{has_exited}-{include_busy_process}.txt"
+    target.write_text("candidate", encoding="utf-8")
+    install_lock = tmp_path / f"scan-process-{has_exited}-{include_busy_process}.lock"
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.cleanup.read_cleanup_script",
+        lambda: _inject_scan_process_state(
+            read_cleanup_script(),
+            target=target,
+            process_name=process_name,
+            process_path=process_path,
+            has_exited=has_exited,
+            include_busy_process=include_busy_process,
+        ),
+    )
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.cleanup.windows_process_identity",
+        _missing_process_identity,
+    )
+    workers = _capture_cleanup_workers(monkeypatch)
 
     try:
         ok, error = schedule_windows_cleanup(

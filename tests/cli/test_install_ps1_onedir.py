@@ -66,6 +66,7 @@ def _inject_owned_process_enumerator(
     process_id: int,
     process_started: str,
     second_scan_ready: Path | None = None,
+    parent_observed: Path | None = None,
 ) -> str:
     anchor = '$ErrorActionPreference = "SilentlyContinue"\n'
     assert source.count(anchor) == 1
@@ -85,6 +86,17 @@ def _inject_owned_process_enumerator(
             $process = Get-OpenSreOwnedTestProcess
         }}
     }}
+"""
+    parent_observed_probe = ""
+    if parent_observed is not None:
+        observed_payload = base64.b64encode(str(parent_observed).encode("utf-8")).decode("ascii")
+        parent_observed_probe = f"""
+        if ($null -ne $process) {{
+            $observedPath = [System.Text.Encoding]::UTF8.GetString(
+                [System.Convert]::FromBase64String('{observed_payload}')
+            )
+            [System.IO.File]::WriteAllText($observedPath, 'observed')
+        }}
 """
     process_override = rf"""
 $script:OpenSreTestProcessScanCount = 0
@@ -113,7 +125,9 @@ function Get-Process {{
     [CmdletBinding()]
     param([int]$Id, [string]$Name)
     if ($PSBoundParameters.ContainsKey('Id')) {{
-        return Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
+        $process = Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
+{parent_observed_probe}
+        return $process
     }}
     $process = Get-OpenSreOwnedTestProcess
 {scan_barrier}
@@ -129,6 +143,7 @@ def _write_scoped_cleanup_installer(
     process_id: int,
     process_started: str,
     second_scan_ready: Path | None = None,
+    parent_observed: Path | None = None,
 ) -> Path:
     installer = root / "install-with-scoped-cleanup-process.ps1"
     installer.write_text(
@@ -137,10 +152,161 @@ def _write_scoped_cleanup_installer(
             process_id=process_id,
             process_started=process_started,
             second_scan_ready=second_scan_ready,
+            parent_observed=parent_observed,
         ),
         encoding="utf-8",
     )
     return installer
+
+
+def _inject_parent_with_readable_metadata(
+    source: str,
+    *,
+    executable: Path,
+    started: int,
+    has_exited: str,
+) -> str:
+    anchor = '$ErrorActionPreference = "SilentlyContinue"\n'
+    assert source.count(anchor) == 1
+    property_body = {
+        "true": "return $true",
+        "false": "return $false",
+        "non-bool": "return 'true'",
+        "throw": "throw 'forced HasExited inspection failure'",
+    }[has_exited]
+    executable_payload = base64.b64encode(str(executable).encode("utf-8")).decode("ascii")
+    process_override = rf"""
+function Get-Process {{
+    [CmdletBinding()]
+    param([int]$Id, [string]$Name)
+    if (-not $PSBoundParameters.ContainsKey('Id')) {{ return @() }}
+    $path = [System.Text.Encoding]::UTF8.GetString(
+        [System.Convert]::FromBase64String('{executable_payload}')
+    )
+    $parent = [pscustomobject]@{{
+        ProcessName = 'opensre'
+        Path = $path
+        StartTime = [System.DateTime]::FromFileTimeUtc({started})
+    }}
+    $parent | Add-Member -MemberType ScriptProperty -Name HasExited -Value {{
+        {property_body}
+    }}
+    return $parent
+}}
+"""
+    return source.replace(anchor, anchor + process_override, 1)
+
+
+def _inject_exited_process_with_unavailable_path(
+    source: str,
+    *,
+    busy_executable: Path | None = None,
+) -> str:
+    anchor = '$ErrorActionPreference = "SilentlyContinue"\n'
+    assert source.count(anchor) == 1
+    busy_process = ""
+    if busy_executable is not None:
+        busy_payload = base64.b64encode(str(busy_executable).encode("utf-8")).decode("ascii")
+        busy_process = f"""
+    $busyPath = [System.Text.Encoding]::UTF8.GetString(
+        [System.Convert]::FromBase64String('{busy_payload}')
+    )
+    $processes += [pscustomobject]@{{
+        ProcessName = 'opensre'
+        HasExited = $false
+        Path = $busyPath
+    }}
+"""
+    process_override = r"""
+function Get-Process {
+    [CmdletBinding()]
+    param([int]$Id, [string]$Name)
+    if ($PSBoundParameters.ContainsKey('Id')) { return $null }
+    $exited = [pscustomobject]@{
+        ProcessName = 'opensre'
+        HasExited = $true
+    }
+    $exited | Add-Member -MemberType ScriptProperty -Name Path -Value {
+        throw 'forced exited-process path failure'
+    }
+    $processes = @($exited)
+__BUSY_PROCESS__
+    return $processes
+}
+"""
+    process_override = process_override.replace("__BUSY_PROCESS__", busy_process)
+    return source.replace(anchor, anchor + process_override, 1)
+
+
+def _inject_process_exit_after_target_match(source: str, *, executable: Path) -> str:
+    anchor = '$ErrorActionPreference = "SilentlyContinue"\n'
+    assert source.count(anchor) == 1
+    executable_payload = base64.b64encode(str(executable).encode("utf-8")).decode("ascii")
+    process_override = rf"""
+$script:OpenSreTestHasExitedChecks = 0
+function Get-Process {{
+    [CmdletBinding()]
+    param([int]$Id, [string]$Name)
+    if ($PSBoundParameters.ContainsKey('Id')) {{ return $null }}
+    $path = [System.Text.Encoding]::UTF8.GetString(
+        [System.Convert]::FromBase64String('{executable_payload}')
+    )
+    $process = [pscustomobject]@{{
+        ProcessName = 'opensre'
+        Path = $path
+    }}
+    $process | Add-Member -MemberType ScriptProperty -Name HasExited -Value {{
+        $script:OpenSreTestHasExitedChecks += 1
+        return $script:OpenSreTestHasExitedChecks -ge 2
+    }}
+    return $process
+}}
+"""
+    return source.replace(anchor, anchor + process_override, 1)
+
+
+def _inject_process_with_unusable_name(source: str) -> str:
+    anchor = '$ErrorActionPreference = "SilentlyContinue"\n'
+    assert source.count(anchor) == 1
+    process_override = r"""
+function Get-Process {
+    [CmdletBinding()]
+    param([int]$Id, [string]$Name)
+    if ($PSBoundParameters.ContainsKey('Id')) { return $null }
+    return [pscustomobject]@{
+        ProcessName = $null
+        HasExited = $false
+        Path = $null
+    }
+}
+"""
+    return source.replace(anchor, anchor + process_override, 1)
+
+
+def _inject_parent_exit_during_metadata(source: str, *, started: int) -> str:
+    anchor = '$ErrorActionPreference = "SilentlyContinue"\n'
+    assert source.count(anchor) == 1
+    process_override = rf"""
+$script:OpenSreTestHasExitedChecks = 0
+function Get-Process {{
+    [CmdletBinding()]
+    param([int]$Id, [string]$Name)
+    if (-not $PSBoundParameters.ContainsKey('Id')) {{ return @() }}
+    $parent = [pscustomobject]@{{
+        ProcessName = 'opensre'
+        StartTime = [System.DateTime]::FromFileTimeUtc({started})
+    }}
+    $parent | Add-Member -MemberType ScriptProperty -Name HasExited -Value {{
+        $script:OpenSreTestHasExitedChecks += 1
+        return $script:OpenSreTestHasExitedChecks -ge 2
+    }}
+    $parent | Add-Member -MemberType ScriptProperty -Name Path -Value {{
+        throw 'forced parent exit during metadata inspection'
+    }}
+    return $parent
+}}
+"""
+    return source.replace(anchor, anchor + process_override, 1)
 
 
 def _inject_cleanup_lock_open_barrier(
@@ -174,6 +340,16 @@ def _set_embedded_cleanup_lock_timeout(source: str, *, seconds: int) -> str:
     return source.replace(
         anchor,
         f"$lockDeadline = [System.DateTime]::UtcNow.AddSeconds({seconds})",
+        1,
+    )
+
+
+def _set_embedded_cleanup_parent_timeout(source: str, *, seconds: int) -> str:
+    anchor = "$waitDeadline = [System.DateTime]::UtcNow.AddMinutes(10)"
+    assert source.count(anchor) == 1
+    return source.replace(
+        anchor,
+        f"$waitDeadline = [System.DateTime]::UtcNow.AddSeconds({seconds})",
         1,
     )
 
@@ -1073,6 +1249,7 @@ def test_running_legacy_onefile_cleanup_waits_for_process_exit(tmp_path: Path) -
     legacy_alias = _short_path(legacy_binary, cwd=tmp_path)
     assert str(legacy_alias).casefold() != str(legacy_binary).casefold()
     release = tmp_path / "release-legacy-process"
+    worker_observed = tmp_path / "cleanup-worker-observed-parent"
     running_legacy = subprocess.Popen([str(legacy_alias), "hold-until", str(release)])
 
     try:
@@ -1081,6 +1258,7 @@ def test_running_legacy_onefile_cleanup_waits_for_process_exit(tmp_path: Path) -
             tmp_path,
             process_id=running_legacy.pid,
             process_started=parent_started,
+            parent_observed=worker_observed,
         )
         _, result = _install_bundle(
             binary_path=replacement_binary,
@@ -1096,14 +1274,14 @@ def test_running_legacy_onefile_cleanup_waits_for_process_exit(tmp_path: Path) -
         assert result is not None
         assert result["DeferredCleanup"] is True
         assert not legacy_binary.exists()
+        _wait_until(worker_observed.is_file)
         assert running_legacy.poll() is None
 
         release.write_text("release", encoding="utf-8")
         running_legacy.wait(timeout=10)
-        deadline = time.monotonic() + 30
+        cleanup_path = _path(result, "CleanupPath")
+        _wait_until(lambda: not cleanup_path.exists(), timeout=45)
         layout_root = install_dir / ".opensre-app"
-        while list(layout_root.glob("retired-*")) and time.monotonic() < deadline:
-            time.sleep(0.1)
 
         assert list(layout_root.glob("retired-*")) == []
         assert _probe_launcher(_path(result, "LauncherPath"), cwd=tmp_path)["VersionExit"] == 0
@@ -2917,6 +3095,168 @@ def test_deferred_cleanup_fails_closed_when_parent_metadata_is_uncertain(
     _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists())
     assert target.is_dir()
     assert (target / "opensre.exe").is_file()
+
+
+@pytest.mark.parametrize(
+    ("has_exited", "expect_cleanup"),
+    [
+        pytest.param("true", True, id="confirmed-exit"),
+        pytest.param("false", False, id="still-running"),
+        pytest.param("non-bool", False, id="non-boolean-state"),
+        pytest.param("throw", False, id="state-inspection-error"),
+    ],
+)
+def test_deferred_cleanup_requires_confirmed_exit_with_readable_parent_metadata(
+    tmp_path: Path,
+    has_exited: str,
+    expect_cleanup: bool,
+) -> None:
+    install_dir = tmp_path / "confirmed exited cleanup parent"
+    layout_root, target = _make_managed_cleanup_target(install_dir)
+    parent_executable = _fake_opensre_executable()
+    installer = tmp_path / f"install-with-{has_exited}-parent-state.ps1"
+    source = _inject_parent_with_readable_metadata(
+        INSTALL_PS1.read_text(encoding="utf-8"),
+        executable=parent_executable,
+        started=1,
+        has_exited=has_exited,
+    )
+    installer.write_text(
+        _set_embedded_cleanup_parent_timeout(source, seconds=3),
+        encoding="utf-8",
+    )
+
+    scheduled, cleanup_path = _schedule_deferred_cleanup(
+        installer_path=installer,
+        layout_root=layout_root,
+        target=target,
+        cwd=tmp_path,
+        parent_process_id=2_147_483_647,
+        parent_executable_path=parent_executable,
+        parent_started="1",
+    )
+
+    assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
+    assert cleanup_path is not None
+    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    assert target.exists() is not expect_cleanup
+    assert not list(layout_root.glob("retired-*"))
+
+
+def test_deferred_cleanup_accepts_parent_exit_during_metadata_inspection(
+    tmp_path: Path,
+) -> None:
+    install_dir = tmp_path / "cleanup parent exits during metadata"
+    layout_root, target = _make_managed_cleanup_target(install_dir)
+    parent_executable = _fake_opensre_executable()
+    installer = tmp_path / "install-with-parent-metadata-exit.ps1"
+    installer.write_text(
+        _inject_parent_exit_during_metadata(
+            INSTALL_PS1.read_text(encoding="utf-8"),
+            started=1,
+        ),
+        encoding="utf-8",
+    )
+
+    scheduled, cleanup_path = _schedule_deferred_cleanup(
+        installer_path=installer,
+        layout_root=layout_root,
+        target=target,
+        cwd=tmp_path,
+        parent_process_id=2_147_483_647,
+        parent_executable_path=parent_executable,
+        parent_started="1",
+    )
+
+    assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
+    assert cleanup_path is not None
+    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    assert not target.exists()
+    assert not list(layout_root.glob("retired-*"))
+
+
+@pytest.mark.parametrize("busy_after_exited", [False, True])
+def test_deferred_cleanup_skips_confirmed_exited_process_during_scan(
+    tmp_path: Path,
+    busy_after_exited: bool,
+) -> None:
+    install_dir = tmp_path / "confirmed exited cleanup scan"
+    layout_root, target = _make_managed_cleanup_target(install_dir)
+    installer = tmp_path / "install-with-confirmed-exited-scan.ps1"
+    source = _inject_exited_process_with_unavailable_path(
+        INSTALL_PS1.read_text(encoding="utf-8"),
+        busy_executable=target / "opensre.exe" if busy_after_exited else None,
+    )
+    installer.write_text(
+        _set_embedded_cleanup_lock_timeout(source, seconds=3),
+        encoding="utf-8",
+    )
+
+    scheduled, cleanup_path = _schedule_deferred_cleanup(
+        installer_path=installer,
+        layout_root=layout_root,
+        target=target,
+        cwd=tmp_path,
+    )
+
+    assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
+    assert cleanup_path is not None
+    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    assert target.exists() is busy_after_exited
+    assert not list(layout_root.glob("retired-*"))
+
+
+def test_deferred_cleanup_rechecks_process_before_reporting_target_busy(
+    tmp_path: Path,
+) -> None:
+    install_dir = tmp_path / "cleanup process exits after target match"
+    layout_root, target = _make_managed_cleanup_target(install_dir)
+    installer = tmp_path / "install-with-process-exit-after-target-match.ps1"
+    installer.write_text(
+        _inject_process_exit_after_target_match(
+            INSTALL_PS1.read_text(encoding="utf-8"),
+            executable=target / "opensre.exe",
+        ),
+        encoding="utf-8",
+    )
+
+    scheduled, cleanup_path = _schedule_deferred_cleanup(
+        installer_path=installer,
+        layout_root=layout_root,
+        target=target,
+        cwd=tmp_path,
+    )
+
+    assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
+    assert cleanup_path is not None
+    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    assert not target.exists()
+    assert not list(layout_root.glob("retired-*"))
+
+
+def test_deferred_cleanup_fails_closed_for_unusable_process_name(tmp_path: Path) -> None:
+    install_dir = tmp_path / "cleanup unusable process name"
+    layout_root, target = _make_managed_cleanup_target(install_dir)
+    installer = tmp_path / "install-with-unusable-process-name.ps1"
+    source = _inject_process_with_unusable_name(INSTALL_PS1.read_text(encoding="utf-8"))
+    installer.write_text(
+        _set_embedded_cleanup_lock_timeout(source, seconds=3),
+        encoding="utf-8",
+    )
+
+    scheduled, cleanup_path = _schedule_deferred_cleanup(
+        installer_path=installer,
+        layout_root=layout_root,
+        target=target,
+        cwd=tmp_path,
+    )
+
+    assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
+    assert cleanup_path is not None
+    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    assert target.is_dir()
+    assert (target / "opensre.exe").is_file()
+    assert not list(layout_root.glob("retired-*"))
 
 
 def test_deferred_cleanup_waits_when_verified_parent_path_was_retired(
