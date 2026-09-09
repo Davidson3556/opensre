@@ -20,20 +20,180 @@ from integrations.github.tools.ci_analytics.models import (
 _TOP_WORKFLOWS = 5
 _TOP_BLOCKED_PRS = 5
 _TOP_DEVELOPERS = 3
-_METHOD_LINES = (
-    "For each merged PR whose CI failed and later passed on the same commit:",
-    "  expected green = first run queued + normal duration "
-    "(median first-attempt pass of the slowest workflow)",
-    "  actually green = last workflow's first pass, or the next push / merge if earlier",
-    "  blocked        = actually green - expected green, counted in working hours ({hours}); "
-    "parallel workflows count once",
-)
 
 
 def render_markdown(report: CiAnalyticsReport) -> str:
-    """Compact report the shell prints as-is."""
+    """Compact report: key results lead; counts follow."""
     lines = [
         f"**CI/CD reliability for {report.owner}/{report.repo}, last {report.window_days} days**",
+        "",
+    ]
+    lines.extend(_key_results_markdown(report))
+    if report.executions:
+        lines.extend(_details_markdown(report))
+    else:
+        lines.extend(["", "No completed workflow runs were found in this window."])
+    lines.extend(f"- {notice}" for notice in report.coverage_notices)
+    return "\n".join(lines)
+
+
+def render_report(console: Any, report: CiAnalyticsReport, *, compact: bool = False) -> None:
+    """Paint the report: key results first. ``compact`` omits the counts appendix."""
+    parts: list[Any] = [
+        Text(
+            f"CI/CD reliability for {report.owner}/{report.repo}, last {report.window_days} days",
+            style="bold",
+        ),
+        Text(""),
+    ]
+    if report.executions:
+        parts.append(Text("Key results", style="bold"))
+        for label, value in key_results(report):
+            parts.append(_kpi_line(label, value))
+        if not compact:
+            parts.extend(_details_parts(report))
+    else:
+        parts.append(Text("No completed workflow runs were found in this window.", style="dim"))
+    parts.extend(Text(notice, style="dim") for notice in report.coverage_notices)
+    console.print(Padding(Group(*parts), (0, 0, 0, 2)))
+
+
+def key_results(report: CiAnalyticsReport) -> list[tuple[str, str]]:
+    """The five figures a reader takes away, red time first."""
+    window_hours = max(1, report.window_days * 24)
+    red_share = report.red_hours / window_hours
+    results: list[tuple[str, str]] = [
+        (
+            f"{report.default_branch} branch red",
+            f"{_hours(report.red_hours)} of {report.window_days} days ({red_share:.1%}), "
+            f"{len(report.outages)} {_plural(len(report.outages), 'breakage')}",
+        )
+    ]
+    if report.mean_recovery_hours is not None:
+        results.append(("Mean time back to green", _hours(report.mean_recovery_hours)))
+    if report.pr_failures:
+        flaky = report.count(FailureKind.RELIABILITY)
+        of_failures = flaky / report.pr_failures
+        of_runs = flaky / report.pr_executions if report.pr_executions else 0.0
+        results.append(
+            (
+                "CI-caused failures",
+                f"{flaky} of {report.pr_failures} failed PR runs ({of_failures:.1%}); "
+                f"{of_runs:.1%} of all {report.pr_executions} PR runs",
+            )
+        )
+    elif report.pr_executions:
+        flaky = report.count(FailureKind.RELIABILITY)
+        flake_share = flaky / report.pr_executions
+        results.append(
+            ("CI-caused failures", f"{flaky} of {report.pr_executions} PR runs ({flake_share:.1%})")
+        )
+    slowest = max(
+        (w for w in report.workflows if w.normal_minutes is not None),
+        key=lambda w: w.normal_minutes or 0.0,
+        default=None,
+    )
+    if slowest is not None:
+        results.append(("Slowest normal run", f"{slowest.workflow}, {slowest.normal_minutes:.0f}m"))
+    if report.blocked_working_minutes > 0:
+        developers = report.developers_affected
+        per_week = (
+            report.blocked_working_minutes / developers / (report.window_days / 7)
+            if developers
+            else 0.0
+        )
+        extra = f", about {_working(per_week)} per developer a week" if developers else ""
+        results.append(
+            (
+                "Developer time blocked",
+                f"{_working(report.blocked_working_minutes)} of working time{extra}",
+            )
+        )
+    return results
+
+
+def key_results_payload(report: CiAnalyticsReport) -> list[dict[str, str]]:
+    """The key-results rows as JSON-ready pairs."""
+    return [{"label": label, "value": value} for label, value in key_results(report)]
+
+
+def comparison_figures(report: CiAnalyticsReport) -> dict[str, str]:
+    """Rate and duration fields that can sit next to another repository."""
+    window_hours = max(1, report.window_days * 24)
+    red_share = report.red_hours / window_hours
+    flaky = report.count(FailureKind.RELIABILITY)
+    flake = f"{flaky / report.pr_executions:.1%}" if report.pr_executions else "n/a"
+    slowest = max(
+        (w for w in report.workflows if w.normal_minutes is not None),
+        key=lambda w: w.normal_minutes or 0.0,
+        default=None,
+    )
+    return {
+        "Red time on main": f"{red_share:.1%}",
+        "Mean time to green": (
+            _hours(report.mean_recovery_hours) if report.mean_recovery_hours is not None else "n/a"
+        ),
+        "CI-caused failure rate": flake,
+        "Slowest normal run": f"{slowest.normal_minutes:.0f}m" if slowest is not None else "n/a",
+        "PR failure rate": _rate(report.pr_failure_rate),
+    }
+
+
+def render_comparison(
+    console: Any, user: CiAnalyticsReport, peers: list[CiAnalyticsReport]
+) -> None:
+    """One table: the user's repo first, then the benchmark columns."""
+    reports = [user, *peers]
+    labels = [f"{item.owner}/{item.repo}" for item in reports]
+    figures = [comparison_figures(item) for item in reports]
+    table = Table(show_edge=False, pad_edge=False, box=None, header_style="dim")
+    table.add_column("Metric", justify="left")
+    for label in labels:
+        table.add_column(label, justify="right")
+    for metric in figures[0]:
+        table.add_row(metric, *[row.get(metric, "n/a") for row in figures])
+    peers_label = " and ".join(labels[1:]) if labels[1:] else "benchmarks"
+    parts: list[Any] = [
+        Text(""),
+        Text(f"Compared with {peers_label} over the same {user.window_days} days", style="bold"),
+        table,
+        Text(
+            "Red time = red_hours / (days × 24); CI-caused = reliability_failures / PR runs.",
+            style="dim",
+        ),
+    ]
+    for notice in (item for peer in peers for item in peer.coverage_notices):
+        parts.append(Text(notice, style="dim"))
+    console.print(Padding(Group(*parts), (0, 0, 0, 2)))
+
+
+def comparison_markdown(user: CiAnalyticsReport, peers: list[CiAnalyticsReport]) -> str:
+    """Markdown form of :func:`render_comparison`."""
+    reports = [user, *peers]
+    labels = [f"{item.owner}/{item.repo}" for item in reports]
+    figures = [comparison_figures(item) for item in reports]
+    header = "| Metric | " + " | ".join(labels) + " |"
+    align = "| --- | " + " | ".join("---:" for _ in labels) + " |"
+    rows = [
+        "| " + metric + " | " + " | ".join(row.get(metric, "n/a") for row in figures) + " |"
+        for metric in figures[0]
+    ]
+    peers_label = " and ".join(labels[1:]) if labels[1:] else "benchmarks"
+    return "\n".join(
+        [
+            f"Compared with {peers_label} over the same {user.window_days} days:",
+            "",
+            header,
+            align,
+            *rows,
+            "",
+            "Red time = red_hours / (days × 24); CI-caused = reliability_failures / PR runs.",
+        ]
+    )
+
+
+def _details_markdown(report: CiAnalyticsReport) -> list[str]:
+    lines = [
         "",
         f"- GitHub Actions executions: **{report.executions}**",
         f"- PR-triggered workflow executions: **{report.pr_executions}**",
@@ -58,20 +218,12 @@ def render_markdown(report: CiAnalyticsReport) -> str:
                 f"| {summary.workflow} | {summary.runs} | {summary.failures} |"
                 f" {summary.reliability_failures} | {normal} |"
             )
-    if not report.executions:
-        lines.extend(["", "No completed workflow runs were found in this window."])
-    lines.extend(f"- {notice}" for notice in report.coverage_notices)
-    return "\n".join(lines)
+    return lines
 
 
-def render_report(console: Any, report: CiAnalyticsReport) -> None:
-    """Paint the report to a Rich console: headline KPIs, classification, blocked time, table."""
+def _details_parts(report: CiAnalyticsReport) -> list[Any]:
     now = report.generated_at
     parts: list[Any] = [
-        Text(
-            f"CI/CD reliability for {report.owner}/{report.repo}, last {report.window_days} days",
-            style="bold",
-        ),
         Text(""),
         _kpi_line("GitHub Actions executions", str(report.executions)),
         _kpi_line("PR-triggered workflow executions", str(report.pr_executions)),
@@ -96,12 +248,13 @@ def render_report(console: Any, report: CiAnalyticsReport) -> None:
                 Text(_downtime_headline(report), style="bold"),
             ]
         )
-        parts.extend(Text(line, style="dim") for line in _method_lines(report))
+        parts.append(Text(f"Working hours: {report.working_hours_label}", style="dim"))
         blocked = report.blocked_pr_delays
         if blocked:
             parts.append(Text(""))
             parts.append(_blocked_table(blocked))
-            parts.extend(Text(line) for line in _roll_up_lines(report))
+            parts.append(Text(""))
+            parts.extend(_kpi_line(label, value) for label, value in _roll_up_lines(report))
         if report.blocked_minutes_all > report.blocked_minutes:
             parts.append(
                 _kpi_line(
@@ -148,11 +301,7 @@ def render_report(console: Any, report: CiAnalyticsReport) -> None:
                 normal,
             )
         parts.extend([Text(""), table])
-    if not report.executions:
-        parts.append(Text("No completed workflow runs were found in this window.", style="dim"))
-    parts.extend(Text(notice, style="dim") for notice in report.coverage_notices)
-    # Hang the block in the shell's two-column reply gutter like agent output.
-    console.print(Padding(Group(*parts), (0, 0, 0, 2)))
+    return parts
 
 
 def _working(minutes: float) -> str:
@@ -169,22 +318,18 @@ def _downtime_headline(report: CiAnalyticsReport) -> str:
     )
 
 
-def _method_lines(report: CiAnalyticsReport) -> list[str]:
-    return [line.format(hours=report.working_hours_label) for line in _METHOD_LINES]
+_BLOCKED_COLUMNS = (
+    ("PR", "left"),
+    ("Author", "left"),
+    ("CI failed", "left"),
+    ("Blocked (working hours)", "right"),
+    ("Wall clock", "right"),
+)
 
 
 def _blocked_table(blocked: tuple[PullRequestDelay, ...]) -> Table:
     table = Table(show_edge=False, pad_edge=False, box=None, header_style="dim")
-    for column, justify in (
-        ("PR", "left"),
-        ("Author", "left"),
-        ("Queued (UTC)", "left"),
-        ("+ normal", "right"),
-        ("= expected green", "left"),
-        ("Actually green", "left"),
-        ("Blocked, working", "right"),
-        ("Wall clock", "right"),
-    ):
+    for column, justify in _BLOCKED_COLUMNS:
         table.add_column(column, justify=justify)  # type: ignore[arg-type]
     for item in blocked[:_TOP_BLOCKED_PRS]:
         table.add_row(*_blocked_row(item))
@@ -195,42 +340,46 @@ def _blocked_row(item: PullRequestDelay) -> tuple[str, ...]:
     return (
         f"#{item.pr_number}" if item.pr_number else "-",
         item.author or "-",
-        _stamp(item.first_queued),
-        _minutes(item.normal_minutes),
-        _stamp(item.expected_green),
-        _stamp(item.actual_green),
+        _day(item.first_queued),
         _working(item.working_minutes),
         _minutes(item.delay_minutes),
     )
 
 
-def _roll_up_lines(report: CiAnalyticsReport) -> list[str]:
-    """The sum and the per-developer division, written as arithmetic."""
+def _roll_up_lines(report: CiAnalyticsReport) -> list[tuple[str, str]]:
+    """Labelled totals under the table: what the blocked time adds up to and who carries it."""
     blocked = report.blocked_pr_delays
     developers = report.developers_affected
     weeks = report.window_days / 7
-    lines: list[str] = []
+    lines: list[tuple[str, str]] = []
     rest = blocked[_TOP_BLOCKED_PRS:]
     if rest:
         lines.append(
-            f"+ {len(rest)} more {_plural(len(rest), 'PR')}: "
-            f"{_working(sum(item.working_minutes for item in rest))} of working time"
+            (
+                f"Not shown, {len(rest)} more {_plural(len(rest), 'PR')}",
+                f"{_working(sum(item.working_minutes for item in rest))} of working time",
+            )
         )
     lines.append(
-        f"Σ blocked = {_working(report.blocked_working_minutes)} of working time across "
-        f"{len(blocked)} merged {_plural(len(blocked), 'PR')} "
-        f"({_minutes(report.blocked_minutes)} wall clock)"
+        (
+            f"Total across {len(blocked)} merged {_plural(len(blocked), 'PR')}",
+            f"{_working(report.blocked_working_minutes)} of working time "
+            f"({_minutes(report.blocked_minutes)} wall clock)",
+        )
     )
     if developers:
         each = report.blocked_working_minutes / developers
         lines.append(
-            f"÷ {developers} {_plural(developers, 'developer')} = {_working(each)} each in "
-            f"{report.window_days} days, about {_working(each / weeks)} per developer per week; "
-            f"typical blocked PR {_working(report.median_working_minutes or 0.0)}"
+            (
+                f"Per developer ({developers})",
+                f"{_working(each)} in {report.window_days} days, "
+                f"about {_working(each / weeks)} a week",
+            )
         )
+        lines.append(("Typical blocked PR", _working(report.median_working_minutes or 0.0)))
     heaviest = _heaviest_developers(report)
     if heaviest:
-        lines.append(f"Heaviest hit: {heaviest}")
+        lines.append(("Most affected", heaviest))
     return lines
 
 
@@ -247,8 +396,12 @@ def _stamp(when: datetime | None) -> str:
     return when.strftime("%b %d %H:%M") if when else "-"
 
 
+def _day(when: datetime | None) -> str:
+    return when.strftime("%b %d") if when else "-"
+
+
 def headline(report: CiAnalyticsReport) -> str:
-    """One deterministic sentence naming the biggest cost, for the agent to repeat verbatim."""
+    """One deterministic sentence naming the biggest cost."""
     if report.blocked_working_minutes > 0:
         heaviest = report.developer_waits[0]
         developers = report.developers_affected
@@ -299,19 +452,20 @@ def _classification(report: CiAnalyticsReport) -> list[str]:
 
 
 def _blocked_time(report: CiAnalyticsReport) -> list[str]:
-    lines = ["", f"**{_downtime_headline(report)}**"]
-    lines.extend(f"- {line.strip()}" for line in _method_lines(report))
+    lines = [
+        "",
+        f"**{_downtime_headline(report)}**",
+        f"Working hours: {report.working_hours_label}",
+    ]
     blocked = report.blocked_pr_delays
     if blocked:
         lines.append("")
-        lines.append(
-            "| PR | Author | Queued (UTC) | + normal | = expected green | Actually green | "
-            "Blocked, working | Wall clock |"
-        )
-        lines.append("| --- | --- | --- | ---: | --- | --- | ---: | ---: |")
+        lines.append("| " + " | ".join(name for name, _ in _BLOCKED_COLUMNS) + " |")
+        lines.append("| --- | --- | --- | ---: | ---: |")
         for item in blocked[:_TOP_BLOCKED_PRS]:
             lines.append("| " + " | ".join(_blocked_row(item)) + " |")
-        lines.extend(f"- {line}" for line in _roll_up_lines(report))
+        lines.append("")
+        lines.extend(f"- {label}: {value}" for label, value in _roll_up_lines(report))
     if report.blocked_minutes_all > report.blocked_minutes:
         lines.append(
             f"- Including PRs not merged yet: {_minutes(report.blocked_minutes_all)} wall clock"
@@ -367,12 +521,26 @@ def _plural(count: int, noun: str) -> str:
     return noun if count == 1 else f"{noun}s"
 
 
+def _key_results_markdown(report: CiAnalyticsReport) -> list[str]:
+    if not report.executions:
+        return []
+    lines = ["**Key results**"]
+    for label, value in key_results(report):
+        lines.append(f"- {label}: **{value}**")
+    return lines
+
+
 render_ci_report = render_report
 ci_report_headline = headline
 
 __all__ = [
     "ci_report_headline",
+    "comparison_figures",
+    "comparison_markdown",
+    "key_results",
+    "key_results_payload",
     "render_ci_report",
+    "render_comparison",
     "format_minutes",
     "headline",
     "render_markdown",

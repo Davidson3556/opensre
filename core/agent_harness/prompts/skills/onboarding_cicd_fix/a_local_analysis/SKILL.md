@@ -24,7 +24,7 @@ metadata:
     - GitHub token usable by OpenSRE with read access to the repository's Actions history
     - A local git checkout for the workspace scan (optional; a named repository also works)
   type: analytics
-  version: "1.2"
+  version: "1.3"
 tools:
   - scan_local_git_workspace
   - analyze_github_ci_reliability
@@ -86,6 +86,9 @@ Slack setup.
   Load it only when the user asks what a figure means or which metric to
   fix first, with `skill_view(name="cicd-analytics-demo", reference="metrics")`;
   answer from it and the tool's numbers. Do not load it during steps 1-4.
+- **Benchmark table**: [references/benchmarks.md](references/benchmarks.md).
+  Load it only when the user asks what a compared figure means. The analyze
+  call already paints the comparison; do not load this to re-run peers.
 
 ## Plan
 
@@ -123,10 +126,11 @@ the answer.
 
 ### 3. Analyze CI/CD reliability
 
-Call `analyze_github_ci_reliability(owner="<owner>", repo="<repo>")` for the
-chosen repository. Output its `headline` field verbatim as its own line.
-Nothing else: no computed, converted, or reworded figures, no recap, no
-bullet list.
+Call
+`analyze_github_ci_reliability(owner="<owner>", repo="<repo>", include_benchmarks=true)`
+for the chosen repository. The tool paints the report (key results first)
+and the comparison table itself. Do not restate figures, do not output
+`headline`, and do not call the tool again for benchmarks.
 
 ### 4. Offer what to do next
 
