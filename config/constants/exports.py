@@ -409,7 +409,9 @@ EXPORTS: dict[str, str] = {
     "TRACER_BASE_URL_PROD": "tracer",
     "TRACER_JWT_TOKEN_ENV": "tracer",
     # turn_concurrency
+    "DEFAULT_SCHEDULED_RUN_CONCURRENCY": "turn_concurrency",
     "OPENSRE_MAX_CONCURRENT_TURNS_ENV": "turn_concurrency",
+    "OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV": "turn_concurrency",
     "OPENSRE_SIZE_PROFILE_ENV": "turn_concurrency",
     # twilio
     "TWILIO_ACCOUNT_SID_ENV": "twilio",

@@ -6,13 +6,17 @@ from unittest.mock import patch
 
 import pytest
 
+from config.constants.turn_concurrency import OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV
 from infrastructure.scheduling.scheduler.loop_constants import LOOP_PROMPT_PARAM
 from infrastructure.scheduling.scheduler.runner import (
+    _build_scheduler,
     _compute_fire_time,
     _make_trigger,
+    _queue_scheduled_run,
     _register_jobs,
     _scheduled_job,
     compute_next_run,
+    configured_scheduled_run_limit,
     refresh_background_scheduler,
     resync_scheduler_jobs,
     run_task_now,
@@ -78,6 +82,168 @@ class TestMakeTrigger:
         )
         trigger = _make_trigger(task)
         assert trigger is not None
+
+
+class TestScheduledAdmission:
+    def test_queues_exact_fire_time_before_worker_submission(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import UTC, datetime
+
+        claims: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.try_queue_run",
+            lambda task_id, fire_time: claims.append((task_id, fire_time)),
+        )
+        _queue_scheduled_run(
+            "task-1",
+            datetime(2026, 1, 15, 9, 0, tzinfo=UTC),
+        )
+        assert claims == [("task-1", "2026-01-15T09:00Z")]
+
+
+class TestScheduledConcurrency:
+    def test_configured_limit_defaults_to_two(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv(OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV, raising=False)
+        assert configured_scheduled_run_limit() == 2
+
+    @pytest.mark.parametrize("value", ["0", "invalid"])
+    def test_invalid_limit_uses_default(self, value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv(OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV, value)
+        assert configured_scheduled_run_limit() == 2
+
+    @pytest.mark.parametrize("limit", [1, 2])
+    def test_real_callbacks_bound_overflow_and_keep_old_ticks(
+        self, limit: int, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import threading
+        from datetime import UTC, datetime, timedelta
+
+        from apscheduler.events import EVENT_JOB_SUBMITTED
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.date import DateTrigger
+
+        from infrastructure.scheduling.scheduler import executor, runner
+        from infrastructure.scheduling.scheduler.storage import database, get_runs
+        from infrastructure.scheduling.scheduler.types import TaskStatus
+
+        db_path = tmp_path / "runs.db"
+        monkeypatch.setattr(database, "default_run_database_path", lambda: db_path)
+        monkeypatch.setenv(OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV, str(limit))
+        tasks = {
+            f"task-{i}": ScheduledTask(
+                id=f"task-{i}",
+                kind=TaskKind.MANUAL_LOOP,
+                cron="* * * * *",
+                provider=Provider.TELEGRAM,
+            )
+            for i in range(limit + 1)
+        }
+        # Admitted callbacks must survive queue delays longer than the former grace window.
+        run_at = datetime.now(UTC) - timedelta(minutes=5)
+        monkeypatch.setattr(runner, "list_tasks", lambda: list(tasks.values()))
+        monkeypatch.setattr(runner, "get_task", tasks.get)
+        monkeypatch.setattr(runner, "update_task", lambda _task: None)
+        monkeypatch.setattr(runner, "record_task_success", lambda _task_id: None)
+        monkeypatch.setattr(runner, "_make_trigger", lambda _task: DateTrigger(run_date=run_at))
+        first_wave = threading.Barrier(limit + 1)
+        release = threading.Event()
+        all_submitted = threading.Event()
+        overflow_started = threading.Event()
+        submitted: set[str] = set()
+
+        def on_submitted(event) -> None:
+            submitted.add(event.job_id)
+            if submitted == set(tasks):
+                all_submitted.set()
+
+        def build(task, _runners) -> str:
+            if task.id == f"task-{limit}":
+                overflow_started.set()
+            else:
+                first_wave.wait(timeout=10)
+                assert release.wait(timeout=10)
+            return ""
+
+        monkeypatch.setattr(executor, "build_message", build)
+        scheduler = _build_scheduler(BackgroundScheduler)
+        scheduler.add_listener(on_submitted, EVENT_JOB_SUBMITTED)
+        assert _register_jobs(scheduler, real_runners()) == limit + 1
+        scheduler.start()
+        try:
+            first_wave.wait(timeout=10)
+            assert all_submitted.wait(timeout=10)
+            assert not overflow_started.is_set()
+            assert get_runs(f"task-{limit}")[0].status is TaskStatus.PENDING
+            assert all(get_runs(f"task-{i}")[0].status is TaskStatus.RUNNING for i in range(limit))
+            release.set()
+            assert overflow_started.wait(timeout=10)
+        finally:
+            release.set()
+            scheduler.shutdown(wait=True)
+        assert all(get_runs(task_id)[0].status is TaskStatus.SUCCESS for task_id in tasks)
+        assert all(
+            get_runs(task_id)[0].fire_time == _compute_fire_time(run_at) for task_id in tasks
+        )
+
+    def test_same_job_never_overlaps_itself(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import threading
+        from datetime import UTC, datetime, timedelta
+
+        from apscheduler.events import EVENT_JOB_MAX_INSTANCES
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        monkeypatch.setenv(OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV, "2")
+        monkeypatch.setattr(
+            "infrastructure.scheduling.scheduler.runner.try_queue_run",
+            lambda _task_id, _fire_time: True,
+        )
+        scheduler = _build_scheduler(BackgroundScheduler)
+        entered = threading.Barrier(2)
+        release = threading.Event()
+        overlap_skipped = threading.Event()
+        active = 0
+        peak_active = 0
+        active_lock = threading.Lock()
+
+        def blocking_job(*_args: object) -> None:
+            nonlocal active, peak_active
+            with active_lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            try:
+                entered.wait(timeout=5)
+                release.wait(timeout=5)
+            finally:
+                with active_lock:
+                    active -= 1
+
+        task = ScheduledTask(
+            id="repeating-task",
+            kind=TaskKind.MANUAL_LOOP,
+            cron="* * * * *",
+            provider=Provider.TELEGRAM,
+        )
+        monkeypatch.setattr("infrastructure.scheduling.scheduler.runner.get_task", lambda _id: task)
+        monkeypatch.setattr("infrastructure.scheduling.scheduler.runner.execute_task", blocking_job)
+        scheduler.add_listener(lambda _event: overlap_skipped.set(), EVENT_JOB_MAX_INSTANCES)
+        scheduler.add_job(
+            _scheduled_job,
+            "interval",
+            args=[task.id, real_runners()],
+            seconds=0.05,
+            next_run_time=datetime.now(UTC) + timedelta(milliseconds=100),
+            id="repeating-task",
+        )
+        scheduler.start()
+        try:
+            entered.wait(timeout=5)
+            assert overlap_skipped.wait(timeout=5)
+            scheduler.pause()
+            assert peak_active == 1
+        finally:
+            release.set()
+            scheduler.shutdown(wait=True)
 
 
 class TestComputeFireTime:
@@ -157,6 +323,7 @@ class TestRegisterJobs:
         from datetime import UTC, datetime, timedelta
         from threading import Event
 
+        from apscheduler.events import EVENT_JOB_SUBMITTED
         from apscheduler.schedulers.background import BackgroundScheduler
         from apscheduler.triggers.date import DateTrigger
 
@@ -173,6 +340,7 @@ class TestRegisterJobs:
         scheduled_run_time = datetime.now(UTC) + timedelta(seconds=2)
         observed_fire_times: list[str] = []
         execution_finished = Event()
+        submission_finished = Event()
 
         def _make_date_trigger(_task: ScheduledTask) -> DateTrigger:
             return DateTrigger(run_date=scheduled_run_time)
@@ -210,12 +378,15 @@ class TestRegisterJobs:
         scheduler = BackgroundScheduler(
             executors={"default": ScheduledThreadPoolExecutor(max_workers=1)}
         )
+        scheduler.add_listener(lambda _event: submission_finished.set(), EVENT_JOB_SUBMITTED)
         started = False
         try:
             assert _register_jobs(scheduler, real_runners()) == 1
             scheduler.start()
             started = True
             assert execution_finished.wait(10)
+            # Submission is dispatched after the scheduler removes the one-shot date job.
+            assert submission_finished.wait(10)
         finally:
             if started:
                 scheduler.shutdown(wait=True)
@@ -496,3 +667,75 @@ class TestStartSchedulerIdle:
         # Must not raise the "no tasks" SystemExit; reaches the (mocked) start.
         runner.start_scheduler(real_runners(), idle_when_empty=True)
         assert started == [True]
+
+
+def test_real_scheduler_recovers_pending_after_restart(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import threading
+    from datetime import UTC, datetime, timedelta
+
+    from apscheduler.triggers.date import DateTrigger
+
+    from infrastructure.scheduling.scheduler import executor, runner
+    from infrastructure.scheduling.scheduler.storage import database, get_runs, try_queue_run
+    from infrastructure.scheduling.scheduler.types import TaskStatus
+
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setattr(database, "default_run_database_path", lambda: db_path)
+    task = ScheduledTask(
+        id="restart-task",
+        kind=TaskKind.MANUAL_LOOP,
+        cron="0 9 * * *",
+        provider=Provider.TELEGRAM,
+    )
+    fire_time = "2026-01-01T09:00Z"
+    assert try_queue_run(task.id, fire_time)
+    monkeypatch.setattr(runner, "list_tasks", lambda: [task])
+    monkeypatch.setattr(runner, "get_task", lambda _id: task)
+    monkeypatch.setattr(runner, "update_task", lambda _task: None)
+    monkeypatch.setattr(runner, "record_task_success", lambda _task_id: None)
+    future = datetime.now(UTC) + timedelta(days=1)
+    monkeypatch.setattr(runner, "_make_trigger", lambda _task: DateTrigger(run_date=future))
+    built = threading.Event()
+
+    def build(_task, _runners) -> str:
+        built.set()
+        return ""
+
+    monkeypatch.setattr(executor, "build_message", build)
+    scheduler, count = runner.start_background_scheduler(real_runners())
+    try:
+        assert count == 1
+        assert built.wait(timeout=10)
+    finally:
+        scheduler.shutdown(wait=True)
+    run = get_runs(task.id)[0]
+    assert run.fire_time == fire_time
+    assert run.attempt == 1
+    assert run.status is TaskStatus.SUCCESS
+
+
+@pytest.mark.parametrize("missing", [False, True])
+def test_skipped_callback_cannot_finalize_another_owner(
+    missing: bool, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    from infrastructure.scheduling.scheduler import runner
+    from infrastructure.scheduling.scheduler.storage import database, get_runs, try_claim
+
+    db_path = tmp_path / "runs.db"
+    monkeypatch.setattr(database, "default_run_database_path", lambda: db_path)
+    task = ScheduledTask(
+        id="owned-task",
+        kind=TaskKind.MANUAL_LOOP,
+        cron="* * * * *",
+        provider=Provider.TELEGRAM,
+        enabled=False,
+    )
+    run_at = datetime(2026, 1, 1, 9, 0, tzinfo=UTC)
+    assert try_claim(task.id, _compute_fire_time(run_at)) is not None
+    monkeypatch.setattr(runner, "get_task", lambda _id: None if missing else task)
+    _scheduled_job(task.id, real_runners(), scheduled_run_time=run_at)
+    assert get_runs(task.id)[0].status is TaskStatus.RUNNING

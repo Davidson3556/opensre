@@ -12,15 +12,16 @@ import pytest
 from infrastructure.scheduling.scheduler.storage import database, migrations
 from infrastructure.scheduling.scheduler.storage.run_store import (
     ExecutionClaim,
-    ExpiredClaim,
+    RecoverableRun,
     complete_run,
     delete_runs,
-    get_expired_claims,
     get_latest_finished_run,
     get_latest_targeted_run,
+    get_recoverable_runs,
     get_runs,
     renew_claims,
     try_claim,
+    try_queue_run,
 )
 from infrastructure.scheduling.scheduler.types import DeliveryOutcome, Provider, TaskStatus
 
@@ -98,8 +99,8 @@ class TestClaimStore:
         _claimed(db_path, "task1", "2026-01-01T09:00")
         _expire_claim(db_path, "task1", "2026-01-01T09:00")
 
-        assert get_expired_claims(db_path=db_path) == [
-            ExpiredClaim(task_id="task1", fire_time="2026-01-01T09:00")
+        assert get_recoverable_runs(db_path=db_path) == [
+            RecoverableRun(task_id="task1", fire_time="2026-01-01T09:00")
         ]
 
     def test_stale_owner_cannot_complete_after_reclaim(self, db_path: Path) -> None:
@@ -152,8 +153,12 @@ class TestClaimStore:
         assert stale not in renewed
         assert current in renewed
 
-    def test_different_fire_times_both_succeed(self, db_path: Path) -> None:
-        assert try_claim("task1", "2026-01-01T09:00", db_path=db_path) is not None
+    def test_different_fire_times_run_serially(self, db_path: Path) -> None:
+        first = _claimed(db_path, "task1", "2026-01-01T09:00")
+        assert try_queue_run("task1", "2026-01-01T10:00", db_path=db_path)
+        assert try_claim("task1", "2026-01-01T10:00", db_path=db_path) is None
+        assert get_recoverable_runs(db_path=db_path) == []
+        assert complete_run(first, status=TaskStatus.SUCCESS, db_path=db_path)
         assert try_claim("task1", "2026-01-01T10:00", db_path=db_path) is not None
 
     def test_different_tasks_same_fire_time(self, db_path: Path) -> None:
@@ -285,7 +290,7 @@ class TestClaimStore:
     def test_delete_runs_deletes_multiple_runs(self, db_path: Path) -> None:
         for i in range(3):
             fire_time = f"2026-01-01T{i:02d}:00"
-            try_claim("task1", fire_time, db_path=db_path)
+            try_queue_run("task1", fire_time, db_path=db_path)
 
         assert delete_runs("task1", db_path=db_path) == 3
         assert get_runs("task1", db_path=db_path) == []
@@ -724,8 +729,57 @@ def test_delivery_scope_migration_rolls_back_on_failure(db_path: Path) -> None:
 def test_expired_claim_eligibility_handles_empty_and_large_sets(db_path: Path) -> None:
     _claimed(db_path, "eligible", "tick")
     _expire_claim(db_path, "eligible", "tick")
-    assert get_expired_claims(db_path=db_path, eligible_task_ids=set()) == []
+    assert get_recoverable_runs(db_path=db_path, eligible_task_ids=set()) == []
     eligible = {f"task-{index}" for index in range(2000)} | {"eligible"}
-    assert get_expired_claims(db_path=db_path, eligible_task_ids=eligible) == [
-        ExpiredClaim(task_id="eligible", fire_time="tick")
+    assert get_recoverable_runs(db_path=db_path, eligible_task_ids=eligible) == [
+        RecoverableRun(task_id="eligible", fire_time="tick")
     ]
+
+
+def test_pending_tick_is_recoverable_without_a_submission_owner(db_path: Path) -> None:
+    assert try_queue_run("task", "2026-01-01T09:00Z", db_path=db_path)
+    assert not try_queue_run("task", "2026-01-01T09:00Z", db_path=db_path)
+    assert get_runs("task", db_path=db_path)[0].status is TaskStatus.PENDING
+    # Reopening storage is sufficient: no host id, timeout, or in-memory mailbox is needed.
+    assert get_recoverable_runs(db_path=db_path) == [RecoverableRun("task", "2026-01-01T09:00Z")]
+    claim = _claimed(db_path, "task", "2026-01-01T09:00Z")
+    assert claim.attempt == 1
+    assert claim.target_filter is None
+    assert get_runs("task", db_path=db_path)[0].status is TaskStatus.RUNNING
+
+
+def test_competing_hosts_claim_only_one_tick_per_task(db_path: Path) -> None:
+    fire_times = ["2026-01-01T09:00Z", "2026-01-01T10:00Z"]
+    for fire_time in fire_times:
+        assert try_queue_run("task", fire_time, db_path=db_path)
+    ready = threading.Barrier(2)
+
+    def claim_tick(fire_time: str) -> ExecutionClaim | None:
+        ready.wait(timeout=10)
+        return try_claim("task", fire_time, db_path=db_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(claim_tick, fire_times))
+    winners = [claim for claim in claims if claim is not None]
+    assert len(winners) == 1
+    pending = next(
+        run for run in get_runs("task", db_path=db_path) if run.status is TaskStatus.PENDING
+    )
+    # Busy-task backlog is filtered before the scan limit, not allowed to starve other tasks.
+    assert try_queue_run("other", "2026-01-01T09:00Z", db_path=db_path)
+    assert get_recoverable_runs(limit=1, db_path=db_path) == [
+        RecoverableRun("other", "2026-01-01T09:00Z")
+    ]
+    assert complete_run(winners[0], status=TaskStatus.SUCCESS, db_path=db_path)
+    assert try_claim("task", pending.fire_time, db_path=db_path) is not None
+
+
+def test_pending_claim_keeps_explicit_delivery_scope_through_recovery(db_path: Path) -> None:
+    scope = frozenset({(Provider.SLACK, "C123")})
+    assert try_queue_run("task", "tick", db_path=db_path)
+    claim = try_claim("task", "tick", db_path=db_path, target_filter=scope)
+    assert claim is not None
+    assert claim.target_filter == scope
+    _expire_claim(db_path, "task", "tick")
+    recovered = _claimed(db_path, "task", "tick")
+    assert recovered.target_filter == scope

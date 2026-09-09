@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 #: reads as "history unknown", and a failed-only retry refuses to run rather
 #: than widening to every destination.
 _TARGETED_RUN_SCAN_LIMIT = 50
-_EXPIRED_CLAIM_SCAN_LIMIT = 100
+_RECOVERABLE_RUN_SCAN_LIMIT = 100
 _CLAIM_LEASE_SECONDS = 30 * 60
 _RUN_COLUMNS = (
     "task_id, fire_time, started_at, finished_at, status, posted_message_id, "
@@ -43,11 +43,23 @@ class ExecutionClaim:
 
 
 @dataclass(frozen=True, slots=True)
-class ExpiredClaim:
-    """Identity needed to resubmit one expired scheduled execution."""
+class RecoverableRun:
+    """Identity needed to resume one pending or expired scheduled execution."""
 
     task_id: str
     fire_time: str
+
+
+def try_queue_run(task_id: str, fire_time: str, db_path: Path | None = None) -> bool:
+    """Record a pending scheduler submission unless this tick already exists."""
+    now_text = datetime.now(UTC).isoformat()
+    with database.transaction(db_path, immediate=True) as conn:
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO task_runs "
+            "(task_id, fire_time, started_at, status, target_filter) VALUES (?, ?, ?, ?, ?)",
+            (task_id, fire_time, now_text, TaskStatus.PENDING.value, json.dumps(None)),
+        )
+        return cursor.rowcount == 1
 
 
 def try_claim(
@@ -57,12 +69,21 @@ def try_claim(
     *,
     target_filter: frozenset[tuple[Provider, str]] | None = None,
 ) -> ExecutionClaim | None:
-    """Claim a task tick or reclaim it when the current lease has expired."""
+    """Start pending/new work or reclaim an expired tick, excluding live runs of this task."""
     try:
         with database.transaction(db_path, immediate=True) as conn:
             now = datetime.now(UTC)
             now_text = now.isoformat()
             lease_text = (now + timedelta(seconds=_CLAIM_LEASE_SECONDS)).isoformat()
+            if (
+                conn.execute(
+                    "SELECT 1 FROM task_runs WHERE task_id = ? AND status = ? "
+                    "AND lease_expires_at >= ? LIMIT 1",
+                    (task_id, TaskStatus.RUNNING.value, now_text),
+                ).fetchone()
+                is not None
+            ):
+                return None
             row = conn.execute(
                 "SELECT attempt, status, lease_expires_at, target_filter FROM task_runs "
                 "WHERE task_id = ? AND fire_time = ? ORDER BY attempt DESC LIMIT 1",
@@ -73,23 +94,29 @@ def try_claim(
                 attempt = int(row[0])
                 status = TaskStatus(row[1])
                 lease = _parse_datetime(row[2])
-                if status is not TaskStatus.RUNNING or (lease is not None and lease >= now):
-                    return None
-                conn.execute(
-                    "UPDATE task_runs SET status = ?, finished_at = ?, error = ? "
-                    "WHERE task_id = ? AND fire_time = ? AND attempt = ? AND status = ?",
-                    (
-                        TaskStatus.ABANDONED.value,
-                        now_text,
-                        "claim lease expired",
-                        task_id,
-                        fire_time,
-                        attempt,
-                        TaskStatus.RUNNING.value,
-                    ),
-                )
-                target_filter = _decode_target_filter(row[3])
-                attempt += 1
+                if status is not TaskStatus.PENDING:
+                    if status is not TaskStatus.RUNNING or (lease is not None and lease >= now):
+                        return None
+                    conn.execute(
+                        "UPDATE task_runs SET status = ?, finished_at = ?, error = ? "
+                        "WHERE task_id = ? AND fire_time = ? AND attempt = ? AND status = ?",
+                        (
+                            TaskStatus.ABANDONED.value,
+                            now_text,
+                            "claim lease expired",
+                            task_id,
+                            fire_time,
+                            attempt,
+                            TaskStatus.RUNNING.value,
+                        ),
+                    )
+                    attempt += 1
+                stored_filter = _decode_target_filter(row[3])
+                if status is TaskStatus.PENDING and target_filter is not None:
+                    if stored_filter is not None:
+                        target_filter = target_filter & stored_filter
+                else:
+                    target_filter = stored_filter
             else:
                 attempt = 1
 
@@ -97,7 +124,11 @@ def try_claim(
             conn.execute(
                 "INSERT INTO task_runs "
                 "(task_id, fire_time, attempt, started_at, status, owner_token, "
-                "lease_expires_at, target_filter) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "lease_expires_at, target_filter) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(task_id, fire_time, attempt) DO UPDATE SET "
+                "status = excluded.status, started_at = excluded.started_at, "
+                "owner_token = excluded.owner_token, lease_expires_at = excluded.lease_expires_at, "
+                "target_filter = excluded.target_filter",
                 (
                     task_id,
                     fire_time,
@@ -182,13 +213,13 @@ def _decode_target_filter(raw: str) -> frozenset[tuple[Provider, str]] | None:
         return frozenset()
 
 
-def get_expired_claims(
+def get_recoverable_runs(
     *,
-    limit: int = _EXPIRED_CLAIM_SCAN_LIMIT,
+    limit: int = _RECOVERABLE_RUN_SCAN_LIMIT,
     db_path: Path | None = None,
     eligible_task_ids: Collection[str] | None = None,
-) -> list[ExpiredClaim]:
-    """Return expired attempts, applying task eligibility before the scan limit."""
+) -> list[RecoverableRun]:
+    """Return pending or expired ticks without live task owners, filtering before the limit."""
     if eligible_task_ids is not None and not eligible_task_ids:
         return []
     task_ids_json = json.dumps(list(eligible_task_ids)) if eligible_task_ids is not None else None
@@ -196,16 +227,28 @@ def get_expired_claims(
         now_text = datetime.now(UTC).isoformat()
         rows = conn.execute(
             "SELECT task_id, fire_time FROM task_runs AS current "
-            "WHERE current.status = ? AND current.lease_expires_at != '' "
-            "AND current.lease_expires_at < ? "
+            "WHERE (current.status = ? OR (current.status = ? "
+            "AND current.lease_expires_at != '' AND current.lease_expires_at < ?)) "
+            "AND NOT EXISTS (SELECT 1 FROM task_runs AS live "
+            "WHERE live.task_id = current.task_id AND live.status = ? "
+            "AND live.lease_expires_at >= ?) "
             "AND (? IS NULL OR current.task_id IN (SELECT value FROM json_each(?))) "
             "AND current.attempt = (SELECT MAX(latest.attempt) FROM task_runs AS latest "
             "WHERE latest.task_id = current.task_id "
             "AND latest.fire_time = current.fire_time) "
-            "ORDER BY current.lease_expires_at LIMIT ?",
-            (TaskStatus.RUNNING.value, now_text, task_ids_json, task_ids_json, limit),
+            "ORDER BY current.started_at, current.task_id, current.fire_time LIMIT ?",
+            (
+                TaskStatus.PENDING.value,
+                TaskStatus.RUNNING.value,
+                now_text,
+                TaskStatus.RUNNING.value,
+                now_text,
+                task_ids_json,
+                task_ids_json,
+                limit,
+            ),
         ).fetchall()
-        return [ExpiredClaim(task_id=str(row[0]), fire_time=str(row[1])) for row in rows]
+        return [RecoverableRun(task_id=str(row[0]), fire_time=str(row[1])) for row in rows]
 
 
 def complete_run(
@@ -384,12 +427,13 @@ __all__ = [
     "claim_renewal_interval_seconds",
     "complete_run",
     "delete_runs",
-    "ExpiredClaim",
+    "RecoverableRun",
     "ExecutionClaim",
-    "get_expired_claims",
+    "get_recoverable_runs",
     "get_latest_finished_run",
     "get_latest_targeted_run",
     "get_runs",
     "renew_claims",
     "try_claim",
+    "try_queue_run",
 ]

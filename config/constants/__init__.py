@@ -1018,7 +1018,13 @@ if TYPE_CHECKING:
         TRACER_JWT_TOKEN_ENV as TRACER_JWT_TOKEN_ENV,
     )
     from config.constants.turn_concurrency import (
+        DEFAULT_SCHEDULED_RUN_CONCURRENCY as DEFAULT_SCHEDULED_RUN_CONCURRENCY,
+    )
+    from config.constants.turn_concurrency import (
         OPENSRE_MAX_CONCURRENT_TURNS_ENV as OPENSRE_MAX_CONCURRENT_TURNS_ENV,
+    )
+    from config.constants.turn_concurrency import (
+        OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV as OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV,
     )
     from config.constants.turn_concurrency import (
         OPENSRE_SIZE_PROFILE_ENV as OPENSRE_SIZE_PROFILE_ENV,

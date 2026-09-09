@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 from copy import copy
 from datetime import datetime
@@ -36,7 +37,20 @@ def _run_job_with_scheduled_time(
 class ScheduledThreadPoolExecutor(ThreadPoolExecutor):
     """Run scheduler jobs with their exact APScheduler fire time attached."""
 
+    def __init__(
+        self,
+        max_workers: int = 10,
+        *,
+        on_submit: Callable[[str, datetime], None] | None = None,
+    ) -> None:
+        self._on_submit = on_submit
+        super().__init__(max_workers=max_workers)
+
     def _do_submit_job(self, job: Any, run_times: list[datetime]) -> None:
+        if self._on_submit is not None:
+            for scheduled_run_time in run_times:
+                self._on_submit(job.id, scheduled_run_time)
+
         def callback(future: Future[list[Any]]) -> None:
             exc, traceback = (
                 future.exception_info()

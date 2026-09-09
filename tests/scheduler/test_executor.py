@@ -26,7 +26,7 @@ from infrastructure.observability.operations_log import read_operations
 from infrastructure.scheduling.scheduler.executor import execute_task
 from infrastructure.scheduling.scheduler.local_delivery import get_loop_messages
 from infrastructure.scheduling.scheduler.loop_constants import LOOP_CHANNELS_PARAM
-from infrastructure.scheduling.scheduler.runner import _recover_expired_tasks
+from infrastructure.scheduling.scheduler.runner import _recover_runs
 from infrastructure.scheduling.scheduler.storage.run_store import get_runs
 from infrastructure.scheduling.scheduler.storage.task_store import add_task
 from infrastructure.scheduling.scheduler.types import (
@@ -287,7 +287,7 @@ class TestExecutor:
         with patch(
             "infrastructure.scheduling.scheduler.executor.build_message", return_value="report"
         ):
-            _recover_expired_tasks(real_runners())
+            _recover_runs(real_runners())
         stored = get_task(task.id)
         assert stored is not None
         assert stored.enabled is not delivery_succeeds
@@ -322,6 +322,7 @@ class TestExecutor:
         )
         for index in range(100):
             assert try_claim(blocked.id, f"old-{index}") is not None
+            _expire_claim(tmp_path / "scheduler.db", blocked.id, f"old-{index}")
         assert try_claim(task.id, "eligible-tick") is not None
         with sqlite3.connect(tmp_path / "scheduler.db") as conn:
             conn.execute(
@@ -340,7 +341,7 @@ class TestExecutor:
         with patch(
             "infrastructure.scheduling.scheduler.executor.build_message", return_value="report"
         ):
-            _recover_expired_tasks(
+            _recover_runs(
                 real_runners(), task_filter=accepts_task if ineligible == "filtered" else None
             )
         assert len(adapters[Provider.SLACK].calls) == 1
@@ -453,7 +454,7 @@ class TestExecutor:
         with patch(
             "infrastructure.scheduling.scheduler.executor.build_message", return_value="report"
         ):
-            _recover_expired_tasks(real_runners())
+            _recover_runs(real_runners())
         assert len(adapters[Provider.SLACK].calls) == 1
         assert len(adapters[Provider.TELEGRAM].calls) == 1
         recovered = get_runs(task.id)[0]
@@ -547,7 +548,7 @@ class TestExecutor:
             "infrastructure.scheduling.scheduler.executor.build_message",
             return_value="Scheduled report",
         ):
-            _recover_expired_tasks(real_runners())
+            _recover_runs(real_runners())
 
         runs = get_runs(task.id)
         assert [run.status for run in runs] == [TaskStatus.SUCCESS, TaskStatus.ABANDONED]

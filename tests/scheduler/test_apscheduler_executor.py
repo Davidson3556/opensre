@@ -58,3 +58,33 @@ def test_worker_receives_each_eligible_fire_time_without_submission_listener() -
 
     assert observed == run_times[1:]
     assert scheduler.event_codes == [EVENT_JOB_MISSED, EVENT_JOB_EXECUTED, EVENT_JOB_EXECUTED]
+
+
+def test_submission_is_persisted_before_worker_starts() -> None:
+    order: list[str] = []
+
+    def on_submit(_job_id: str, _scheduled_run_time: datetime) -> None:
+        order.append("submitted")
+
+    def callback(*, scheduled_run_time: datetime) -> None:
+        _ = scheduled_run_time
+        order.append("started")
+
+    scheduler = _FakeScheduler()
+    job = SimpleNamespace(
+        id="task-1",
+        max_instances=1,
+        misfire_grace_time=None,
+        func=callback,
+        args=(),
+        kwargs={},
+        _jobstore_alias="default",
+    )
+    executor = ScheduledThreadPoolExecutor(max_workers=1, on_submit=on_submit)
+    executor.start(scheduler, "default")
+    try:
+        executor.submit_job(job, [datetime.now(UTC)])
+    finally:
+        executor.shutdown(wait=True)
+
+    assert order == ["submitted", "started"]
