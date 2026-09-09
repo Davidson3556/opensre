@@ -2168,7 +2168,8 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
     from tests.cli.test_install_ps1_onedir import _fake_opensre_executable
 
     fake_opensre = _fake_opensre_executable()
-    process_root = Path(tempfile.mkdtemp(prefix="opensre-short-path-process-"))
+    process_root = tmp_path.resolve(strict=True) / "short-path-process"
+    process_root.mkdir()
     parent_dir = process_root / "Long Parent Directory"
     busy_root = process_root / "Long Busy Bundle Directory"
     parent_dir.mkdir()
