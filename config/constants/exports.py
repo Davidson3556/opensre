@@ -169,6 +169,7 @@ EXPORTS: dict[str, str] = {
     "OPENSRE_AUTO_LAUNCH_ENV": "installer",
     "OPENSRE_INSTALL_CHANNEL_ENV": "installer",
     "OPENSRE_INSTALL_DIR_ENV": "installer",
+    "OPENSRE_INSTALL_REPLACE_EXISTING_BINARY_ENV": "installer",
     "OPENSRE_UPDATE_EXECUTABLE_ENV": "installer",
     "OPENSRE_UPDATE_PARENT_PID_ENV": "installer",
     "OPENSRE_UPDATE_PARENT_STARTED_ENV": "installer",
@@ -183,6 +184,7 @@ EXPORTS: dict[str, str] = {
     "WINDOWS_LAYOUT_MARKER_FILENAME": "installer",
     "WINDOWS_LAYOUT_MARKER_TEXT": "installer",
     "WINDOWS_VERSIONS_DIR_NAME": "installer",
+    "WINDOWS_MAX_COMMAND_PATH_LENGTH": "installer",
     # jenkins
     "JENKINS_API_TOKEN_ENV": "jenkins",
     "JENKINS_BASE_URL_ENV": "jenkins",

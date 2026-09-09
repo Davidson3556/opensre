@@ -8,6 +8,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:OpenSreProgressStep = 0
 $script:OpenSreChannelExplicit = $PSBoundParameters.ContainsKey("Channel") -or [bool]$env:OPENSRE_INSTALL_CHANNEL
+# Generated from config/constants/installer.py; do not edit these values directly.
+# Regenerate: uv run python -m infrastructure.deployment.packaging.windows_installer_constants
+# BEGIN GENERATED LIFECYCLE CONSTANTS
 $script:OpenSreLauncherMarker = ":: OpenSRE Windows launcher v1"
 $script:OpenSreLayoutMarkerName = "layout-v1.marker"
 $script:OpenSreLayoutMarkerText = "OpenSRE Windows bundle layout v1"
@@ -17,6 +20,7 @@ $script:OpenSreInstallLockName = ".opensre-app.install.lock"
 $script:OpenSreReplaceExistingBinaryEnv = "OPENSRE_INSTALL_REPLACE_EXISTING_BINARY"
 $script:OpenSreUpdateParentStartedEnv = "OPENSRE_UPDATE_PARENT_STARTED"
 $script:OpenSreMaxCommandPathLength = 259
+# END GENERATED LIFECYCLE CONSTANTS
 
 function Test-OpenSreVerboseInstall {
     $value = [string]$env:OPENSRE_INSTALL_VERBOSE

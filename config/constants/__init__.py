@@ -423,6 +423,9 @@ if TYPE_CHECKING:
         OPENSRE_INSTALL_DIR_ENV as OPENSRE_INSTALL_DIR_ENV,
     )
     from config.constants.installer import (
+        OPENSRE_INSTALL_REPLACE_EXISTING_BINARY_ENV as OPENSRE_INSTALL_REPLACE_EXISTING_BINARY_ENV,
+    )
+    from config.constants.installer import (
         OPENSRE_UPDATE_EXECUTABLE_ENV as OPENSRE_UPDATE_EXECUTABLE_ENV,
     )
     from config.constants.installer import (
@@ -460,6 +463,9 @@ if TYPE_CHECKING:
     )
     from config.constants.installer import (
         WINDOWS_LAYOUT_MARKER_TEXT as WINDOWS_LAYOUT_MARKER_TEXT,
+    )
+    from config.constants.installer import (
+        WINDOWS_MAX_COMMAND_PATH_LENGTH as WINDOWS_MAX_COMMAND_PATH_LENGTH,
     )
     from config.constants.installer import (
         WINDOWS_VERSIONS_DIR_NAME as WINDOWS_VERSIONS_DIR_NAME,

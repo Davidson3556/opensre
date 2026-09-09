@@ -19,6 +19,9 @@ from infrastructure.deployment.packaging.release_manifest import (
     required_skill_files,
     runtime_hidden_imports,
 )
+from infrastructure.deployment.packaging.windows_installer_constants import (
+    render_installer_constants,
+)
 from tools.registry_discovery import INTEGRATION_TOOL_PACKAGES
 from tools.registry_index import BAKED_INDEX_RELATIVE_PATH
 
@@ -362,3 +365,8 @@ def test_windows_cleanup_worker_ships_in_wheels_and_frozen_bundles() -> None:
 
     spec = _SPEC_FILE.read_text(encoding="utf-8")
     assert 'collect_data_files("surfaces.cli")' in spec
+
+
+def test_windows_installer_embeds_canonical_lifecycle_constants() -> None:
+    source = (_REPO_ROOT / "install.ps1").read_text(encoding="utf-8")
+    assert source.count(render_installer_constants()) == 1
