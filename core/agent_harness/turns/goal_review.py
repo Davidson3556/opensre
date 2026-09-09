@@ -1,9 +1,11 @@
-"""LLM goal reviewer for action and evidence-gather turns.
+"""ReAct goal gates for action and evidence-gather turns.
 
-Builds a :class:`~core.agent.goals.Goal` whose ``verify`` asks the turn's own
-LLM one small review question when the agent concludes after executing tools.
-If the verdict is ``NOT_REACHED`` the ReAct loop nudges the agent to continue.
-Two flavors share the same reviewer:
+Builds a :class:`~core.agent.goals.Goal` whose ``verify`` rejects stop when a
+host gate still applies (unfinished task plan, gather discovery-only). An
+optional same-LLM review (``OPENSRE_REACT_GOAL_LLM_REVIEW=1``) can also reject
+when the agent concludes after tools; default is off so the acting prompt
+proposes done and these host gates accept or refuse. Two flavors share the
+same verifier:
 
 * :func:`build_goal_reviewer` — action turns ("remove the cron loops" must not
   stop after only listing them).
@@ -12,12 +14,11 @@ Two flavors share the same reviewer:
   observed live: three PostHog turns in a row ended on MCP tool listings and
   never ran the count the user asked for).
 
-The review is deliberately conservative — a wrong ``NOT_REACHED`` makes the
-agent flail through extra actions the user never asked for (observed live:
-duplicate async dispatches). It fails open on any LLM error, runs at
-most once per turn, and is skipped entirely when no tools ran, when the agent
-is asking the user a question, or when the turn ran a tool whose outcome is
-not reviewable this turn (async dispatch, assistant handoff).
+When the LLM review is opted in it is conservative — a wrong ``NOT_REACHED``
+makes the agent flail (observed live: duplicate async dispatches). It fails
+open on any LLM error, runs at most once per turn, and is skipped entirely
+when no tools ran, when the agent is asking the user a question, or when the
+turn ran a tool whose outcome is not reviewable this turn.
 
 The reviewer learns which tools ran through :func:`tap_executed_tool_names`
 (action) or :func:`tap_executed_tool_calls` (gather — needs args so discovery
@@ -26,10 +27,11 @@ vs metric ``call_*_tool`` can be distinguished).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from config.constants.llm import react_goal_llm_review_enabled
 from core.agent.goals import Goal, GoalObservation
 from core.agent_harness.closed_llm_verdict import invoke_closed_goal_verdict
 from core.agent_harness.turns.gather_discovery_budget import (
@@ -156,6 +158,19 @@ _PLAN_INCOMPLETE_NUDGE = (
 )
 
 
+_PLAN_TOOL_NAME = "update_plan"
+
+
+def plan_worked_this_turn(executed_tool_names: Sequence[str]) -> bool:
+    """True when this turn touched the live plan, so unfinished steps block stop.
+
+    ``update_plan`` is the structured signal. An active ``/goal`` alone is
+    not: the latest user message may redirect, and a leftover plan must
+    not pull that answer back into plan execution.
+    """
+    return _PLAN_TOOL_NAME in executed_tool_names
+
+
 def task_plan_blocks_conclusion(
     *,
     task_plan: Any | None,
@@ -215,10 +230,16 @@ class _LLMGoalReviewer:
             names = [name for name, _ in self.executed_tool_calls]
         if any(name in self.skip_tool_names for name in names):
             return True
-        if self.plan_incomplete is not None and self.plan_incomplete():
+        if (
+            self.plan_incomplete is not None
+            and plan_worked_this_turn(names)
+            and self.plan_incomplete()
+        ):
             return False
         if self.reject_discovery_only and _gather_ran_only_discovery(self.executed_tool_calls):
             return False
+        if not react_goal_llm_review_enabled():
+            return True
         if self.reviews_remaining <= 0:
             return True
         self.reviews_remaining -= 1
@@ -266,7 +287,8 @@ def build_goal_reviewer(
 
     ``plan_incomplete`` — when provided — rejects conclusions while the live
     task plan still has unfinished steps, so the shell does not go idle with
-    ``Plan · n/m`` and a mid-list ``●``.
+    ``Plan · n/m`` and a mid-list ``●``. It applies only to a turn that
+    worked the plan (see :func:`plan_worked_this_turn`).
     """
     reviewer = _LLMGoalReviewer(
         llm=llm,
@@ -276,7 +298,11 @@ def build_goal_reviewer(
     )
 
     def _nudge(_observation: GoalObservation) -> str:
-        if plan_incomplete is not None and plan_incomplete():
+        if (
+            plan_incomplete is not None
+            and plan_worked_this_turn(executed_tool_names)
+            and plan_incomplete()
+        ):
             return _PLAN_INCOMPLETE_NUDGE
         return (
             f"Goal not yet met: {user_goal}. "
@@ -330,6 +356,7 @@ def build_gather_goal_reviewer(
 __all__ = [
     "build_gather_goal_reviewer",
     "build_goal_reviewer",
+    "plan_worked_this_turn",
     "tap_executed_tool_calls",
     "tap_executed_tool_names",
     "task_plan_blocks_conclusion",

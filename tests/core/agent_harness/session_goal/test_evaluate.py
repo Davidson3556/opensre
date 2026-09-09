@@ -169,7 +169,9 @@ def test_goal_set_on_headless_starts_the_condition_turn() -> None:
             evaluate_session_goal(goal, result, session=session, judge=_reached).status
         ),
     )
-    assert turns == ["/goal set count windows users", "count windows users"]
+    assert turns[0] == "/goal set count windows users"
+    assert "count windows users" in turns[1]
+    assert "[session_goal]" in turns[1]
     assert outcome.goal.status == SessionGoalStatus.ACHIEVED
     assert outcome.goal.turns_used == 1
 
@@ -276,7 +278,7 @@ def test_outer_loop_rejects_bare_claim_until_budget() -> None:
     assert outcome.goal.status == SessionGoalStatus.BUDGET_EXHAUSTED
 
 
-def test_llm_evaluator_rejects_soft_achieve() -> None:
+def test_unfinished_checklist_keeps_a_not_reached_verdict_active() -> None:
     class _LLM:
         model_id = "test"
 
@@ -292,7 +294,11 @@ def test_llm_evaluator_rejects_soft_achieve() -> None:
 
     evaluate = build_session_goal_evaluator(lambda: _LLM())  # type: ignore[arg-type]
     session = SessionCore()
-    goal = SessionGoal(condition="finish migration", max_outer_turns=3)
+    goal = SessionGoal(
+        condition="finish migration",
+        max_outer_turns=3,
+        checklist=("list the runs", "filter by SHA"),
+    )
     attach_session_goal(session, goal)
 
     status = evaluate(
@@ -304,6 +310,253 @@ def test_llm_evaluator_rejects_soft_achieve() -> None:
     assert session.session_goal is not None
     assert session.session_goal.status == SessionGoalStatus.ACTIVE
     assert "SHA" in session.session_goal.last_reason
+
+
+def test_not_yet_keeps_the_goal_open_even_after_successful_tools() -> None:
+    """Claude-like: the judge's not-yet starts another turn. Tools are not enough."""
+    session = SessionCore()
+    goal = SessionGoal(condition="count Windows users", max_outer_turns=3)
+    attach_session_goal(session, goal)
+    verdict = evaluate_session_goal(
+        goal,
+        _result("No evidence found.", executed=1, success=1),
+        session=session,
+        judge=_not_yet,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+    assert verdict.reason == "not yet"
+    assert session.session_goal is not None
+    assert session.session_goal.verdict_repeated is False
+
+
+def test_repeats_previous_is_ignored_when_there_is_no_previous_reason() -> None:
+    session = SessionCore()
+    goal = SessionGoal(condition="write ok to a file")
+    attach_session_goal(session, goal)
+    verdict = evaluate_session_goal(
+        goal,
+        _result("I will write it next turn."),
+        session=session,
+        judge=lambda **_kw: SessionGoalJudgeVerdict(
+            verdict="NOT_REACHED",
+            reason="need a successful write",
+            repeats_previous=True,
+        ),
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+    assert session.session_goal is not None
+    assert session.session_goal.verdict_repeated is False
+
+
+def test_not_yet_after_tools_runs_another_turn() -> None:
+    """Live miss: six gh calls + 'no evidence found' used to close /goal."""
+    session = SessionCore()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        if len(turns) == 1:
+            return _result("No evidence found.", executed=6, success=6)
+        return _result("Only #6123 Release was re-run to green.", executed=1, success=1)
+
+    seen = {"n": 0}
+
+    def _judge(**_kw: object) -> SessionGoalJudgeVerdict:
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return _not_yet()
+        return _reached()
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="which merged PRs were re-run to green", max_outer_turns=4),
+        evaluate=lambda goal, result, *, session=None: (
+            evaluate_session_goal(goal, result, session=session, judge=_judge).status
+        ),
+    )
+
+    assert len(turns) == 2
+    assert outcome.goal.status == SessionGoalStatus.ACHIEVED
+
+
+def _failed_deploy_result() -> TurnResult:
+    return TurnResult(
+        "cli_agent_handled",
+        ToolCallingTurnResult(
+            1,
+            1,
+            0,
+            False,
+            True,
+            tool_evidence="Tool: deploy\nArguments: {}\nOutcome: error\nResult: rollout failed",
+            evidence_success_count=0,
+        ),
+        "Deployed.",
+    )
+
+
+def test_a_failed_tool_this_turn_blocks_a_reached_verdict() -> None:
+    verdict = evaluate_session_goal(
+        SessionGoal(
+            condition="deploy prod",
+            findings=("listed the target",),
+            tool_success_seen=True,
+        ),
+        _failed_deploy_result(),
+        judge=_reached,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+
+
+def test_a_failed_tool_this_turn_blocks_host_accept() -> None:
+    verdict = evaluate_session_goal(
+        SessionGoal(
+            condition="deploy prod",
+            findings=("listed the target",),
+            tool_success_seen=True,
+        ),
+        _failed_deploy_result(),
+        judge=_not_yet,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+
+
+def test_overflowed_evidence_blocks_a_reached_verdict() -> None:
+    verdict = evaluate_session_goal(
+        SessionGoal(
+            condition="deploy prod",
+            findings=("earlier work",),
+            tool_evidence=None,
+            tool_success_seen=True,
+        ),
+        _result("Deployed.", executed=1, success=1),
+        judge=_reached,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+    assert verdict.reason == SessionGoalReason.UNVERIFIED_OVERFLOW
+
+
+def test_a_later_success_does_not_let_the_host_ignore_a_failed_tool() -> None:
+    action = ToolCallingTurnResult(
+        2,
+        2,
+        1,
+        False,
+        True,
+        tool_evidence=(
+            "Tool: delete_job\nArguments: {}\nOutcome: error\nResult: denied\n\n"
+            "Tool: read_status\nArguments: {}\nOutcome: success\nResult: still there"
+        ),
+        evidence_success_count=1,
+    )
+    verdict = evaluate_session_goal(
+        SessionGoal(condition="remove scheduled jobs"),
+        TurnResult("cli_agent_handled", action, "Removed."),
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+
+
+def test_a_later_status_success_does_not_recover_a_failed_write() -> None:
+    action = ToolCallingTurnResult(
+        2,
+        2,
+        1,
+        False,
+        True,
+        tool_evidence=(
+            "Tool: delete_job\nArguments: {}\nOutcome: error\nResult: denied\n\n"
+            "Tool: read_status\nArguments: {}\nOutcome: success\nResult: still there"
+        ),
+        evidence_success_count=1,
+    )
+    verdict = evaluate_session_goal(
+        SessionGoal(condition="remove scheduled jobs"),
+        TurnResult("cli_agent_handled", action, "Removed."),
+        judge=_reached,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+
+
+def test_a_recovered_failure_does_not_block_a_reached_verdict() -> None:
+    action = ToolCallingTurnResult(
+        2,
+        2,
+        1,
+        False,
+        True,
+        tool_evidence=(
+            "Tool: list_jobs\nArguments: {}\nOutcome: error\nResult: timeout\n\n"
+            "Tool: delete_job\nArguments: {}\nOutcome: success\nResult: removed"
+        ),
+        evidence_success_count=1,
+    )
+    verdict = evaluate_session_goal(
+        SessionGoal(condition="remove scheduled jobs"),
+        TurnResult("cli_agent_handled", action, "Removed the jobs."),
+        judge=_reached,
+    )
+    assert verdict.status == SessionGoalStatus.ACHIEVED
+
+
+def test_no_judge_complete_checklist_stays_active_when_a_tool_failed() -> None:
+    session = SessionCore()
+    goal = SessionGoal(
+        condition="checklist",
+        checklist=("A", "B"),
+        completed=frozenset({0}),
+        findings=("listed the jobs",),
+        tool_success_seen=True,
+    )
+    attach_session_goal(session, goal)
+    attach_session_goal(session, goal.with_completed(frozenset({0, 1})))
+    verdict = evaluate_session_goal(
+        goal,
+        _failed_deploy_result(),
+        session=session,
+        validate=_keep_ticks,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+    assert verdict.reason == SessionGoalReason.TOOL_FAILED
+
+
+def test_no_judge_complete_checklist_stays_active_when_evidence_overflowed() -> None:
+    session = SessionCore()
+    goal = SessionGoal(
+        condition="checklist",
+        checklist=("A", "B"),
+        completed=frozenset({0, 1}),
+        findings=("earlier work",),
+        tool_evidence=None,
+        tool_success_seen=True,
+    )
+    attach_session_goal(session, goal)
+    verdict = evaluate_session_goal(
+        goal,
+        _result("Restored.", executed=1, success=1),
+        session=session,
+        validate=_keep_ticks,
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+    assert verdict.reason == SessionGoalReason.UNVERIFIED_OVERFLOW
+
+
+def test_a_contradiction_vetoes_host_accept() -> None:
+    session = SessionCore()
+    goal = SessionGoal(condition="count rows", max_outer_turns=3)
+    attach_session_goal(session, goal)
+    verdict = evaluate_session_goal(
+        goal,
+        _result("All 5 checked. | 3 rows |", executed=1, success=1),
+        session=session,
+        judge=lambda **_kw: SessionGoalJudgeVerdict(
+            verdict="NOT_REACHED",
+            reason="Contradiction: the sentence says 5 but the table lists 3 rows",
+        ),
+    )
+    assert verdict.status == SessionGoalStatus.ACTIVE
+    assert verdict.reason.startswith("Contradiction:")
 
 
 def test_llm_reject_survives_outer_loop_session_reread() -> None:
@@ -329,7 +582,11 @@ def test_llm_reject_survives_outer_loop_session_reread() -> None:
         _chat,
         session,
         "go",
-        goal=SessionGoal(condition="finish migration", max_outer_turns=2),
+        goal=SessionGoal(
+            condition="finish migration",
+            max_outer_turns=2,
+            checklist=("patch the job", "verify the SHA filter"),
+        ),
         evaluate=build_session_goal_evaluator(lambda: _LLM()),  # type: ignore[arg-type]
         on_progress=lambda g: progress_updates.append(g.status),
     )
@@ -388,7 +645,7 @@ def test_llm_evaluator_confirms_soft_achieve() -> None:
     assert status == SessionGoalStatus.ACHIEVED
 
 
-def test_llm_evaluator_fails_closed_on_free_text_verdict() -> None:
+def test_unusable_judge_output_does_not_block_host_accept() -> None:
     class _LLM:
         model_id = "test"
 
@@ -408,9 +665,9 @@ def test_llm_evaluator_fails_closed_on_free_text_verdict() -> None:
         _result("patched", executed=1, success=1),
         session=session,
     )
-    assert status == SessionGoalStatus.ACTIVE
+    assert status == SessionGoalStatus.ACHIEVED
     assert session.session_goal is not None
-    assert session.session_goal.status == SessionGoalStatus.ACTIVE
+    assert session.session_goal.status == SessionGoalStatus.ACHIEVED
 
 
 def test_pending_user_choice_outranks_a_reached_verdict_with_evidence() -> None:
@@ -469,20 +726,17 @@ def test_a_met_verdict_ticks_every_checklist_item() -> None:
     assert session.session_goal.completed == frozenset({0, 1})
 
 
-def test_without_a_judge_only_a_ticked_checklist_can_close_the_goal() -> None:
-    # Arrange: no judge, no judge client — an in-memory host.
+def test_without_a_judge_successful_tools_close_the_goal() -> None:
     session = SessionCore()
     open_goal = SessionGoal(condition="count users")
     attach_session_goal(session, open_goal)
 
-    # Act
     verdict = evaluate_session_goal(
         open_goal, _result("284 users.", executed=1, success=1), session=session
     )
 
-    # Assert: a confident tool-backed reply is not enough without a judge.
-    assert verdict.status == SessionGoalStatus.ACTIVE
-    assert verdict.reason == SessionGoalReason.JUDGE_UNAVAILABLE
+    assert verdict.status == SessionGoalStatus.ACHIEVED
+    assert verdict.reason == SessionGoalReason.ACHIEVED_TOOL_EVIDENCE
 
 
 def test_a_rejected_tick_names_its_reason_on_the_status_line() -> None:
@@ -532,8 +786,7 @@ def test_a_rejected_tick_names_its_reason_on_the_status_line() -> None:
     assert session.session_goal.completed == frozenset()
 
 
-def test_a_judge_client_that_cannot_be_built_keeps_the_goal_active() -> None:
-    # Arrange: the host's factory raises (no credentials).
+def test_a_judge_client_that_cannot_be_built_does_not_block_host_accept() -> None:
     def _broken_factory() -> object:
         raise RuntimeError("no llm configured")
 
@@ -542,13 +795,11 @@ def test_a_judge_client_that_cannot_be_built_keeps_the_goal_active() -> None:
     goal = SessionGoal(condition="count users")
     attach_session_goal(session, goal)
 
-    # Act
     status = evaluate(goal, _result("284 users.", executed=1, success=1), session=session)
 
-    # Assert
-    assert status == SessionGoalStatus.ACTIVE
+    assert status == SessionGoalStatus.ACHIEVED
     assert session.session_goal is not None
-    assert session.session_goal.last_reason == SessionGoalReason.JUDGE_UNAVAILABLE
+    assert session.session_goal.last_reason == SessionGoalReason.ACHIEVED_TOOL_EVIDENCE
 
 
 def test_the_tick_tool_itself_is_not_evidence_for_a_met_verdict() -> None:

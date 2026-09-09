@@ -14,7 +14,10 @@ unverified answer cannot become settled by being repeated.
 from __future__ import annotations
 
 from core.agent_harness.session.session_core import SessionCore
-from core.agent_harness.session_goal.continuation import continuation_prompt
+from core.agent_harness.session_goal.continuation import (
+    continuation_prompt,
+    start_goal_prompt,
+)
 from core.agent_harness.session_goal.evaluate import evaluate_session_goal
 from core.agent_harness.session_goal.goal import SessionGoal
 from core.agent_harness.session_goal.judge import SessionGoalJudgeVerdict
@@ -28,6 +31,46 @@ def _goal() -> SessionGoal:
     return SessionGoal(condition="how many github actions runs failed?", max_outer_turns=5)
 
 
+def test_a_first_goal_turn_keeps_the_user_text_and_requires_a_tool() -> None:
+    # Arrange: the user text differs from the goal condition.
+    goal = _goal()
+
+    # Act
+    prompt = start_goal_prompt(goal, "also check attempt numbers")
+
+    # Assert: header, condition, tool rule, and the user text exactly once.
+    assert prompt.startswith("[session_goal]")
+    assert "how many github actions runs failed?" in prompt
+    assert "Use a tool" in prompt
+    assert prompt.count("also check attempt numbers") == 1
+
+
+def test_start_prompt_does_not_repeat_the_condition_as_the_user_text() -> None:
+    # Arrange: the user text is the condition itself (/goal set autosubmit).
+    goal = SessionGoal(condition="count users")
+
+    # Act
+    prompt = start_goal_prompt(goal, "count users")
+
+    # Assert: the condition appears once, the tool rule stays.
+    assert prompt.count("count users") == 1
+    assert "Use a tool" in prompt
+
+
+def test_continuation_without_tool_evidence_requires_a_tool() -> None:
+    prompt = continuation_prompt(_goal())
+    assert "Use a tool" in prompt
+
+
+def test_continuation_still_requires_a_tool_after_earlier_tool_work() -> None:
+    goal = SessionGoal(
+        condition="how many github actions runs failed?",
+        tool_success_seen=True,
+        findings=("listed the PRs",),
+    )
+    assert "Use a tool" in continuation_prompt(goal)
+
+
 def test_the_previous_answer_reaches_the_next_turn() -> None:
     # Arrange
     goal = _goal().with_last_answer(_ANSWER)
@@ -37,6 +80,17 @@ def test_the_previous_answer_reaches_the_next_turn() -> None:
 
     # Assert
     assert _ANSWER in prompt
+
+
+def test_a_contradicted_answer_is_not_protected_on_the_next_turn() -> None:
+    goal = (
+        _goal()
+        .with_last_answer("All 5 PRs re-ran to green.")
+        .with_reason("Contradiction: only one SHA shows attempt 2")
+    )
+    prompt = continuation_prompt(goal)
+    assert "Do not repeat that answer" in prompt
+    assert "say why" not in prompt
 
 
 def test_the_next_turn_is_told_to_explain_a_different_number() -> None:

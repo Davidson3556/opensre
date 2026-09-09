@@ -7,7 +7,9 @@ Checklist ticks come from the ``session_goal_complete`` tool; a cheap-model
 judge decides met / not yet / impossible. Reply prose never ticks or closes.
 
 The host loop (:mod:`core.agent_harness.session_goal.run_until`) calls ``chat``
-until the goal is achieved, impossible, cleared, cancelled, or hits ``max_outer_turns``.
+until the goal is achieved, impossible, cleared, cancelled, or hits a
+caller-set ``max_outer_turns`` (default: no host cap; two idle turns still
+stall).
 
 Related leaf modules (import them directly — this module must not import them):
 
@@ -64,6 +66,15 @@ class SessionGoalReason:
     PAUSED_USER_CHOICE = "paused — waiting for your choice"
     PAUSED_NO_PROGRESS = "paused — no progress after 2 turns"
     PAUSED_SAME_VERDICT = "paused — the judge returned the same verdict twice"
+    #: Headless stall: this invocation stops, the goal stays active so the next
+    #: inbound message continues (no ``/choose`` picker on Slack/Telegram/ask).
+    WAITING_AFTER_STALL = "no progress after 2 turns — waiting for your next message"
+    WAITING_AFTER_SAME_VERDICT = "same verdict twice — waiting for your next message"
+    #: A goal with no turn budget stops for a decision every N turns so it
+    #: cannot run on unattended while tools keep succeeding.
+    PAUSED_CHECKPOINT_PREFIX = "paused — "
+    PAUSED_CHECKPOINT_SUFFIX = " turns without an achieved signal; keep going or stop"
+    WAITING_AFTER_CHECKPOINT = "checkpoint reached — waiting for your next message"
     # A goal turn raised (model call rejected, provider down): the loop must not
     # spend the next turn on the same failure.
     PAUSED_TURN_FAILED = "paused — the last turn failed; fix the cause, then /goal resume"
@@ -73,6 +84,8 @@ class SessionGoalReason:
     CANCELLED = "goal cancelled"
     CLEARED = "goal cleared"
     JUDGE_UNAVAILABLE = "judge unavailable; staying active"
+    TOOL_FAILED = "a tool failed this turn; staying active"
+    UNVERIFIED_OVERFLOW = "tool evidence overflowed; staying unverified"
 
     @staticmethod
     def is_working(reason: str) -> bool:
@@ -80,7 +93,22 @@ class SessionGoalReason:
 
     @staticmethod
     def working_session_turn(turn: int, max_turns: int) -> str:
+        if not session_goal_has_turn_budget(max_turns):
+            return f"working — starting session-goal turn {turn}"
         return f"working — starting session-goal turn {turn}/{max_turns}"
+
+    @staticmethod
+    def checkpoint(turns_used: int) -> str:
+        return (
+            f"{SessionGoalReason.PAUSED_CHECKPOINT_PREFIX}{turns_used}"
+            f"{SessionGoalReason.PAUSED_CHECKPOINT_SUFFIX}"
+        )
+
+    @staticmethod
+    def is_checkpoint(reason: str) -> bool:
+        return reason.startswith(SessionGoalReason.PAUSED_CHECKPOINT_PREFIX) and reason.endswith(
+            SessionGoalReason.PAUSED_CHECKPOINT_SUFFIX
+        )
 
     @staticmethod
     def budget_exhausted(turns_used: int, max_outer_turns: int) -> str:
@@ -104,8 +132,17 @@ MAX_GOAL_REASON_CHARS = 240
 MAX_GOAL_FINDINGS = 4
 MAX_GOAL_CONDITION_CHARS = 400
 
-# Session-goal turns a goal may run before the host stops on budget.
-_DEFAULT_MAX_OUTER_TURNS = 5
+# 0 = no host turn budget (Claude / Cursor). Two idle turns still stall.
+# ``/goal set --max-turns N`` or ``max_turns`` on the attach tool sets a bound.
+SESSION_GOAL_UNBOUNDED_TURNS = 0
+# A goal without a budget pauses for a decision every this many turns.
+SESSION_GOAL_CHECKPOINT_TURNS = 10
+
+
+def session_goal_has_turn_budget(max_outer_turns: int) -> bool:
+    """True when the host should stop after ``max_outer_turns`` session-goal turns."""
+    return max_outer_turns > 0
+
 
 # Accidental paste of the interactive-shell prompt line into user text /
 # goal conditions (``[1] ❯ question`` → ``question``).
@@ -125,7 +162,7 @@ class SessionGoal:
     """Host-scoped completion condition spanning multiple ``chat`` turns."""
 
     condition: str
-    max_outer_turns: int = 5
+    max_outer_turns: int = SESSION_GOAL_UNBOUNDED_TURNS
     status: str = SessionGoalStatus.ACTIVE
     turns_used: int = 0
     step_count: int | None = None
@@ -280,7 +317,7 @@ def derive_session_goal_checklist(
     start of the condition, a line start, or after a colon or semicolon;
     ``(1)`` counts anywhere. A single-item checklist would only echo the
     condition, so a condition without enumerated steps gets no checklist and
-    the judge alone decides.
+    the host accepts on tool evidence (the judge may only veto).
     """
     provided = tuple(str(item).strip() for item in items if str(item).strip())
     if provided:
@@ -304,9 +341,12 @@ def build_session_goal(
         MAX_GOAL_CONDITION_CHARS,
     )
     clean_items = derive_session_goal_checklist(goal_condition, checklist)
-    max_turns = max(1, max_outer_turns) if max_outer_turns is not None else _DEFAULT_MAX_OUTER_TURNS
-    if clean_items and max_outer_turns is None:
-        max_turns = max(max_turns, len(clean_items))
+    if max_outer_turns is None or max_outer_turns <= 0:
+        max_turns = SESSION_GOAL_UNBOUNDED_TURNS
+    else:
+        max_turns = max(1, max_outer_turns)
+        if clean_items:
+            max_turns = max(max_turns, len(clean_items))
     return SessionGoal(
         condition=goal_condition,
         max_outer_turns=max_turns,
@@ -503,6 +543,7 @@ def refresh_session_goal_reason(goal: SessionGoal) -> SessionGoal:
 
 __all__ = [
     "MAX_GOAL_CONDITION_CHARS",
+    "SESSION_GOAL_CHECKPOINT_TURNS",
     "MAX_GOAL_REASON_CHARS",
     "SessionGoal",
     "SessionGoalReason",

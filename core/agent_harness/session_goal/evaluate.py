@@ -1,14 +1,20 @@
-"""SessionGoal completion — cheap-model judge plus a tool-evidence gate.
+"""SessionGoal completion — judge decides met; tools are required to accept.
 
 The action model does not get to close the goal by saying it is done. This
 module merges tool ticks, validates newly ticked items, then asks the
-transcript judge (:mod:`core.agent_harness.session_goal.judge`) for met /
-not yet / impossible. ``GOAL_REACHED`` without this-turn tools or stored
-findings stays active. Reply prose never ticks an item.
+transcript judge (:mod:`core.agent_harness.session_goal.judge`).
+``GOAL_REACHED`` needs tool or stored-finding evidence. ``NOT_REACHED``
+keeps the goal active so the next turn continues — successful tools are
+not enough. The judge may also veto a ``Contradiction:`` or declare
+``IMPOSSIBLE``. An unrecovered tool error this turn blocks a reached
+verdict. Any this-turn tool error blocks host accept when the judge is
+missing. Overflowed tool evidence (``tool_evidence is None``) stays
+unverified, including after ``GOAL_REACHED``. Reply prose never ticks
+an item.
 
 The judge client is injected: hosts build the loop's evaluate with
-:func:`build_session_goal_evaluator`. Without a judge only a fully ticked
-checklist can close a goal.
+:func:`build_session_goal_evaluator`. A missing or broken judge does not
+block host accept after real tools.
 """
 
 from __future__ import annotations
@@ -28,9 +34,14 @@ from core.agent_harness.session_goal.goal import (
 from core.agent_harness.session_goal.judge import (
     SessionGoalJudgeVerdict,
     invoke_session_goal_judge,
+    judge_reason_is_contradiction,
 )
 from core.agent_harness.session_goal.plan_credit import credit_completed_plan_steps
 from core.agent_harness.session_goal.progress import is_session_goal_progress_text
+from core.agent_harness.session_goal.review_input import (
+    tool_evidence_has_failure,
+    tool_evidence_has_unrecovered_failure,
+)
 from core.agent_harness.session_goal.validate import (
     invoke_checklist_tick_validator,
     kept_tick_indices,
@@ -107,6 +118,17 @@ def _need_tool_evidence_reason(judge_reason: str) -> str:
     if extra:
         return f"{SessionGoalReason.NEED_TOOL_EVIDENCE} — {extra}"
     return SessionGoalReason.NEED_TOOL_EVIDENCE
+
+
+def _host_can_accept(
+    *,
+    evidence: bool,
+    unfinished: bool,
+    tool_failed: bool,
+    unverified: bool,
+) -> bool:
+    """Host accept: real evidence, no open item, no failed tool, evidence still reviewable."""
+    return bool(evidence) and not unfinished and not tool_failed and not unverified
 
 
 def _ticked_items(goal: SessionGoal, newly: frozenset[int]) -> tuple[tuple[int, str], ...]:
@@ -205,9 +227,18 @@ def _verdict_from_judge(
     parsed: SessionGoalJudgeVerdict | None,
     *,
     evidence: bool,
+    host_can_accept: bool,
+    judge_can_accept: bool,
+    tool_failed: bool,
+    unverified: bool,
     fallback_reason: str,
 ) -> SessionGoalVerdict:
     if parsed is None:
+        if host_can_accept:
+            return SessionGoalVerdict(
+                status=SessionGoalStatus.ACHIEVED,
+                reason=SessionGoalReason.ACHIEVED_TOOL_EVIDENCE,
+            )
         return SessionGoalVerdict(
             status=SessionGoalStatus.ACTIVE,
             reason=SessionGoalReason.JUDGE_UNAVAILABLE,
@@ -219,15 +250,41 @@ def _verdict_from_judge(
             status=SessionGoalStatus.IMPOSSIBLE,
             reason=reason or SessionGoalReason.IMPOSSIBLE,
         )
+    if judge_reason_is_contradiction(reason):
+        return SessionGoalVerdict(
+            status=SessionGoalStatus.ACTIVE,
+            reason=reason,
+            repeats_previous=repeated,
+        )
     if parsed.verdict == "GOAL_REACHED":
-        if evidence:
+        # Same overflow / unfinished / failed-tool gate as the host. A cheap
+        # GOAL_REACHED must not close on unreviewable or incomplete work.
+        if judge_can_accept:
             return SessionGoalVerdict(
                 status=SessionGoalStatus.ACHIEVED,
                 reason=reason or SessionGoalReason.ACHIEVED_TOOL_EVIDENCE,
             )
+        if unverified:
+            return SessionGoalVerdict(
+                status=SessionGoalStatus.ACTIVE,
+                reason=SessionGoalReason.UNVERIFIED_OVERFLOW,
+                repeats_previous=repeated,
+            )
+        if tool_failed:
+            return SessionGoalVerdict(
+                status=SessionGoalStatus.ACTIVE,
+                reason=reason or fallback_reason,
+                repeats_previous=repeated,
+            )
+        if not evidence:
+            return SessionGoalVerdict(
+                status=SessionGoalStatus.ACTIVE,
+                reason=_need_tool_evidence_reason(reason),
+                repeats_previous=repeated,
+            )
         return SessionGoalVerdict(
             status=SessionGoalStatus.ACTIVE,
-            reason=_need_tool_evidence_reason(reason),
+            reason=reason or fallback_reason,
             repeats_previous=repeated,
         )
     return SessionGoalVerdict(
@@ -304,11 +361,40 @@ def evaluate_session_goal(
     if current.new_ticks or current.bookkeeping_calls:
         current = replace(current, new_ticks=frozenset(), bookkeeping_calls=0)
 
+    any_failure = tool_evidence_has_failure(tool_evidence)
+    unrecovered = tool_evidence_has_unrecovered_failure(tool_evidence)
+    unverified = current.tool_evidence is None
+    unfinished = bool(current.unfinished_items)
+    host_can_accept = _host_can_accept(
+        evidence=evidence,
+        unfinished=unfinished,
+        tool_failed=any_failure,
+        unverified=unverified,
+    )
+    # The judge may complete an open checklist (``_complete_checklist``).
+    # Overflow and an unrecovered write still block.
+    judge_can_accept = _host_can_accept(
+        evidence=evidence,
+        unfinished=False,
+        tool_failed=unrecovered,
+        unverified=unverified,
+    )
     if current.checklist_complete and evidence and judge is None and judge_llm is None:
-        verdict = SessionGoalVerdict(
-            status=SessionGoalStatus.ACHIEVED,
-            reason=SessionGoalReason.CHECKLIST_COMPLETE,
-        )
+        if host_can_accept:
+            verdict = SessionGoalVerdict(
+                status=SessionGoalStatus.ACHIEVED,
+                reason=SessionGoalReason.CHECKLIST_COMPLETE,
+            )
+        elif any_failure:
+            verdict = SessionGoalVerdict(
+                status=SessionGoalStatus.ACTIVE,
+                reason=SessionGoalReason.TOOL_FAILED,
+            )
+        else:
+            verdict = SessionGoalVerdict(
+                status=SessionGoalStatus.ACTIVE,
+                reason=SessionGoalReason.UNVERIFIED_OVERFLOW,
+            )
     elif is_session_goal_progress_text(text):
         verdict = SessionGoalVerdict(
             status=SessionGoalStatus.ACTIVE,
@@ -326,12 +412,19 @@ def evaluate_session_goal(
         verdict = _verdict_from_judge(
             parsed,
             evidence=evidence,
+            host_can_accept=host_can_accept,
+            judge_can_accept=judge_can_accept,
+            tool_failed=unrecovered,
+            unverified=unverified,
             fallback_reason=derive_session_goal_reason(current),
         )
     verdict = _with_rejected_ticks(verdict, review.rejected)
     if verdict.status == SessionGoalStatus.ACHIEVED:
         current = _complete_checklist(current)
-    current = current.with_verdict(verdict.reason, repeated=verdict.repeats_previous)
+    # A first verdict cannot repeat a previous one. Cheap judges still set the
+    # flag when last_verdict is empty, which stalled live /goal after one turn.
+    repeated = verdict.repeats_previous and bool(current.last_verdict.strip())
+    current = current.with_verdict(verdict.reason, repeated=repeated)
 
     if session is not None:
         updated = current.with_status(verdict.status).with_reason(verdict.reason)

@@ -5,7 +5,9 @@ from __future__ import annotations
 from core.agent_harness.session.session_core import SessionCore
 from core.agent_harness.session_goal.evaluate import evaluate_session_goal
 from core.agent_harness.session_goal.goal import (
+    SESSION_GOAL_CHECKPOINT_TURNS,
     SessionGoal,
+    SessionGoalReason,
     SessionGoalStatus,
     attach_session_goal,
     build_session_goal,
@@ -60,6 +62,95 @@ def test_a_checklist_comes_from_numbered_steps_or_explicit_items_only() -> None:
         "Do this:\n1. list the goal\n2. name step one\n3. confirm done"
     ) == ("list the goal", "name step one", "confirm done")
     assert derive_session_goal_checklist("ignored", ("A", "B")) == ("A", "B")
+
+
+def test_build_session_goal_is_unbounded_unless_the_caller_sets_a_cap() -> None:
+    goal = build_session_goal(condition="count the open PRs")
+    assert goal.max_outer_turns == 0
+
+
+def test_an_unbounded_goal_does_not_stop_on_turn_count() -> None:
+    session = SessionCore()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+            ),
+            assistant_response_text="still working",
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="keep going", max_outer_turns=0),
+        evaluate=lambda goal, result, *, session=None: (
+            evaluate_session_goal(
+                goal,
+                result,
+                session=session,
+                judge=lambda **_kw: SessionGoalJudgeVerdict(
+                    verdict="NOT_REACHED", reason="not yet"
+                ),
+            ).status
+        ),
+        cancel_requested=lambda: len(turns) >= 8,
+    )
+    assert len(turns) == 8
+    assert outcome.goal.status != SessionGoalStatus.BUDGET_EXHAUSTED
+
+
+def test_an_unbounded_goal_pauses_for_a_decision_at_the_checkpoint() -> None:
+    """Successful tool activity alone must not let a goal without a budget run on unattended."""
+    # Arrange: every turn succeeds with a tool, the judge never says reached.
+    session = SessionCore()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+            ),
+            assistant_response_text="still working",
+        )
+
+    # Act
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="keep going", max_outer_turns=0),
+        evaluate=lambda goal, result, *, session=None: (
+            evaluate_session_goal(
+                goal,
+                result,
+                session=session,
+                judge=lambda **_kw: SessionGoalJudgeVerdict(
+                    verdict="NOT_REACHED", reason="not yet"
+                ),
+            ).status
+        ),
+        cancel_requested=lambda: len(turns) >= 2 * SESSION_GOAL_CHECKPOINT_TURNS,
+    )
+
+    # Assert: stopped at the checkpoint, still active for the next message (headless).
+    assert len(turns) == SESSION_GOAL_CHECKPOINT_TURNS
+    assert outcome.goal.status == SessionGoalStatus.ACTIVE
+    assert outcome.goal.last_reason == SessionGoalReason.WAITING_AFTER_CHECKPOINT
 
 
 def test_build_session_goal_from_structured_input() -> None:
@@ -136,7 +227,8 @@ def test_five_step_outer_loop_continues_until_achieved() -> None:
     )
 
     assert len(turns) == 5
-    assert turns[0] == _FIVE_STEP_ASK
+    assert _FIVE_STEP_ASK in turns[0]
+    assert "[session_goal]" in turns[0]
     assert outcome.goal.status == SessionGoalStatus.ACHIEVED
     assert outcome.turn_count == 5
     assert outcome.goal.completed == frozenset({0, 1, 2, 3, 4})
@@ -273,7 +365,11 @@ def test_the_judge_reason_is_painted_between_turns() -> None:
         _chat,
         session,
         "go",
-        goal=SessionGoal(condition="find the failing run", max_outer_turns=2),
+        goal=SessionGoal(
+            condition="find the failing run",
+            max_outer_turns=2,
+            checklist=("list the runs", "filter by SHA"),
+        ),
         evaluate=lambda goal, result, *, session=None: (
             evaluate_session_goal(goal, result, session=session, judge=_not_yet).status
         ),
@@ -295,7 +391,12 @@ def test_a_resumed_goal_counts_its_next_turn() -> None:
     session = SessionCore()
     attach_session_goal(
         session,
-        SessionGoal(condition="find the failing run", max_outer_turns=5, turns_used=2),
+        SessionGoal(
+            condition="find the failing run",
+            max_outer_turns=5,
+            turns_used=2,
+            checklist=("list the runs", "filter by SHA"),
+        ),
     )
 
     def _chat(message: str) -> TurnResult:
@@ -389,19 +490,64 @@ def test_a_goal_turn_the_driver_could_not_run_pauses_the_goal_instead_of_retryin
     )
 
     # Assert: one turn, paused with the failure reason, no continuation into the same error.
-    assert turns == ["count the open PRs"]
+    assert len(turns) == 1
+    assert "count the open PRs" in turns[0]
+    assert "[session_goal]" in turns[0]
     assert outcome.goal.status == SessionGoalStatus.PAUSED
     assert outcome.goal.last_reason == SessionGoalReason.PAUSED_TURN_FAILED
 
 
-def test_the_same_judge_verdict_twice_pauses_the_goal_even_when_tools_ran() -> None:
-    # Arrange: every turn runs a tool, and the judge keeps saying the same thing.
-    from core.agent_harness.session_goal.evaluate import evaluate_session_goal
-    from core.agent_harness.session_goal.goal import SessionGoalReason
-    from core.agent_harness.session_goal.judge import SessionGoalJudgeVerdict
-    from surfaces.interactive_shell.session import Session
+def test_one_idle_turn_after_a_tool_does_not_pause_the_goal() -> None:
+    # Arrange: tools, then one idle not-yet. Live five-PR runs stalled here
+    # and returned a wrong table. Claude keeps going.
+    session = SessionCore()
+    turns: list[str] = []
 
-    session = Session()
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        if len(turns) == 1:
+            return TurnResult(
+                final_intent="cli_agent_handled",
+                action_result=ToolCallingTurnResult(
+                    planned_count=1,
+                    executed_count=1,
+                    executed_success_count=1,
+                    has_unhandled_clause=False,
+                    handled=True,
+                ),
+                assistant_response_text="listed the PRs",
+            )
+        return _idle_turn("still no table")
+
+    def _same(**kw: object) -> SessionGoalJudgeVerdict:
+        previous = str(kw.get("previous_reason", ""))
+        return SessionGoalJudgeVerdict(
+            verdict="NOT_REACHED",
+            reason="need a live Actions query",
+            repeats_previous=bool(previous),
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="table with the five PRs", max_outer_turns=3),
+        evaluate=lambda goal, result, *, session=None: (
+            evaluate_session_goal(goal, result, session=session, judge=_same).status
+        ),
+    )
+
+    assert len(turns) == 3
+    assert outcome.goal.status == SessionGoalStatus.BUDGET_EXHAUSTED
+    assert session.pending_user_choice is None
+
+
+def test_a_repeated_verdict_does_not_stop_a_turn_that_used_a_tool() -> None:
+    # Arrange: every turn runs a tool; the judge keeps saying contradiction.
+    from core.agent_harness.session_goal.evaluate import evaluate_session_goal
+    from core.agent_harness.session_goal.judge import SessionGoalJudgeVerdict
+
+    session = SessionCore()
     turns: list[str] = []
 
     def _chat(message: str) -> TurnResult:
@@ -418,33 +564,161 @@ def test_the_same_judge_verdict_twice_pauses_the_goal_even_when_tools_ran() -> N
             assistant_response_text="All 5 checked. | 3 rows |",
         )
 
-    seen_previous: list[str] = []
-
     def _same(**kw: object) -> SessionGoalJudgeVerdict:
-        # The judge is shown its previous reason and says whether it repeats it.
         previous = str(kw.get("previous_reason", ""))
-        seen_previous.append(previous)
         return SessionGoalJudgeVerdict(
             verdict="NOT_REACHED",
             reason="Contradiction: the sentence says 5 but the table lists 3 rows",
             repeats_previous=bool(previous),
         )
 
-    # Act
     outcome = run_until_session_goal(
         _chat,
         session,
         "go",
-        goal=SessionGoal(condition="table with the false sentence", max_outer_turns=6),
+        goal=SessionGoal(condition="table with the false sentence", max_outer_turns=3),
         evaluate=lambda goal, result, *, session=None: (
             evaluate_session_goal(goal, result, session=session, judge=_same).status
         ),
     )
 
-    # Assert: the second call saw the first reason; two turns, then the pause and menu.
-    assert seen_previous == ["", "Contradiction: the sentence says 5 but the table lists 3 rows"]
-    assert len(turns) == 2
-    assert outcome.goal.status == SessionGoalStatus.PAUSED
-    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_SAME_VERDICT
-    assert session.pending_user_choice is not None
-    assert "same verdict" in session.pending_user_choice.title
+    assert len(turns) == 3
+    assert outcome.goal.status == SessionGoalStatus.BUDGET_EXHAUSTED
+    assert outcome.goal.findings == ()
+
+
+def test_a_contradicted_reply_is_not_stored_as_an_established_finding() -> None:
+    from core.agent_harness.session_goal.evaluate import evaluate_session_goal
+    from core.agent_harness.session_goal.judge import SessionGoalJudgeVerdict
+
+    session = SessionCore()
+
+    def _chat(_message: str) -> TurnResult:
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+            ),
+            assistant_response_text="All 5 PRs re-ran to green.",
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="which PRs re-ran to green", max_outer_turns=1),
+        evaluate=lambda goal, result, *, session=None: (
+            evaluate_session_goal(
+                goal,
+                result,
+                session=session,
+                judge=lambda **_kw: SessionGoalJudgeVerdict(
+                    verdict="NOT_REACHED",
+                    reason="Contradiction: the sentence says 5 but only one SHA shows attempt 2",
+                ),
+            ).status
+        ),
+    )
+
+    assert outcome.goal.findings == ()
+    assert "All 5 PRs re-ran to green." in outcome.goal.last_answer
+
+
+def _stay_active(_goal: SessionGoal, _result: TurnResult, *, session: object | None = None) -> str:
+    _ = session
+    return SessionGoalStatus.ACTIVE
+
+
+def _idle_turn(text: str = "still looking") -> TurnResult:
+    return TurnResult(
+        final_intent="cli_agent_handled",
+        action_result=ToolCallingTurnResult(
+            planned_count=0,
+            executed_count=0,
+            executed_success_count=0,
+            has_unhandled_clause=False,
+            handled=True,
+        ),
+        assistant_response_text=text,
+    )
+
+
+def test_headless_stall_keeps_the_goal_so_the_next_message_continues() -> None:
+    session = SessionCore()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        return _idle_turn()
+
+    first = run_until_session_goal(
+        _chat,
+        session,
+        "find the failing run",
+        goal=SessionGoal(
+            condition="find the failing run",
+            max_outer_turns=6,
+            checklist=("list the runs", "filter by SHA"),
+        ),
+        evaluate=_stay_active,
+    )
+    assert first.goal.status == SessionGoalStatus.ACTIVE
+    assert first.goal.last_reason == SessionGoalReason.WAITING_AFTER_STALL
+    assert first.turn_count == 2
+    assert session.pending_user_choice is None
+
+    second = run_until_session_goal(
+        _chat,
+        session,
+        "try the SHA filter",
+        evaluate=_stay_active,
+    )
+    assert any("try the SHA filter" in turn for turn in turns)
+    assert second.goal.turns_used >= 3
+    assert second.goal.status == SessionGoalStatus.ACTIVE
+
+
+def test_headless_same_verdict_after_a_tool_keeps_going() -> None:
+    session = SessionCore()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        if len(turns) == 1:
+            return TurnResult(
+                final_intent="cli_agent_handled",
+                action_result=ToolCallingTurnResult(
+                    planned_count=1,
+                    executed_count=1,
+                    executed_success_count=1,
+                    has_unhandled_clause=False,
+                    handled=True,
+                ),
+                assistant_response_text="listed the PRs",
+            )
+        return _idle_turn("still no table")
+
+    def _same(**kw: object) -> SessionGoalJudgeVerdict:
+        previous = str(kw.get("previous_reason", ""))
+        return SessionGoalJudgeVerdict(
+            verdict="NOT_REACHED",
+            reason="need a live Actions query",
+            repeats_previous=bool(previous),
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="table with the five PRs", max_outer_turns=3),
+        evaluate=lambda goal, result, *, session=None: (
+            evaluate_session_goal(goal, result, session=session, judge=_same).status
+        ),
+    )
+    assert len(turns) == 3
+    assert outcome.goal.status == SessionGoalStatus.BUDGET_EXHAUSTED
+    assert session.pending_user_choice is None

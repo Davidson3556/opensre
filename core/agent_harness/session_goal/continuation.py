@@ -1,7 +1,7 @@
 """Session-goal continuation prompts for an attached SessionGoal.
 
-Leaf module: imports :mod:`core.agent_harness.session_goal.goal` only —
-do not import this from ``goal`` (avoids ``py/cyclic-import``). Distinct from
+Leaf module: imports goal + the contradiction helper. Do not import this
+from ``goal`` (avoids ``py/cyclic-import``). Distinct from
 :mod:`core.agent_harness.session_goal.progress` (presentation).
 """
 
@@ -11,6 +11,27 @@ from core.agent_harness.session_goal.goal import (
     SessionGoal,
     derive_session_goal_reason,
 )
+from core.agent_harness.session_goal.judge import judge_reason_is_contradiction
+
+_SESSION_GOAL_MARK = "[session_goal]"
+_USE_A_TOOL = (
+    "Use a tool that can satisfy the condition now. "
+    "Do not answer from memory or claim the work is already done."
+)
+
+
+def start_goal_prompt(goal: SessionGoal, message: str) -> str:
+    """First or resumed goal turn: keep the user text, require a tool.
+
+    When the user text is the condition itself, it appears once, in the header.
+    """
+    text = message.strip()
+    if text.startswith(_SESSION_GOAL_MARK):
+        return message
+    header = f"{_SESSION_GOAL_MARK} Goal: {goal.condition}\n{_USE_A_TOOL}"
+    if text == goal.condition.strip():
+        return header
+    return f"{header}\n\n{text}"
 
 
 def continuation_prompt(goal: SessionGoal) -> str:
@@ -25,16 +46,24 @@ def continuation_prompt(goal: SessionGoal) -> str:
             f"{established}\n\n"
         )
     if goal.last_answer:
-        reason_block += (
-            "The previous turn of this goal already told the user:\n"
-            f"  {goal.last_answer}\n"
-            "Re-derive it if you must, but if your answer differs, say why — do "
-            "not replace it with a different number silently.\n\n"
-        )
+        if judge_reason_is_contradiction(goal.last_reason):
+            reason_block += (
+                "The previous turn told the user something the judge flagged "
+                "as a contradiction. Do not repeat that answer. Re-query with a "
+                "tool and correct it:\n"
+                f"  {goal.last_answer}\n\n"
+            )
+        else:
+            reason_block += (
+                "The previous turn of this goal already told the user:\n"
+                f"  {goal.last_answer}\n"
+                "Re-derive it if you must, but if your answer differs, say why — do "
+                "not replace it with a different number silently.\n\n"
+            )
     unfinished = goal.unfinished_items
     follow_reason = (
-        "Follow the last progress reason. Do not claim the goal is met in prose — "
-        "the host judge decides."
+        f"{_USE_A_TOOL} Follow the last progress reason. Do not claim the goal "
+        "is met in prose — the host judge decides."
     )
     if unfinished:
         pending = "\n".join(f"  - [{index}] {item}" for index, item in unfinished)
@@ -57,4 +86,5 @@ def continuation_prompt(goal: SessionGoal) -> str:
 
 __all__ = [
     "continuation_prompt",
+    "start_goal_prompt",
 ]

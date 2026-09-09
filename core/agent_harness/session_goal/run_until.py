@@ -19,21 +19,27 @@ from core.agent_harness.session.terminal_access import (
     session_terminal,
     set_auto_command,
 )
-from core.agent_harness.session_goal.continuation import continuation_prompt
+from core.agent_harness.session_goal.continuation import (
+    continuation_prompt,
+    start_goal_prompt,
+)
 from core.agent_harness.session_goal.evaluate import (
     default_evaluate_session_goal,
     session_goal_reply_text,
     turn_has_session_goal_evidence,
 )
 from core.agent_harness.session_goal.goal import (
+    SESSION_GOAL_CHECKPOINT_TURNS,
     SessionGoal,
     SessionGoalReason,
     SessionGoalStatus,
     attach_session_goal,
     refresh_session_goal_reason,
+    session_goal_has_turn_budget,
     session_goal_is_active,
     session_goal_is_paused,
 )
+from core.agent_harness.session_goal.judge import judge_reason_is_contradiction
 from core.agent_harness.session_goal.review_input import retain_tool_evidence
 from core.agent_harness.turns.turn_results import TurnResult
 
@@ -121,7 +127,9 @@ def _announce_working(
     on_progress: ProgressFn | None,
 ) -> SessionGoal:
     """Paint a clear 'working now' line before a session-goal ``chat`` starts."""
-    next_turn = min(active.turns_used + 1, active.max_outer_turns)
+    next_turn = active.turns_used + 1
+    if session_goal_has_turn_budget(active.max_outer_turns):
+        next_turn = min(next_turn, active.max_outer_turns)
     working = active.with_reason(
         SessionGoalReason.working_session_turn(next_turn, active.max_outer_turns)
     )
@@ -133,7 +141,7 @@ def _announce_working(
 
 _NO_PROGRESS_TURNS = 2
 STALL_MENU_TITLE = "The goal made no progress in 2 turns. How should I continue?"
-SAME_VERDICT_MENU_TITLE = "The judge gave the same verdict twice. How should I continue?"
+CHECKPOINT_MENU_TITLE = "The goal has run {turns} turns without finishing. How should I continue?"
 STALL_OPTION_MORE = "Keep going for one more turn"
 STALL_OPTION_STOP = "Stop here; the work above is enough"
 STALL_COMMANDS: Mapping[str, str] = MappingProxyType(
@@ -148,6 +156,43 @@ def goal_has_stalled(goal: SessionGoal) -> bool:
     return goal.turns_used - goal.last_progress_turns_used >= _NO_PROGRESS_TURNS
 
 
+def goal_reached_checkpoint(goal: SessionGoal) -> bool:
+    """True every ``SESSION_GOAL_CHECKPOINT_TURNS`` turns of a goal with no turn budget."""
+    if session_goal_has_turn_budget(goal.max_outer_turns):
+        return False
+    return goal.turns_used > 0 and goal.turns_used % SESSION_GOAL_CHECKPOINT_TURNS == 0
+
+
+def _headless_stall_reason(reason: str) -> str:
+    """User-visible reason when this invocation yields but the goal stays active."""
+    if reason == SessionGoalReason.PAUSED_SAME_VERDICT:
+        return SessionGoalReason.WAITING_AFTER_SAME_VERDICT
+    if SessionGoalReason.is_checkpoint(reason):
+        return SessionGoalReason.WAITING_AFTER_CHECKPOINT
+    return SessionGoalReason.WAITING_AFTER_STALL
+
+
+def _yield_after_stall(
+    session: Any,
+    active: SessionGoal,
+    on_progress: ProgressFn | None,
+    *,
+    reason: str,
+) -> SessionGoal:
+    """Stop this invocation; keep ACTIVE so the next inbound message continues.
+
+    Reset the stall clock so the next message is not immediately treated as
+    another two-turn plateau.
+    """
+    waiting = replace(active, last_progress_turns_used=active.turns_used).with_reason(reason)
+    attach_session_goal(session, waiting)
+    try:
+        _paint(session, waiting, on_progress, rederive=False)
+    except Exception:
+        log.debug("session-goal stall yield paint failed", exc_info=True)
+    return waiting
+
+
 def pause_for_no_progress(
     session: Any,
     active: SessionGoal,
@@ -156,17 +201,22 @@ def pause_for_no_progress(
     reason: str = SessionGoalReason.PAUSED_NO_PROGRESS,
     menu_title: str = STALL_MENU_TITLE,
 ) -> SessionGoal:
-    """Pause a stalled goal; the shell also opens a menu with the ways forward.
+    """Stop a stalled goal this invocation; the shell also opens a menu.
 
-    Two full turns without a tick or a successful tool, or the same judge
-    verdict twice, means repeating the same steps to the budget. The
-    interactive shell asks: one more turn, stop, or typed guidance (the custom
-    row). Headless hosts have no ``/choose`` handler, so they only pause and
-    return.
+    Two full turns without a tick or a successful tool means the loop is
+    idle. The interactive shell asks: one more turn, stop, or typed guidance.
+    Headless hosts have no ``/choose`` picker — they keep the goal active
+    and return so the next message continues. A repeated not-yet after a
+    successful tool is not a stall: the next turn continues under budget.
     """
-    paused = _end(session, active, SessionGoalStatus.PAUSED, on_progress, reason=reason)
     if session_terminal(session) is None:
-        return paused
+        return _yield_after_stall(
+            session,
+            active,
+            on_progress,
+            reason=_headless_stall_reason(reason),
+        )
+    paused = _end(session, active, SessionGoalStatus.PAUSED, on_progress, reason=reason)
     session.pending_user_choice = PendingUserChoice(
         title=menu_title,
         options=(STALL_OPTION_MORE, STALL_OPTION_STOP),
@@ -224,7 +274,6 @@ def _finish_outer_turn(
     *,
     evaluate_fn: EvaluateFn,
     on_progress: ProgressFn | None,
-    completed_before: frozenset[int] = frozenset(),
 ) -> tuple[SessionGoal, TurnResult, bool]:
     """Evaluate → single paint. Returns ``(goal, result, stop)``."""
     if last.cancelled:
@@ -254,7 +303,10 @@ def _finish_outer_turn(
     # a fresh chat call and history carries prose only, so this is the only way
     # a later turn learns what earlier ones established.
     reply_text = session_goal_reply_text(last)
-    if turn_evidence:
+    # A contradicted reply is not established. Live five-PR runs stored the
+    # wrong all-Yes table as a finding, then told the next turn to treat it
+    # as done.
+    if turn_evidence and not judge_reason_is_contradiction(active.last_reason):
         active = active.with_finding(reply_text)
         attach_session_goal(session, active)
     # Recorded even without tool evidence. Evidence gates *closing* the goal and
@@ -273,7 +325,10 @@ def _finish_outer_turn(
         ended = _end(session, active, next_status, on_progress, reason=active.last_reason)
         return ended, last, True
 
-    if active.turns_used >= active.max_outer_turns:
+    if (
+        session_goal_has_turn_budget(active.max_outer_turns)
+        and active.turns_used >= active.max_outer_turns
+    ):
         ended = _end(session, active, SessionGoalStatus.BUDGET_EXHAUSTED, on_progress)
         return ended, last, True
 
@@ -281,17 +336,13 @@ def _finish_outer_turn(
         active = pause_for_no_progress(session, active, on_progress)
         return active, last, True
 
-    ticked = bool(active.completed - completed_before)
-    if active.verdict_repeated and not ticked:
-        # Tools ran, but no item was ticked and the judge says its verdict
-        # repeats the last one: the loop is going round and the budget would
-        # go the same way.
+    if goal_reached_checkpoint(active):
         active = pause_for_no_progress(
             session,
             active,
             on_progress,
-            reason=SessionGoalReason.PAUSED_SAME_VERDICT,
-            menu_title=SAME_VERDICT_MENU_TITLE,
+            reason=SessionGoalReason.checkpoint(active.turns_used),
+            menu_title=CHECKPOINT_MENU_TITLE.format(turns=active.turns_used),
         )
         return active, last, True
 
@@ -346,9 +397,12 @@ def run_until_session_goal(
         _announce_working(session, pre, on_progress)
 
     pre_chat_completed = pre.completed if isinstance(pre, SessionGoal) else frozenset()
+    first = message
+    if isinstance(pre, SessionGoal) and pre.status == SessionGoalStatus.ACTIVE:
+        first = start_goal_prompt(pre, message)
     # Also covers a goal attached by ``session_goal_set`` inside this very turn:
     # the pause applies to whatever goal is active when the turn raises.
-    last = _chat_or_pause(chat, message, session, on_progress)
+    last = _chat_or_pause(chat, first, session, on_progress)
     active = getattr(session, "session_goal", None)
     if not isinstance(active, SessionGoal) or not session_goal_is_active(session):
         # Paused after the first chat (e.g. slash during turn) — keep state.
@@ -369,7 +423,9 @@ def run_until_session_goal(
     if not had_active_before and active.host_owned and active.turns_used == 0:
         if session_terminal(session) is not None:
             return SessionGoalRunResult(goal=active, last_result=last, turn_count=0)
-        last = _chat_or_pause(chat, active.condition, session, on_progress)
+        last = _chat_or_pause(
+            chat, start_goal_prompt(active, active.condition), session, on_progress
+        )
         stored = getattr(session, "session_goal", None)
         if isinstance(stored, SessionGoal):
             active = stored
@@ -387,7 +443,6 @@ def run_until_session_goal(
         last,
         evaluate_fn=evaluate_fn,
         on_progress=on_progress,
-        completed_before=pre_chat_completed,
     )
     if stop:
         return SessionGoalRunResult(goal=active, last_result=last, turn_count=active.turns_used)
@@ -397,12 +452,14 @@ def run_until_session_goal(
             active = _end(session, active, SessionGoalStatus.CANCELLED, on_progress)
             break
 
-        if active.turns_used >= active.max_outer_turns:
+        if (
+            session_goal_has_turn_budget(active.max_outer_turns)
+            and active.turns_used >= active.max_outer_turns
+        ):
             active = _end(session, active, SessionGoalStatus.BUDGET_EXHAUSTED, on_progress)
             break
 
         _announce_working(session, active, on_progress)
-        completed_before = active.completed
         last = _chat_or_pause(chat, continuation_prompt(active), session, on_progress)
         active = _record_goal_turn(session, active)
         active, last, stop = _finish_outer_turn(
@@ -411,7 +468,6 @@ def run_until_session_goal(
             last,
             evaluate_fn=evaluate_fn,
             on_progress=on_progress,
-            completed_before=completed_before,
         )
         if stop:
             break
