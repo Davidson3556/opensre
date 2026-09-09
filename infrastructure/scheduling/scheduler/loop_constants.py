@@ -6,6 +6,8 @@ LOOP_CHANNELS_PARAM = "loop_channels"
 LOOP_CREATED_BY_PARAM = "loop_created_by"
 LOOP_DESCRIPTION_PARAM = "loop_description"
 LOOP_GROUP_ID_PARAM = "loop_group_id"
+LOOP_LEGACY_TASK_KIND_PARAM = "opensre_legacy_task_kind"
+LOOP_MIGRATION_NOTICE_PARAM = "opensre_task_migration_notice"
 LOOP_PROMPT_PARAM = "loop_prompt"
 LOOP_REPORT_PARAM = "loop_report"
 """Name of a deterministic report builder that replaces the model turn for this loop."""
@@ -24,6 +26,8 @@ __all__ = [
     "LOOP_CREATED_BY_PARAM",
     "LOOP_DESCRIPTION_PARAM",
     "LOOP_GROUP_ID_PARAM",
+    "LOOP_LEGACY_TASK_KIND_PARAM",
+    "LOOP_MIGRATION_NOTICE_PARAM",
     "LOOP_PROMPT_PARAM",
     "LOOP_REPORT_ARGS_PARAM",
     "LOOP_REPORT_PARAM",
