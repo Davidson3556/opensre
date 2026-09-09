@@ -10,6 +10,13 @@ import pytest
 from tools.system.structured_file.parse import StructureError, describe
 from tools.system.structured_file.tool import TOOL_NAME, read_structured_file
 
+
+@pytest.fixture(autouse=True)
+def _work_where_the_files_are(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tools only read inside the working directory; point it at the fixture tree."""
+    monkeypatch.chdir(tmp_path)
+
+
 _WORKFLOW = """
 name: CI
 on:
@@ -172,3 +179,35 @@ def test_the_tool_is_registered_and_read_only() -> None:
     assert registered is not None
     assert registered.side_effect_level == "read_only"
     assert "path" in registered.public_input_schema["properties"]
+
+
+def test_a_merged_anchor_is_expanded(tmp_path: Path) -> None:
+    """``<<`` pulls an anchored mapping in; skipping it made the file unreadable."""
+    # Arrange: two jobs that share defaults through an anchor.
+    path = tmp_path / "anchored.yml"
+    path.write_text(
+        "defaults: &defaults\n"
+        "  runs-on: ubuntu-latest\n"
+        "jobs:\n"
+        "  build:\n"
+        "    <<: *defaults\n"
+        "    steps: []\n"
+        "  test:\n"
+        "    <<: *defaults\n"
+        "    steps: []\n"
+    )
+
+    # Act
+    jobs = describe(path, "jobs")
+    build = describe(path, "jobs.build")
+
+    # Assert: the file loads, and the merged key is part of the job.
+    assert jobs.count == 2
+    assert build.keys == ("runs-on", "steps")
+
+
+def test_a_file_outside_the_working_directory_is_refused() -> None:
+    """Key names from a private config would otherwise be readable."""
+    # Arrange / Act / Assert
+    with pytest.raises(StructureError, match="outside the working directory"):
+        describe(Path("/etc/hosts"))

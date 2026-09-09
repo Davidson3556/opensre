@@ -15,6 +15,12 @@ from typing import Any
 
 import yaml
 
+from tools.system.workspace_paths import (
+    WorkspacePathError,
+    resolve_within_workspace,
+    workspace_relative,
+)
+
 #: Extensions this module knows how to load.
 FORMAT_BY_SUFFIX: dict[str, str] = {
     ".yml": "yaml",
@@ -35,12 +41,24 @@ class KeysAsWritten(yaml.SafeLoader):
     their normal types.
     """
 
+    #: Keys YAML resolves to booleans; kept as the words the file spells.
+    _BOOL_TAG = "tag:yaml.org,2002:bool"
+    #: ``<<`` pulls an anchored mapping in; PyYAML normally expands it for us.
+    _MERGE_TAG = "tag:yaml.org,2002:merge"
+
     def construct_mapping(self, node: Any, deep: bool = False) -> dict[Any, Any]:
+        """Build the mapping, expanding ``<<`` merges and keeping keys as written.
+
+        ``SafeConstructor.construct_mapping`` normally expands ``<<`` for us;
+        overriding it means doing that here, or an anchored document fails to
+        load at all.
+        """
+        self.flatten_mapping(node)
         mapping: dict[Any, Any] = {}
         for key_node, value_node in node.value:
             key = (
                 key_node.value
-                if key_node.tag == "tag:yaml.org,2002:bool"
+                if key_node.tag == self._BOOL_TAG
                 else self.construct_object(key_node, deep=deep)
             )
             mapping[key] = self.construct_object(value_node, deep=deep)
@@ -65,6 +83,10 @@ class StructureError(ValueError):
 
 def load_structured_file(path: Path) -> Any:
     """Return the parsed document, chosen by suffix."""
+    try:
+        path = resolve_within_workspace(path)
+    except WorkspacePathError as exc:
+        raise StructureError(str(exc)) from exc
     file_format = FORMAT_BY_SUFFIX.get(path.suffix.lower())
     if file_format is None:
         supported = ", ".join(sorted(set(FORMAT_BY_SUFFIX)))
@@ -112,7 +134,7 @@ def describe(path: Path, key: str = "") -> StructureView:
     if isinstance(target, dict):
         names = [str(name) for name in target]
         return StructureView(
-            path=str(path),
+            path=workspace_relative(path),
             file_format=file_format,
             key=key,
             kind="mapping",
@@ -121,7 +143,7 @@ def describe(path: Path, key: str = "") -> StructureView:
         )
     if isinstance(target, list):
         return StructureView(
-            path=str(path),
+            path=workspace_relative(path),
             file_format=file_format,
             key=key,
             kind="list",
@@ -129,7 +151,7 @@ def describe(path: Path, key: str = "") -> StructureView:
             keys=(),
         )
     return StructureView(
-        path=str(path),
+        path=workspace_relative(path),
         file_format=file_format,
         key=key,
         # A scalar's contents are never returned: a config file may hold a
