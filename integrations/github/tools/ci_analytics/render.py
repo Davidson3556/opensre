@@ -5,17 +5,29 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from rich.console import Group
 from rich.padding import Padding
-from rich.table import Table
-from rich.text import Text
 
+import infrastructure.terminal.theme as ui_theme
+from infrastructure.terminal.markdown import ReplyMarkdown
 from integrations.github.tools.ci_analytics.models import (
     CiAnalyticsReport,
     FailureKind,
     Outage,
     PullRequestDelay,
 )
+
+#: Characters that would be read as markup when a GitHub-supplied name
+#: (workflow, branch, login, repository) is placed in the report text. A
+#: literal ``|`` in a workflow name would otherwise split a table row.
+_MARKUP_CHARACTERS = "\\|*_`[]"
+
+
+def _plain(value: str) -> str:
+    """Escape a GitHub-supplied name so markdown renders it literally."""
+    for character in _MARKUP_CHARACTERS:
+        value = value.replace(character, f"\\{character}")
+    return value
+
 
 _TOP_WORKFLOWS = 5
 _TOP_BLOCKED_PRS = 5
@@ -25,7 +37,8 @@ _TOP_DEVELOPERS = 3
 def render_markdown(report: CiAnalyticsReport, *, compact: bool = False) -> str:
     """Markdown report: key results lead. ``compact`` omits the counts appendix."""
     lines = [
-        f"**CI/CD reliability for {report.owner}/{report.repo}, last {report.window_days} days**",
+        f"**CI/CD reliability for {_plain(report.owner)}/{_plain(report.repo)}, "
+        f"last {report.window_days} days**",
         "",
     ]
     lines.extend(_key_results_markdown(report))
@@ -40,23 +53,17 @@ def render_markdown(report: CiAnalyticsReport, *, compact: bool = False) -> str:
 
 def render_report(console: Any, report: CiAnalyticsReport, *, compact: bool = False) -> None:
     """Paint the report: key results first. ``compact`` omits the counts appendix."""
-    parts: list[Any] = [
-        Text(
-            f"CI/CD reliability for {report.owner}/{report.repo}, last {report.window_days} days",
-            style="bold",
-        ),
-        Text(""),
-    ]
-    if report.executions:
-        parts.append(Text("Key results", style="bold"))
-        for label, value in key_results(report):
-            parts.append(_kpi_line(label, value))
-        if not compact:
-            parts.extend(_details_parts(report))
-    else:
-        parts.append(Text("No completed workflow runs were found in this window.", style="dim"))
-    parts.extend(Text(notice, style="dim") for notice in report.coverage_notices)
-    console.print(Padding(Group(*parts), (0, 0, 0, 2)))
+    _paint(console, render_markdown(report, compact=compact))
+
+
+def _paint(console: Any, markdown: str) -> None:
+    """Paint markdown the way the shell paints a reply: same theme, two-cell indent.
+
+    The theme is read here, not at import, so a report painted after ``/theme``
+    uses the palette the rest of the turn uses.
+    """
+    with console.use_theme(ui_theme.MARKDOWN_THEME):
+        console.print(Padding(ReplyMarkdown(markdown), (0, 0, 0, 2)), style=str(ui_theme.TEXT))
 
 
 def key_results(report: CiAnalyticsReport) -> list[tuple[str, str]]:
@@ -65,7 +72,7 @@ def key_results(report: CiAnalyticsReport) -> list[tuple[str, str]]:
     red_share = report.red_hours / window_hours
     results: list[tuple[str, str]] = [
         (
-            f"{report.default_branch} branch red",
+            f"{_plain(report.default_branch)} branch red",
             f"{_hours(report.red_hours)} of {report.window_days} days ({red_share:.1%}), "
             f"{len(report.outages)} {_plural(len(report.outages), 'breakage')}",
         )
@@ -95,7 +102,9 @@ def key_results(report: CiAnalyticsReport) -> list[tuple[str, str]]:
         default=None,
     )
     if slowest is not None:
-        results.append(("Slowest normal run", f"{slowest.workflow}, {slowest.normal_minutes:.0f}m"))
+        results.append(
+            ("Slowest normal run", f"{_plain(slowest.workflow)}, {slowest.normal_minutes:.0f}m")
+        )
     if report.blocked_working_minutes > 0:
         developers = report.developers_affected
         per_week = (
@@ -142,7 +151,7 @@ def comparison_figures(report: CiAnalyticsReport) -> dict[str, str]:
 
 def skip_lines(skipped: list[str]) -> list[str]:
     """Guest-visible reason a benchmark column is missing."""
-    return [f"Skipped {item}." for item in skipped]
+    return [f"Skipped {_plain(item)}." for item in skipped]
 
 
 def render_comparison(
@@ -153,38 +162,7 @@ def render_comparison(
     skipped: list[str] | None = None,
 ) -> None:
     """One table: the user's repo first, then the benchmark columns."""
-    missed = list(skipped or [])
-    if not peers:
-        parts: list[Any] = [
-            Text(""),
-            Text("Compared with well-known repositories", style="bold"),
-            Text(
-                "No benchmark columns — no same-day snapshot. "
-                "The report above is this repository only.",
-                style="dim",
-            ),
-        ]
-        parts.extend(Text(line, style="dim") for line in skip_lines(missed))
-        console.print(Padding(Group(*parts), (0, 0, 0, 2)))
-        return
-    reports = [user, *peers]
-    labels = [f"{item.owner}/{item.repo}" for item in reports]
-    figures = [comparison_figures(item) for item in reports]
-    table = Table(show_edge=False, pad_edge=False, box=None, header_style="dim")
-    table.add_column("Metric", justify="left")
-    for label in labels:
-        table.add_column(label, justify="right")
-    for metric in figures[0]:
-        table.add_row(metric, *[row.get(metric, "n/a") for row in figures])
-    peers_label = " and ".join(labels[1:]) if labels[1:] else "benchmarks"
-    parts = [
-        Text(""),
-        Text(f"Compared with {peers_label} over the same {user.window_days} days", style="bold"),
-        table,
-    ]
-    parts.extend(Text(notice, style="dim") for notice in _comparison_notes(peers))
-    parts.extend(Text(line, style="dim") for line in skip_lines(missed))
-    console.print(Padding(Group(*parts), (0, 0, 0, 2)))
+    _paint(console, "\n".join(["", comparison_markdown(user, peers, skipped=skipped)]))
 
 
 def comparison_markdown(
@@ -205,7 +183,7 @@ def comparison_markdown(
         ]
         return "\n".join(lines)
     reports = [user, *peers]
-    labels = [f"{item.owner}/{item.repo}" for item in reports]
+    labels = [f"{_plain(item.owner)}/{_plain(item.repo)}" for item in reports]
     figures = [comparison_figures(item) for item in reports]
     header = "| Metric | " + " | ".join(labels) + " |"
     align = "| --- | " + " | ".join("---:" for _ in labels) + " |"
@@ -232,7 +210,7 @@ def _comparison_notes(peers: list[CiAnalyticsReport]) -> list[str]:
     notes: list[str] = []
     seen: set[str] = set()
     for peer in peers:
-        name = f"{peer.owner}/{peer.repo}"
+        name = f"{_plain(peer.owner)}/{_plain(peer.repo)}"
         if peer.red_hours == 0 and name not in seen:
             seen.add(name)
             if peer.branch_runs:
@@ -266,93 +244,10 @@ def _details_markdown(report: CiAnalyticsReport) -> list[str]:
         for summary in report.workflows[:_TOP_WORKFLOWS]:
             normal = "n/a" if summary.normal_minutes is None else f"{summary.normal_minutes:.0f}m"
             lines.append(
-                f"| {summary.workflow} | {summary.runs} | {summary.failures} |"
+                f"| {_plain(summary.workflow)} | {summary.runs} | {summary.failures} |"
                 f" {summary.reliability_failures} | {normal} |"
             )
     return lines
-
-
-def _details_parts(report: CiAnalyticsReport) -> list[Any]:
-    now = report.generated_at
-    parts: list[Any] = [
-        Text(""),
-        _kpi_line("GitHub Actions executions", str(report.executions)),
-        _kpi_line("PR-triggered workflow executions", str(report.pr_executions)),
-        _kpi_line("PR-triggered failed workflows", str(report.pr_failures)),
-        _kpi_line("Raw PR workflow failure rate", _rate(report.pr_failure_rate)),
-    ]
-    if report.pr_failures:
-        parts.extend(
-            [
-                Text(""),
-                Text(f"Failure classification (all {report.pr_failures} classified)", style="bold"),
-                _kpi_line(
-                    "CI reliability failures, passed later on the same commit",
-                    str(report.count(FailureKind.RELIABILITY)),
-                ),
-                _kpi_line(
-                    "Source-code failures, passed only after a code change",
-                    str(report.count(FailureKind.SOURCE)),
-                ),
-                _kpi_line("Not recovered in the window", str(report.count(FailureKind.UNRESOLVED))),
-                Text(""),
-                Text(_downtime_headline(report), style="bold"),
-            ]
-        )
-        parts.append(Text(f"Working hours: {report.working_hours_label}", style="dim"))
-        blocked = report.blocked_pr_delays
-        if blocked:
-            parts.append(Text(""))
-            parts.append(_blocked_table(blocked))
-            parts.append(Text(""))
-            parts.extend(_kpi_line(label, value) for label, value in _roll_up_lines(report))
-        if report.blocked_minutes_all > report.blocked_minutes:
-            parts.append(
-                _kpi_line(
-                    "Including PRs not merged yet",
-                    f"{_minutes(report.blocked_minutes_all)} wall clock",
-                )
-            )
-    if report.branch_runs:
-        parts.extend(
-            [
-                Text(""),
-                Text(
-                    f"{report.default_branch} branch: {report.branch_failures} of "
-                    f"{report.branch_runs} push-triggered runs failed, red for "
-                    f"{_hours(report.red_hours)} across {len(report.outages)} "
-                    f"{_plural(len(report.outages), 'breakage')}",
-                    style="bold",
-                ),
-            ]
-        )
-        if report.mean_recovery_hours is not None:
-            parts.append(_kpi_line("Mean time to recovery", _hours(report.mean_recovery_hours)))
-        if report.longest_outage is not None:
-            parts.append(_kpi_line("Longest breakage", _outage(report.longest_outage, now=now)))
-        for outage in report.ongoing_outages:
-            parts.append(_kpi_line("Still red now", _outage(outage, now=now), style="bold red"))
-    if report.workflows:
-        table = Table(show_edge=False, pad_edge=False, box=None, header_style="dim")
-        for column, justify in (
-            ("Workflow", "left"),
-            ("Runs", "right"),
-            ("Failed", "right"),
-            ("CI-caused", "right"),
-            ("Normal duration", "right"),
-        ):
-            table.add_column(column, justify=justify)  # type: ignore[arg-type]
-        for summary in report.workflows[:_TOP_WORKFLOWS]:
-            normal = "n/a" if summary.normal_minutes is None else f"{summary.normal_minutes:.0f}m"
-            table.add_row(
-                summary.workflow,
-                str(summary.runs),
-                str(summary.failures),
-                str(summary.reliability_failures),
-                normal,
-            )
-        parts.extend([Text(""), table])
-    return parts
 
 
 def _working(minutes: float) -> str:
@@ -378,19 +273,10 @@ _BLOCKED_COLUMNS = (
 )
 
 
-def _blocked_table(blocked: tuple[PullRequestDelay, ...]) -> Table:
-    table = Table(show_edge=False, pad_edge=False, box=None, header_style="dim")
-    for column, justify in _BLOCKED_COLUMNS:
-        table.add_column(column, justify=justify)  # type: ignore[arg-type]
-    for item in blocked[:_TOP_BLOCKED_PRS]:
-        table.add_row(*_blocked_row(item))
-    return table
-
-
 def _blocked_row(item: PullRequestDelay) -> tuple[str, ...]:
     return (
         f"#{item.pr_number}" if item.pr_number else "-",
-        item.author or "-",
+        _plain(item.author) if item.author else "-",
         _day(item.first_queued),
         _working(item.working_minutes),
         _minutes(item.delay_minutes),
@@ -437,7 +323,7 @@ def _roll_up_lines(report: CiAnalyticsReport) -> list[tuple[str, str]]:
 def _heaviest_developers(report: CiAnalyticsReport) -> str:
     waits = [w for w in report.developer_waits if w.working_minutes > 0][:_TOP_DEVELOPERS]
     return " · ".join(
-        f"{w.login} {_working(w.working_minutes_per_week)}/week over {w.pull_requests} "
+        f"{_plain(w.login)} {_working(w.working_minutes_per_week)}/week over {w.pull_requests} "
         f"{_plural(w.pull_requests, 'PR')}"
         for w in waits
     )
@@ -471,7 +357,7 @@ def headline(report: CiAnalyticsReport) -> str:
         )
     if report.red_hours > 0:
         return (
-            f"{report.default_branch} was red for {_hours(report.red_hours)} across "
+            f"{_plain(report.default_branch)} was red for {_hours(report.red_hours)} across "
             f"{len(report.outages)} {_plural(len(report.outages), 'breakage')} in the last "
             f"{report.window_days} days, with a mean recovery of "
             f"{_hours(report.mean_recovery_hours or 0.0)}."
@@ -482,12 +368,6 @@ def headline(report: CiAnalyticsReport) -> str:
             f"last {report.window_days} days, none of them caused by CI itself."
         )
     return f"No CI failures were found in the last {report.window_days} days."
-
-
-def _kpi_line(label: str, value: str, *, style: str = "bold") -> Text:
-    line = Text(f"{label}: ", style="dim")
-    line.append(value, style=style)
-    return line
 
 
 def _classification(report: CiAnalyticsReport) -> list[str]:
@@ -529,7 +409,8 @@ def _default_branch(report: CiAnalyticsReport) -> list[str]:
         return []
     lines = [
         "",
-        f"**{report.default_branch} branch**: {report.branch_failures} of {report.branch_runs} "
+        f"**{_plain(report.default_branch)} branch**: {report.branch_failures} of "
+        f"{report.branch_runs} "
         f"push-triggered runs failed, red for {_hours(report.red_hours)} across "
         f"{len(report.outages)} {_plural(len(report.outages), 'breakage')}",
     ]
@@ -547,7 +428,9 @@ def _outage(outage: Outage, *, now: datetime) -> str:
     span = _hours(outage.duration_hours(now=now))
     when = outage.started_at.strftime("%Y-%m-%d %H:%M UTC")
     state = "ongoing" if outage.ongoing else "recovered"
-    return f"{outage.workflow}, {span} from {when} ({state}) {outage.first_failure_url}".strip()
+    return (
+        f"{_plain(outage.workflow)}, {span} from {when} ({state}) {outage.first_failure_url}"
+    ).strip()
 
 
 def _minutes(value: float) -> str:

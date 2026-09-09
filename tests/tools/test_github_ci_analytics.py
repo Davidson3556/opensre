@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -930,7 +932,7 @@ def test_collect_runs_reports_unavailable_attempt_history_instead_of_hiding_it()
 
     assert collected.pr_runs[0].retried_to_green is False
     assert any(
-        "attempt history was unavailable for 1 re-run" in n for n in collected.coverage_notices
+        "Re-run history could not be read for 1 re-run" in n for n in collected.coverage_notices
     )
 
 
@@ -952,7 +954,7 @@ def test_collect_runs_caps_attempt_lookups_and_says_so(monkeypatch: pytest.Monke
     collected = collect_runs(client, owner="o", repo="r", window_days=30, now=now)
 
     assert sum(run.retried_to_green for run in collected.pr_runs) == 1
-    assert any("1 re-run count as plain successes" in n for n in collected.coverage_notices)
+    assert any("1 later re-run counted as passes" in n for n in collected.coverage_notices)
 
 
 def _iso(value: datetime) -> str:
@@ -1182,3 +1184,80 @@ class TestAnalyzeGithubCiReliabilityContract(BaseToolContract):
 
     def test_registered_name(self) -> None:
         assert self._tool().name == TOOL_NAME
+
+
+def test_a_pipe_in_a_workflow_name_does_not_shift_the_rendered_row() -> None:
+    """GitHub names are data, not markup.
+
+    A workflow literally named ``Build | Deploy`` used to split the table row,
+    moving ``Deploy`` into the Runs column and dropping the failure count.
+    """
+    # Arrange
+    from rich.console import Console
+
+    from integrations.github.tools.ci_analytics.render import render_report
+
+    report = compute_report(
+        owner="o",
+        repo="r",
+        default_branch="main",
+        window_days=30,
+        branch_runs=[_run(9, event="push", branch="main")],
+        pr_runs=[_run(1, workflow="Build | Deploy", conclusion="failure")],
+        merged_prs=_merged("A"),
+        now=_T0 + timedelta(days=1),
+    )
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False, width=100)
+
+    # Act
+    render_report(console, report)
+
+    # Assert: the name survives whole and its counts stay in their columns.
+    row = next(line for line in buf.getvalue().splitlines() if "Build | Deploy" in line)
+    assert row.split("│")[1].strip() == "1"
+
+
+def test_the_painted_report_follows_a_theme_change() -> None:
+    """The painter reads the theme when it paints, not when the module loads."""
+    # Arrange
+    import infrastructure.terminal.theme as ui_theme
+    from integrations.github.tools.ci_analytics.render import render_report
+
+    themes: list[Any] = []
+
+    class _Console:
+        is_terminal = True
+
+        def use_theme(self, theme: Any) -> contextlib.AbstractContextManager[None]:
+            themes.append(theme)
+            return contextlib.nullcontext()
+
+        def print(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    report = compute_report(
+        owner="o",
+        repo="r",
+        default_branch="main",
+        window_days=30,
+        branch_runs=[_run(9, event="push", branch="main")],
+        pr_runs=[_run(1, conclusion="failure")],
+        merged_prs=_merged("A"),
+        now=_T0 + timedelta(days=1),
+    )
+
+    # Act: paint, switch theme, paint again.
+    original = ui_theme.get_active_theme().name
+    try:
+        ui_theme.set_active_theme("blue")
+        render_report(_Console(), report)
+        ui_theme.set_active_theme("green")
+        expected = ui_theme.MARKDOWN_THEME
+        render_report(_Console(), report)
+    finally:
+        ui_theme.set_active_theme(original)
+
+    # Assert: the second paint used the theme built for the new palette.
+    assert themes[1] is expected
+    assert themes[0] is not themes[1]
