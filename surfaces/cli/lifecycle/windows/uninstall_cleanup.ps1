@@ -1283,6 +1283,7 @@ function Restore-OpenSreRetiredTargets {
     for ($rollbackIndex = $RetiredTargets.Count - 1; $rollbackIndex -ge 0; $rollbackIndex--) {
         $retiredTarget = $RetiredTargets[$rollbackIndex]
         try {
+            Close-OpenSreRetiredTargetGuards -RetiredTarget $retiredTarget
             Assert-OpenSreSafeTree -Path ([string]$retiredTarget.Path)
             Restore-OpenSreGuardedRetirement `
                 -IdentityHandle $retiredTarget.IdentityHandle `
@@ -1399,7 +1400,8 @@ function Move-OpenSreTargetIfUnused {
         else {
             $Path
         }
-        if ([System.IO.File]::Exists((ConvertTo-OpenSreExtendedPath -Path $guardPath))) {
+        if (-not $targetWasDirectory -and
+            [System.IO.File]::Exists((ConvertTo-OpenSreExtendedPath -Path $guardPath))) {
             $guard = [System.IO.File]::Open(
                 $guardPath,
                 [System.IO.FileMode]::Open,
@@ -1430,8 +1432,35 @@ function Move-OpenSreTargetIfUnused {
             Restore-OpenSreUnexpectedRetirement -Path $Path -RetiredPath $retiredPath
             throw "OpenSRE cleanup target was replaced during retirement: $Path"
         }
+        # Child handles prevent a directory rename; guard its new name before
+        # the retirement scan and retain the complete tree if a launch won the race.
+        if ($targetWasDirectory) {
+            $retiredExecutable = Join-Path $retiredPath 'opensre.exe'
+            try {
+                if ([System.IO.File]::Exists((ConvertTo-OpenSreExtendedPath -Path $retiredExecutable))) {
+                    $guard = [System.IO.File]::Open(
+                        $retiredExecutable,
+                        [System.IO.FileMode]::Open,
+                        [System.IO.FileAccess]::Read,
+                        [System.IO.FileShare]::Delete
+                    )
+                }
+            }
+            catch {
+                Restore-OpenSreGuardedRetirement `
+                    -IdentityHandle $identityHandle `
+                    -ExpectedIdentity $ExpectedIdentity `
+                    -Path $Path `
+                    -RetiredPath $retiredPath
+                throw
+            }
+        }
         if ((Test-OpenSreTargetInUse -Path $Path -TreatAsDirectory:$targetWasDirectory) -or
             (Test-OpenSreTargetInUse -Path $retiredPath -TreatAsDirectory:$targetWasDirectory)) {
+            if ($targetWasDirectory -and $null -ne $guard) {
+                $guard.Dispose()
+                $guard = $null
+            }
             Restore-OpenSreGuardedRetirement `
                 -IdentityHandle $identityHandle `
                 -ExpectedIdentity $ExpectedIdentity `
@@ -1701,16 +1730,12 @@ if ($null -ne $managed) {
             if (Test-OpenSreTargetInUse -Path $appRoot) {
                 throw 'OpenSRE bundle is still in use.'
             }
+            $versionExecutablePaths = @()
             if (Test-Path -LiteralPath $versionsRoot -PathType Container) {
                 foreach ($versionDirectory in @(Get-ChildItem -LiteralPath $versionsRoot -Directory -Force)) {
                     $versionExecutable = Join-Path $versionDirectory.FullName 'opensre.exe'
                     if (Test-Path -LiteralPath $versionExecutable -PathType Leaf) {
-                        $versionGuards += [System.IO.File]::Open(
-                            $versionExecutable,
-                            [System.IO.FileMode]::Open,
-                            [System.IO.FileAccess]::Read,
-                            [System.IO.FileShare]::Delete
-                        )
+                        $versionExecutablePaths += $versionExecutable
                     }
                 }
             }
@@ -1740,8 +1765,33 @@ if ($null -ne $managed) {
                     -RetiredPath $movedAppRoot
                 throw 'OpenSRE bundle was replaced during retirement.'
             }
+            try {
+                foreach ($versionExecutable in $versionExecutablePaths) {
+                    $retiredExecutable = Join-Path $movedAppRoot (
+                        $versionExecutable.Substring($appRoot.Length).TrimStart('\', '/')
+                    )
+                    $versionGuards += [System.IO.File]::Open(
+                        $retiredExecutable,
+                        [System.IO.FileMode]::Open,
+                        [System.IO.FileAccess]::Read,
+                        [System.IO.FileShare]::Delete
+                    )
+                }
+            }
+            catch {
+                foreach ($guard in $versionGuards) { $guard.Dispose() }
+                $versionGuards = @()
+                Restore-OpenSreGuardedRetirement `
+                    -IdentityHandle $appRootIdentityHandle `
+                    -ExpectedIdentity $managed.app_target `
+                    -Path $appRoot `
+                    -RetiredPath $movedAppRoot
+                throw
+            }
             if ((Test-OpenSreTargetInUse -Path $appRoot -TreatAsDirectory) -or
                 (Test-OpenSreTargetInUse -Path $movedAppRoot -TreatAsDirectory)) {
+                foreach ($guard in $versionGuards) { $guard.Dispose() }
+                $versionGuards = @()
                 try {
                     Restore-OpenSreGuardedRetirement `
                         -IdentityHandle $appRootIdentityHandle `

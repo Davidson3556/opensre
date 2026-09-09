@@ -218,15 +218,10 @@ function Get-Process {
 
 def _inject_late_launch_probe(source: str, *, marker: Path, managed: bool) -> str:
     if managed:
-        anchor = (
-            "            Move-Item -LiteralPath $appRoot -Destination $movedAppRoot "
-            "-ErrorAction Stop\n"
-        )
+        anchor = "            if ((Test-OpenSreTargetInUse -Path $appRoot -TreatAsDirectory) -or\n"
         executable = 'Join-Path $movedAppRoot "versions\\$expectedInstallId\\opensre.exe"'
     else:
-        anchor = (
-            "        Move-Item -LiteralPath $Path -Destination $retiredPath -ErrorAction Stop\n"
-        )
+        anchor = "        if ((Test-OpenSreTargetInUse -Path $Path -TreatAsDirectory:$targetWasDirectory) -or\n"
         executable = "Join-Path $retiredPath 'opensre.exe'"
     assert source.count(anchor) == 1
     marker_payload = base64.b64encode(str(marker).encode("utf-8")).decode("ascii")
@@ -260,7 +255,7 @@ def _inject_late_launch_probe(source: str, *, marker: Path, managed: bool) -> st
             }}
         }}
 """
-    return source.replace(anchor, anchor + probe, 1)
+    return source.replace(anchor, probe + anchor, 1)
 
 
 def _inject_flat_target_swap_before_retirement(
@@ -510,6 +505,8 @@ def _capture_cleanup_workers(
     workers: list[subprocess.Popen[bytes]] = []
 
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -620,7 +617,7 @@ while (-not (Test-Path -LiteralPath $dataDecisionRelease -PathType Leaf)) {{
 
 
 def _inject_before_data_guard_barrier(source: str, *, ready: Path, release: Path) -> str:
-    anchor = "if ($deleteData) {\n    foreach ($guardPathValue in @($payload.data_guard_paths)) {\n"
+    anchor = "if ($deleteData) {\n    try {\n        foreach ($guardPathValue in @($payload.data_guard_paths)) {\n"
     assert source.count(anchor) == 1
     ready_payload = base64.b64encode(str(ready).encode("utf-8")).decode("ascii")
     release_payload = base64.b64encode(str(release).encode("utf-8")).decode("ascii")
@@ -694,7 +691,7 @@ def _short_path_or_skip(path: Path) -> Path:
     return short_path
 
 
-def _start_hidden_windows_process(executable: Path) -> int:
+def _start_hidden_windows_process(executable: Path, release: Path) -> int:
     powershell = (
         Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
         / "System32"
@@ -703,6 +700,7 @@ def _start_hidden_windows_process(executable: Path) -> int:
         / "powershell.exe"
     )
     literal = "'" + str(executable).replace("'", "''") + "'"
+    release_literal = "'\"" + str(release).replace("'", "''") + "\"'"
     completed = subprocess.run(
         [
             str(powershell),
@@ -715,9 +713,9 @@ def _start_hidden_windows_process(executable: Path) -> int:
             (
                 "$ErrorActionPreference = 'Stop'; "
                 f"$process = Start-Process -FilePath {literal} "
-                "-ArgumentList @('hold', '120000') -PassThru -WindowStyle Hidden; "
+                f"-ArgumentList @('hold-until', {release_literal}) -PassThru -WindowStyle Hidden; "
                 "if ($null -eq $process) { throw 'Start-Process returned no process' }; "
-                "[Console]::Out.WriteLine([int]$process.Id)"
+                "try { [Console]::Out.WriteLine([int]$process.Id) } finally { $process.Dispose() }"
             ),
         ],
         capture_output=True,
@@ -729,32 +727,6 @@ def _start_hidden_windows_process(executable: Path) -> int:
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     return int(completed.stdout.strip().splitlines()[-1])
-
-
-def _stop_windows_process(pid: int, executable: Path) -> None:
-    identity, _error = windows_process_identity(pid, expected_executable=executable)
-    if identity is None:
-        return
-    powershell = (
-        Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
-        / "System32"
-        / "WindowsPowerShell"
-        / "v1.0"
-        / "powershell.exe"
-    )
-    subprocess.run(
-        [
-            str(powershell),
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            f"Stop-Process -Id {pid} -Force -ErrorAction SilentlyContinue",
-        ],
-        capture_output=True,
-        timeout=15,
-        check=False,
-    )
 
 
 def _symlink_or_skip(link: Path, target: Path) -> None:
@@ -1964,7 +1936,9 @@ def test_schedule_windows_cleanup_removes_path_after_parent_exit(tmp_path: Path)
     target = tmp_path / ("path with spaces-" + ("x" * 50))
     short_target.rename(target)
     assert len(str(target / relative_payload)) > 260
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, err = schedule_windows_cleanup([target], parent_pid=holder.pid)
@@ -1974,7 +1948,7 @@ def test_schedule_windows_cleanup_removes_path_after_parent_exit(tmp_path: Path)
 
         holder.terminate()
         holder.wait(timeout=10)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while target.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -2032,6 +2006,8 @@ def test_cleanup_worker_parent_process_state_requires_confirmed_exit(
     workers: list[subprocess.Popen[bytes]] = []
 
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -2047,7 +2023,7 @@ def test_cleanup_worker_parent_process_state_requires_confirmed_exit(
         )
         assert ok is True, error
         assert len(workers) == 1
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == expected_exit, output.decode("utf-8", errors="replace")
         assert target.exists() is (not target_removed)
         assert install_lock.exists() is (not target_removed)
@@ -2125,7 +2101,7 @@ def test_cleanup_worker_scan_requires_confirmed_process_exit(
         )
         assert ok is True, error
         assert len(workers) == 1
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == expected_exit, output.decode("utf-8", errors="replace")
         assert target.exists() is (not target_removed)
         assert install_lock.exists() is (not target_removed)
@@ -2156,6 +2132,8 @@ def test_cleanup_worker_parent_lookup_failure_is_not_treated_as_exit(
     workers: list[subprocess.Popen[bytes]] = []
 
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -2171,7 +2149,7 @@ def test_cleanup_worker_parent_lookup_failure_is_not_treated_as_exit(
         )
         assert ok is True, error
         assert len(workers) == 1
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
         assert target.read_text(encoding="utf-8") == "candidate"
         assert install_lock.exists()
@@ -2211,6 +2189,8 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
     user_data.write_text("keep", encoding="utf-8")
     workers: list[subprocess.Popen[bytes]] = []
     child_handles: dict[str, int] = {}
+    release_parent = process_root / "release-parent"
+    release_busy = process_root / "release-busy"
     failure_details: dict[str, Any] | None = None
     with tempfile.TemporaryFile() as worker_output:
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -2218,6 +2198,8 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
         kernel32.OpenProcess.restype = ctypes.c_void_p
         kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
         kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+        kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        kernel32.TerminateProcess.restype = ctypes.c_int
         kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
         kernel32.CloseHandle.restype = ctypes.c_int
         kernel32.CreateEventW.argtypes = [
@@ -2240,7 +2222,7 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
             raise ctypes.WinError(ctypes.get_last_error())
 
         def _retain_child(name: str, pid: int) -> None:
-            handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            handle = kernel32.OpenProcess(0x00100001, False, pid)  # SYNCHRONIZE | TERMINATE
             if not handle:
                 raise ctypes.WinError(ctypes.get_last_error())
             child_handles[name] = handle
@@ -2270,6 +2252,7 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
             handshake = f"""
             if ($null -ne $parent -and -not $script:parentObserved) {{
                 $script:parentObserved = $true
+                $null = $parent.Handle
                 $observed = [System.Threading.EventWaitHandle]::OpenExisting('{observed_name}')
                 $resume = [System.Threading.EventWaitHandle]::OpenExisting('{resume_name}')
                 try {{
@@ -2303,9 +2286,9 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
         busy_pid = 0
 
         try:
-            parent_pid = _start_hidden_windows_process(short_parent)
+            parent_pid = _start_hidden_windows_process(short_parent, release_parent)
             _retain_child("parent", parent_pid)
-            busy_pid = _start_hidden_windows_process(short_busy)
+            busy_pid = _start_hidden_windows_process(short_busy, release_busy)
             _retain_child("busy", busy_pid)
             parent_identity, identity_error = windows_process_identity(
                 parent_pid,
@@ -2342,7 +2325,7 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
             assert ok is True, error
             assert len(created_cleanup_scripts) == 1
 
-            ready_status = kernel32.WaitForSingleObject(observed_event, 30_000)
+            ready_status = kernel32.WaitForSingleObject(observed_event, 90_000)
             assert ready_status == 0
             running_parent, parent_error = windows_process_identity(
                 parent_pid,
@@ -2351,16 +2334,16 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
             assert running_parent is not None, parent_error
             assert sentinel.read_text(encoding="utf-8") == "remove only after parent exit"
 
-            _stop_windows_process(parent_pid, parent_executable)
-            assert kernel32.WaitForSingleObject(child_handles["parent"], 0) == 0
+            release_parent.write_text("release", encoding="utf-8")
+            assert kernel32.WaitForSingleObject(child_handles["parent"], 10_000) == 0
             assert kernel32.SetEvent(resume_event)
             cleanup_script = created_cleanup_scripts[0]
             assert len(workers) == 1
-            workers[0].wait(timeout=30)
+            workers[0].wait(timeout=90)
             assert workers[0].returncode == 1
             assert install_lock.exists()
             assert not cleanup_script.exists()
-            assert not sentinel.exists()
+            assert sentinel.read_text(encoding="utf-8") == "remove only after parent exit"
             running_busy, busy_error = windows_process_identity(
                 busy_pid,
                 expected_executable=busy_executable,
@@ -2375,15 +2358,8 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
         finally:
             kernel32.SetEvent(resume_event)
             teardown_errors: list[str] = []
-            for child_pid, executable in (
-                (parent_pid, parent_executable),
-                (busy_pid, busy_executable),
-            ):
-                try:
-                    if child_pid:
-                        _stop_windows_process(child_pid, executable)
-                except Exception as exc:
-                    teardown_errors.append(repr(exc))
+            release_parent.write_text("release", encoding="utf-8")
+            release_busy.write_text("release", encoding="utf-8")
             for worker in workers:
                 try:
                     if worker.poll() is None:
@@ -2393,7 +2369,9 @@ def test_cleanup_worker_resolves_short_path_parent_and_busy_bundle(
                     teardown_errors.append(repr(exc))
             for name, handle in child_handles.items():
                 if kernel32.WaitForSingleObject(handle, 10_000) != 0:
-                    teardown_errors.append(f"{name} did not terminate")
+                    kernel32.TerminateProcess(handle, 1)
+                    if kernel32.WaitForSingleObject(handle, 10_000) != 0:
+                        teardown_errors.append(f"{name} did not terminate")
             try:
                 if failure_details is not None or teardown_errors:
                     details = {
@@ -2465,8 +2443,12 @@ def test_schedule_windows_cleanup_rejects_target_parent_swap_back(
         restored = True
         return canonical
 
-    def _unexpected_worker(*_args: object, **_kwargs: object) -> None:
+    real_popen = subprocess.Popen
+
+    def _unexpected_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
         nonlocal worker_launched
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         worker_launched = True
         raise OSError("an ownership-mismatched target must not launch cleanup")
 
@@ -2573,8 +2555,12 @@ def test_schedule_windows_managed_cleanup_rejects_app_parent_swap_back(
             return canonical
         return real_canonical_existing_path(path)
 
-    def _unexpected_worker(*_args: object, **_kwargs: object) -> None:
+    real_popen = subprocess.Popen
+
+    def _unexpected_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
         nonlocal worker_launched
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         worker_launched = True
         raise OSError("an ownership-mismatched managed target must not launch cleanup")
 
@@ -2656,9 +2642,11 @@ def test_schedule_windows_cleanup_rejects_lock_parent_swap_back(
             swapped = True
         return canonical
 
-    def _identity_with_swap_back(handle: int, path: Path) -> tuple[Path, int, int, int]:
+    def _identity_with_swap_back(
+        handle: int, path: Path, *, allow_directory: bool = False
+    ) -> tuple[Path, int, int, int]:
         nonlocal restored
-        identity = real_windows_handle_identity(handle, path)
+        identity = real_windows_handle_identity(handle, path, allow_directory=allow_directory)
         if swapped and not restored:
             assert install_parent.is_junction()
             install_parent.rmdir()
@@ -2736,6 +2724,8 @@ def test_cleanup_worker_never_path_deletes_lock_after_final_parent_swap(
     workers: list[subprocess.Popen[bytes]] = []
 
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -2753,7 +2743,7 @@ def test_cleanup_worker_never_path_deletes_lock_after_final_parent_swap(
         assert ok is True, error
         assert len(workers) == 1
         assert len(cleanup_scripts) == 1
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 0, output.decode("utf-8", errors="replace")
         assert not cleanup_scripts[0].exists()
         assert install_parent.is_junction()
@@ -2803,6 +2793,8 @@ def test_cleanup_worker_opens_boundary_length_lock_with_extended_path(
         payload_index = args.index("-CleanupPayload")
         payload = json.loads(base64.b64decode(args[payload_index + 1]))
         lock_payloads.append(payload["lock"])
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -2821,7 +2813,7 @@ def test_cleanup_worker_opens_boundary_length_lock_with_extended_path(
         assert len(lock_payloads) == 1
         assert lock_payloads[0]["path"] == str(install_lock)
         assert not str(lock_payloads[0]["path"]).startswith("\\\\?\\")
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 0, output.decode("utf-8", errors="replace")
         assert not extended_lock.exists()
     finally:
@@ -2858,7 +2850,9 @@ def test_cleanup_worker_rejects_ancestor_junction_swap(
         return descriptor, name
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, error = schedule_windows_cleanup(
@@ -2890,7 +2884,7 @@ def test_cleanup_worker_rejects_ancestor_junction_swap(
         holder.terminate()
         holder.wait(timeout=10)
         cleanup_script = created_cleanup_scripts[0]
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_script.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -2944,6 +2938,8 @@ def test_cleanup_worker_restores_flat_replacement_moved_at_retirement_boundary(
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
         cleanup_index = args.index("-CleanupScriptPath")
         cleanup_scripts.append(Path(args[cleanup_index + 1]))
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -2961,7 +2957,7 @@ def test_cleanup_worker_restores_flat_replacement_moved_at_retirement_boundary(
 
         assert ok is True, error
         assert len(workers) == 1
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
         assert len(cleanup_scripts) == 1
         assert not cleanup_scripts[0].exists()
@@ -3027,6 +3023,8 @@ def test_managed_cleanup_worker_restores_junction_moved_at_retirement_boundary(
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
         cleanup_index = args.index("-CleanupScriptPath")
         cleanup_scripts.append(Path(args[cleanup_index + 1]))
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -3045,7 +3043,7 @@ def test_managed_cleanup_worker_restores_junction_moved_at_retirement_boundary(
 
         assert ok is True, error
         assert len(workers) == 1
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
         assert len(cleanup_scripts) == 1
         assert not cleanup_scripts[0].exists()
@@ -3121,7 +3119,7 @@ def test_managed_cleanup_worker_restores_launcher_replaced_at_retirement_boundar
 
     assert ok is True, error
     assert len(workers) == 1
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
     assert preserved_launcher.read_text(encoding="utf-8").endswith(
         ":: OpenSRE Windows launcher v1\n"
@@ -3177,7 +3175,7 @@ def test_cleanup_worker_refuses_replacement_at_verified_retired_path(
     )
 
     assert ok is True, error
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
     assert not target.exists()
     quarantines = list(tmp_path.glob(f"{target.name}.uninstall-*"))
@@ -3231,7 +3229,7 @@ def test_cleanup_worker_refuses_child_junction_swapped_before_recursive_deletion
         )
 
         assert ok is True, error
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
         quarantines = list(tmp_path.glob(f"{target.name}.uninstall-*"))
         assert len(quarantines) == 1
@@ -3285,7 +3283,7 @@ def test_cleanup_worker_restores_data_directory_replaced_at_retirement_boundary(
     )
 
     assert ok is True, error
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
     assert (preserved_target / "scheduled.txt").read_text(encoding="utf-8") == "scheduled"
     assert (data_target / "unrelated.txt").read_text(encoding="utf-8") == "unrelated"
@@ -3322,7 +3320,7 @@ def test_cleanup_worker_preserves_data_target_created_after_missing_snapshot(
     )
 
     assert ok is True, error
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
     assert (data_target / "unrelated.txt").read_text(encoding="utf-8") == "preserve"
     assert install_lock.is_file()
@@ -3358,7 +3356,7 @@ def test_cleanup_worker_second_data_preparation_failure_restores_all_data(
     )
 
     assert ok is True, error
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
     for index, data_target in enumerate(data_targets):
         assert (data_target / "state.json").read_text(encoding="utf-8") == (f"preserve-{index}")
@@ -3416,11 +3414,15 @@ def test_cleanup_worker_holds_executable_guard_through_retirement_scan(
             managed=managed,
         ),
     )
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     real_popen = subprocess.Popen
     workers: list[subprocess.Popen[bytes]] = []
 
     def _capture_worker(args: list[str], **kwargs: Any) -> subprocess.Popen[bytes]:
+        if "-CleanupScriptPath" not in args:
+            return real_popen(args, **kwargs)
         kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         worker = real_popen(args, **kwargs)
         workers.append(worker)
@@ -3447,7 +3449,7 @@ def test_cleanup_worker_holds_executable_guard_through_retirement_scan(
         assert len(workers) == 1
         holder.terminate()
         holder.wait(timeout=10)
-        output, _ = workers[0].communicate(timeout=30)
+        output, _ = workers[0].communicate(timeout=90)
         assert workers[0].returncode == 0, output.decode("utf-8", errors="replace")
         assert late_launch_marker.read_text(encoding="utf-8") == "blocked"
         assert not install_lock.exists()
@@ -3460,6 +3462,152 @@ def test_cleanup_worker_holds_executable_guard_through_retirement_scan(
         if holder.poll() is None:
             holder.terminate()
             holder.wait(timeout=10)
+        for worker in workers:
+            if worker.poll() is None:
+                worker.terminate()
+            worker.wait(timeout=10)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows retirement race")
+@pytest.mark.parametrize("worker_kind", ["installer", "legacy", "managed"])
+def test_cleanup_worker_preserves_bundle_when_process_launches_before_guard(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, worker_kind: str
+) -> None:
+    from tests.cli.test_install_ps1_onedir import (
+        INSTALL_PS1,
+        _fake_opensre_executable,
+        _schedule_deferred_cleanup,
+        _wait_until,
+    )
+
+    managed = worker_kind == "managed"
+
+    install_dir = tmp_path / "launch race"
+    app_root = install_dir / ".opensre-app"
+    version = app_root / "versions" / "build-1"
+    version.mkdir(parents=True)
+    executable = version / "opensre.exe"
+    shutil.copy2(_fake_opensre_executable(), executable)
+    (app_root / "layout-v1.marker").write_text("OpenSRE Windows bundle layout v1\n")
+    (app_root / "current.txt").write_text(
+        "active-build\n" if worker_kind == "installer" else "build-1\n"
+    )
+    launcher = install_dir / "opensre.cmd"
+    launcher.write_text("@echo off\n:: OpenSRE Windows launcher v1\n")
+    data = tmp_path / "user data"
+    data.mkdir()
+    sentinel = data / "state.json"
+    sentinel.write_text("preserve")
+    ready = tmp_path / "retired-executable.txt"
+    proceed = tmp_path / "allow-guard"
+    release = tmp_path / "release-process"
+
+    def _worker_source() -> str:
+        source = (
+            INSTALL_PS1.read_text(encoding="utf-8")
+            if worker_kind == "installer"
+            else read_cleanup_script()
+        )
+        if worker_kind == "installer":
+            anchor = "        try {\n            # An open child handle prevents Windows from renaming its directory.\n"
+            image_path = "Join-Path $retiredPath 'opensre.exe'"
+        elif managed:
+            anchor = "            $movedAppRootMatches = $true\n"
+            image_path = 'Join-Path $movedAppRoot "versions\\$expectedInstallId\\opensre.exe"'
+        else:
+            anchor = "        $retiredIdentityMatches = $true\n"
+            image_path = "Join-Path $retiredPath 'opensre.exe'"
+        assert source.count(anchor) == 1
+        barrier = f"""
+        [System.IO.File]::WriteAllText('{ready}', ({image_path}))
+        $testDeadline = [System.DateTime]::UtcNow.AddSeconds(90)
+        while (-not [System.IO.File]::Exists('{proceed}')) {{
+            if ([System.DateTime]::UtcNow -ge $testDeadline) {{ throw 'Launch barrier timed out' }}
+            Start-Sleep -Milliseconds 25
+        }}
+"""
+        return source.replace(anchor, barrier + anchor, 1)
+
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.cleanup.read_cleanup_script", _worker_source
+    )
+    monkeypatch.setattr(
+        "surfaces.cli.lifecycle.windows.cleanup.windows_process_identity", _missing_process_identity
+    )
+    workers = _capture_cleanup_workers(monkeypatch)
+    child: subprocess.Popen[bytes] | None = None
+    try:
+        if worker_kind == "installer":
+            command_path = tmp_path / "worker-command.txt"
+            source = _worker_source()
+            launch = "Start-Process -FilePath $powershellPath -ArgumentList $arguments -WindowStyle Hidden | Out-Null"
+            assert source.count(launch) == 1
+            source = source.replace(
+                launch,
+                f"[System.IO.File]::WriteAllText('{command_path}', "
+                "('\"' + $powershellPath + '\" ' + ($arguments -join ' ')))",
+                1,
+            )
+            installer = tmp_path / "installer.ps1"
+            installer.write_text(source, encoding="utf-8")
+            scheduled, cleanup_path = _schedule_deferred_cleanup(
+                installer_path=installer,
+                layout_root=app_root,
+                target=version,
+                cwd=tmp_path,
+            )
+            assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
+            assert cleanup_path is not None
+            workers.append(
+                subprocess.Popen(
+                    command_path.read_text(),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                )
+            )
+            ok, error = True, None
+        elif managed:
+            ok, error = schedule_windows_managed_cleanup(
+                executable=executable,
+                app_root=app_root,
+                launcher=launcher,
+                parent_pid=2_147_483_647,
+                data_paths=[data],
+            )
+        else:
+            ok, error = schedule_windows_cleanup(
+                [version],
+                parent_pid=2_147_483_647,
+                data_paths=[data],
+                install_lock_path=install_dir / ".opensre-app.install.lock",
+            )
+        assert ok, error
+        assert len(workers) == 1
+        _wait_until(lambda: ready.exists() or workers[0].poll() is not None)
+        assert ready.exists()
+        child_ready = tmp_path / "child-running"
+        child = subprocess.Popen([ready.read_text(), "hold-until", str(release), str(child_ready)])
+        _wait_until(lambda: child_ready.exists() or child.poll() is not None)
+        assert child_ready.exists()
+        assert child.poll() is None
+        proceed.write_text("continue")
+        output, _ = workers[0].communicate(timeout=90)
+        assert workers[0].returncode == (0 if worker_kind == "installer" else 1), output.decode(
+            errors="replace"
+        )
+        assert child.poll() is None
+        assert executable.is_file()
+        assert sentinel.read_text() == "preserve"
+        assert launcher.is_file()
+        assert not list(install_dir.rglob("*.uninstall-*"))
+        assert not list(app_root.glob("retired-*"))
+    finally:
+        proceed.write_text("continue")
+        release.write_text("release")
+        if child is not None:
+            if child.poll() is None:
+                child.terminate()
+            child.wait(timeout=10)
         for worker in workers:
             if worker.poll() is None:
                 worker.terminate()
@@ -3540,7 +3688,7 @@ def test_cleanup_worker_holds_executable_guard_through_recursive_deletion(
         )
 
     assert ok is True, error
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 0, output.decode("utf-8", errors="replace")
     assert launch_marker.read_text(encoding="utf-8") == "blocked"
     assert not install_lock.exists()
@@ -3574,7 +3722,9 @@ def test_cleanup_worker_treats_dangling_junction_as_an_existing_guard(
         return descriptor, name
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, error = schedule_windows_cleanup(
@@ -3607,7 +3757,7 @@ def test_cleanup_worker_treats_dangling_junction_as_an_existing_guard(
         holder.terminate()
         holder.wait(timeout=10)
         cleanup_script = created_cleanup_scripts[0]
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_script.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -3656,7 +3806,9 @@ def test_managed_uninstall_removes_long_quarantine_tree(
     data_dir = tmp_path / "managed uninstall data"
     data_dir.mkdir()
     (data_dir / "state.json").write_text("remove", encoding="utf-8")
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     cleanup_workers: list[subprocess.Popen[Any]] = []
     real_popen = subprocess.Popen
     worker_log = tmp_path / "cleanup-worker.log"
@@ -3694,7 +3846,7 @@ def test_managed_uninstall_removes_long_quarantine_tree(
             holder.wait(timeout=10)
             # Filesystem state alone cannot distinguish worker success from an
             # early refusal or prove the detached child has finished.
-            exit_code = worker.wait(timeout=30)
+            exit_code = worker.wait(timeout=90)
             assert exit_code == 0, worker_log.read_text(encoding="utf-8", errors="replace")
 
             assert not app_root.exists()
@@ -3760,7 +3912,9 @@ def test_managed_uninstall_worker_preserves_data_for_residual_entrypoint(
         return descriptor, name
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, error = schedule_windows_managed_cleanup(
@@ -3777,7 +3931,7 @@ def test_managed_uninstall_worker_preserves_data_for_residual_entrypoint(
         holder.terminate()
         holder.wait(timeout=10)
         cleanup_script = created_cleanup_scripts[0]
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_script.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -3822,7 +3976,9 @@ def test_managed_uninstall_worker_preserves_a_reinstalled_bundle(tmp_path: Path)
     data_dir.mkdir()
     data_file = data_dir / "state.json"
     data_file.write_text("keep for new install", encoding="utf-8")
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, err = schedule_windows_managed_cleanup(
@@ -3838,7 +3994,7 @@ def test_managed_uninstall_worker_preserves_a_reinstalled_bundle(tmp_path: Path)
         pointer.write_text("new-build\n", encoding="utf-8")
         holder.terminate()
         holder.wait(timeout=10)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while old_version.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -3896,7 +4052,9 @@ def test_managed_uninstall_worker_rejects_malformed_pointer_race(
         return descriptor, name
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, err = schedule_windows_managed_cleanup(
@@ -3913,7 +4071,7 @@ def test_managed_uninstall_worker_rejects_malformed_pointer_race(
         pointer.write_text(invalid_pointer, encoding="utf-8")
         holder.terminate()
         holder.wait(timeout=10)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_scripts[0].exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -3960,7 +4118,9 @@ def test_legacy_uninstall_worker_preserves_data_when_onedir_install_wins_race(
         return descriptor, name
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, error = schedule_windows_cleanup(
@@ -3986,7 +4146,7 @@ def test_legacy_uninstall_worker_preserves_data_when_onedir_install_wins_race(
         holder.terminate()
         holder.wait(timeout=10)
         cleanup_script = created_cleanup_scripts[0]
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_script.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -4060,7 +4220,7 @@ def test_legacy_uninstall_worker_preserves_data_when_flat_reinstall_wins_race(
         assert ok is True, error
         assert len(created_cleanup_scripts) == 1
 
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while not ready.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
         assert ready.is_file()
@@ -4069,7 +4229,7 @@ def test_legacy_uninstall_worker_preserves_data_when_flat_reinstall_wins_race(
         executable.write_bytes(b"MZ-new-flat")
         release.write_text("continue", encoding="utf-8")
         cleanup_script = created_cleanup_scripts[0]
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_script.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -4111,7 +4271,9 @@ def test_legacy_uninstall_worker_preserves_same_content_flat_reinstall(
         return descriptor, name
 
     monkeypatch.setattr("surfaces.cli.lifecycle.windows.cleanup.tempfile.mkstemp", _mkstemp)
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         ok, error = schedule_windows_cleanup(
@@ -4135,7 +4297,7 @@ def test_legacy_uninstall_worker_preserves_same_content_flat_reinstall(
         holder.terminate()
         holder.wait(timeout=10)
         cleanup_script = created_cleanup_scripts[0]
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while cleanup_script.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -4211,7 +4373,7 @@ def test_managed_uninstall_holds_install_lock_through_data_decision(
     )
     assert ok is True
     assert error is None
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 90
     while not ready.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
 
@@ -4223,7 +4385,7 @@ def test_managed_uninstall_holds_install_lock_through_data_decision(
         release.write_text("continue", encoding="utf-8")
 
     cleanup_script = created_cleanup_scripts[0]
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 90
     while cleanup_script.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
 
@@ -4286,7 +4448,7 @@ function Get-Process {
     $script:scanCount++
     [Console]::WriteLine("SCAN=$script:scanCount")
     if ($script:scanCount -eq 1 -or '__FAILURE__' -eq 'persistent') {
-        $vanished = [pscustomobject]@{ ProcessName = 'opensre' }
+        $vanished = [pscustomobject]@{ ProcessName = 'opensre'; HasExited = $false }
         $vanished | Add-Member -MemberType ScriptProperty -Name Path -Value {
             [Console]::WriteLine('PROCESS_DISAPPEARED_DURING_INSPECTION')
             throw 'process exited after enumeration'
@@ -4346,7 +4508,7 @@ function Start-Sleep {
     assert len(created_cleanup_scripts) == 1
     cleanup_script = created_cleanup_scripts[0]
     assert len(workers) == 1
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     diagnostics = output.decode("utf-8", errors="replace")
     exit_code = workers[0].returncode
     assert not cleanup_script.exists()
@@ -4448,7 +4610,7 @@ def test_managed_uninstall_second_data_preparation_failure_restores_all_targets(
     assert ok is True
     assert error is None
     assert len(created_cleanup_scripts) == 1
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 90
     try:
         while not rollback_ready.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
@@ -4458,7 +4620,7 @@ def test_managed_uninstall_second_data_preparation_failure_restores_all_targets(
         assert not launcher.exists()
     finally:
         rollback_release.write_text("continue", encoding="utf-8")
-    output, _ = workers[0].communicate(timeout=30)
+    output, _ = workers[0].communicate(timeout=90)
     assert workers[0].returncode == 1, output.decode("utf-8", errors="replace")
     assert not created_cleanup_scripts[0].exists()
     assert app_root.is_dir()

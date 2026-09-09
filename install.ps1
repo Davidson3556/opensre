@@ -938,6 +938,47 @@ namespace OpenSre
             }
         }
 
+        public static FileSnapshotV1 MoveFileWithSnapshot(
+            string source,
+            string destination,
+            FileSnapshotV1 expected
+        )
+        {
+            // Keep the source alive and immutable so its file index cannot be reused.
+            using (FileStream guard = new FileStream(
+                source, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete
+            ))
+            {
+                FileSnapshotV1 before = GetFileSnapshot(source);
+                ByHandleFileInformation guardedInformation;
+                if (!GetFileInformationByHandle(guard.SafeFileHandle, out guardedInformation))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+                ulong guardedFileIndex = ((ulong)guardedInformation.FileIndexHigh << 32)
+                    | guardedInformation.FileIndexLow;
+                if (guardedInformation.VolumeSerialNumber != before.Identity.VolumeSerialNumber ||
+                    guardedFileIndex != before.Identity.FileIndex ||
+                    before.Identity.VolumeSerialNumber != expected.Identity.VolumeSerialNumber ||
+                    before.Identity.FileIndex != expected.Identity.FileIndex ||
+                    before.Identity.CreationFileTimeUtc != expected.Identity.CreationFileTimeUtc ||
+                    before.Sha256 != expected.Sha256)
+                {
+                    throw new InvalidOperationException("The source changed before relocation.");
+                }
+                File.Move(source, destination);
+                FileSnapshotV1 after = GetFileSnapshot(destination);
+                if (after.Identity.VolumeSerialNumber != before.Identity.VolumeSerialNumber ||
+                    after.Identity.FileIndex != before.Identity.FileIndex ||
+                    after.Sha256 != before.Sha256)
+                {
+                    throw new InvalidOperationException("The file changed during relocation.");
+                }
+                // NTFS may tunnel the old destination's creation time onto this live file.
+                return after;
+            }
+        }
+
         public static bool DeleteFileIfMatches(
             string path,
             uint expectedVolumeSerialNumber,
@@ -2238,9 +2279,10 @@ function Write-OpenSreManagedLauncher {
             $replacementLauncherSnapshot = $replacementTransaction.ReplacementSnapshot
         }
         else {
-            [System.IO.File]::Move(
+            $replacementLauncherSnapshot = [OpenSre.InstallLockNativeApiV1]::MoveFileWithSnapshot(
                 (ConvertTo-OpenSreExtendedPath -Path $launcherTempPath),
-                $extendedLauncherPath
+                $extendedLauncherPath,
+                $replacementLauncherSnapshot
             )
             if (-not (Test-OpenSreInstallFileSnapshot `
                     -Path $launcherPath `
@@ -2728,6 +2770,16 @@ function Invoke-OpenSreAuthorizedFileReplacement {
     )
 
     $sourceSnapshot = Get-OpenSreInstallFileSnapshot -Path $SourcePath
+    # ReplaceFile preserves the destination creation time on the replacement file.
+    $sourceSnapshot = [pscustomobject]@{
+        Sha256 = $sourceSnapshot.Sha256
+        Identity = [pscustomobject]@{
+            FinalPath = $sourceSnapshot.Identity.FinalPath
+            VolumeSerialNumber = $sourceSnapshot.Identity.VolumeSerialNumber
+            FileIndex = $sourceSnapshot.Identity.FileIndex
+            CreationFileTimeUtc = $ExpectedTargetSnapshot.Identity.CreationFileTimeUtc
+        }
+    }
     if (-not (Test-OpenSreInstallFileSnapshot `
             -Path $TargetPath `
             -Expected $ExpectedTargetSnapshot)) {
@@ -4128,7 +4180,7 @@ function Move-OpenSreTargetToRetirement {
             $Path
         }
         $extendedGuardPath = ConvertTo-OpenSreExtendedPath -Path $guardPath
-        if ([System.IO.File]::Exists($extendedGuardPath)) {
+        if (-not $targetWasDirectory -and [System.IO.File]::Exists($extendedGuardPath)) {
             $guard = [System.IO.File]::Open(
                 $extendedGuardPath,
                 [System.IO.FileMode]::Open,
@@ -4203,11 +4255,30 @@ function Move-OpenSreTargetToRetirement {
             return ''
         }
         try {
+            # An open child handle prevents Windows from renaming its directory.
+            # Guard the retired executable before scanning either name for late users.
+            if ($targetWasDirectory) {
+                $retiredExecutable = ConvertTo-OpenSreExtendedPath -Path (
+                    Join-Path $retiredPath 'opensre.exe'
+                )
+                if ([System.IO.File]::Exists($retiredExecutable)) {
+                    $guard = [System.IO.File]::Open(
+                        $retiredExecutable,
+                        [System.IO.FileMode]::Open,
+                        [System.IO.FileAccess]::Read,
+                        [System.IO.FileShare]::Delete
+                    )
+                }
+            }
             $deletionLease = Open-OpenSreCleanupDeletionLease `
                 -Path $retiredPath `
                 -ExpectedIdentity $retiredIdentity
         }
         catch {
+            if ($targetWasDirectory -and $null -ne $guard) {
+                $guard.Dispose()
+                $guard = $null
+            }
             if (-not (Test-OpenSreCleanupTarget -Path $Path)) {
                 try {
                     $retiredBeforeRollback = Get-OpenSreCleanupPathIdentity `
@@ -4232,6 +4303,10 @@ function Move-OpenSreTargetToRetirement {
             (Test-OpenSreTargetInUse -Path $retiredPath -TreatAsDirectory:$targetWasDirectory)) {
             $deletionLease.Dispose()
             $deletionLease = $null
+            if ($targetWasDirectory -and $null -ne $guard) {
+                $guard.Dispose()
+                $guard = $null
+            }
             try {
                 Move-OpenSreCleanupTarget `
                     -Path $retiredPath `
@@ -4604,7 +4679,7 @@ finally {
         $cleanupPayload = [ordered]@{
             LayoutIdentity = ConvertTo-OpenSreCleanupIdentityRecord `
                 -Identity $layoutIdentity
-            Targets = @($targetRecords)
+            Targets = $targetRecords.ToArray()
         }
         $targetJson = ConvertTo-Json `
             -InputObject $cleanupPayload `

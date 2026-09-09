@@ -418,13 +418,15 @@ def _cleanup_lock(path: Path) -> _CleanupLockLease:
             raise
 
     try:
+        final_path = Path(str(lease.payload["path"]))
+        if not _same_windows_path(final_path, expected_candidate):
+            raise UnsafeWindowsPathError(
+                "Windows cleanup lock resolved outside its install directory"
+            )
         ensure_no_reparse_ancestors(absolute)
         current_parent = _ordinary_windows_path(canonical_existing_path(absolute.parent))
         current_candidate = current_parent / absolute.name
-        final_path = Path(str(lease.payload["path"]))
-        if not _same_windows_path(final_path, expected_candidate) or not _same_windows_path(
-            final_path, current_candidate
-        ):
+        if not _same_windows_path(final_path, current_candidate):
             raise UnsafeWindowsPathError(
                 "Windows cleanup lock resolved outside its install directory"
             )

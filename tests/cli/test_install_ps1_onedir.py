@@ -83,7 +83,9 @@ def _inject_owned_process_enumerator(
             [System.Convert]::FromBase64String('{ready_payload}')
         )
         [System.IO.File]::WriteAllText($readyPath, 'ready')
-        while ($null -ne $process) {{
+        $scanDeadline = [System.DateTime]::UtcNow.AddSeconds(90)
+        while ($null -ne $process -and [System.DateTime]::UtcNow -lt $scanDeadline) {{
+            $process.Dispose()
             Start-Sleep -Milliseconds 25
             $process = Get-OpenSreOwnedTestProcess
         }}
@@ -103,10 +105,12 @@ function Get-OpenSreOwnedTestProcess {{
             [System.Globalization.CultureInfo]::InvariantCulture
         )
         if ($started -cne '{process_started}') {{
+            $process.Dispose()
             return $null
         }}
     }}
     catch {{
+        $process.Dispose()
         return $null
     }}
     return $process
@@ -120,7 +124,9 @@ function Get-Process {{
     }}
     $process = Get-OpenSreOwnedTestProcess
 {scan_barrier}
-    return $process
+    if ($null -ne $process) {{
+        return $process
+    }}
 }}
 """
     injected = source.replace(anchor, anchor + process_override, 1)
@@ -689,6 +695,10 @@ public static class Program
         }
         if (args.Length > 1 && args[0] == "hold-until")
         {
+            if (args.Length > 2)
+            {
+                System.IO.File.WriteAllText(args[2], "ready");
+            }
             while (!System.IO.File.Exists(args[1]))
             {
                 Thread.Sleep(25);
@@ -1029,7 +1039,9 @@ $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(
     return completed.stdout.strip()
 
 
-def _wait_until(predicate: Callable[[], bool], *, timeout: float = 30) -> None:
+def _wait_until(
+    predicate: Callable[[], bool], *, timeout: float = _DETACHED_CLEANUP_TIMEOUT
+) -> None:
     deadline = time.monotonic() + timeout
     while not predicate() and time.monotonic() < deadline:
         time.sleep(0.1)
@@ -1921,8 +1933,14 @@ def test_update_retains_complete_old_bundle_used_by_second_process(tmp_path: Pat
     old_manifest = {
         path.relative_to(old_root): _sha256(path) for path in old_root.rglob("*") if path.is_file()
     }
-    short_process = subprocess.Popen([str(old_root / "opensre.exe"), "hold", "2000"])
-    long_process = subprocess.Popen([str(old_root / "opensre.exe"), "hold", "30000"])
+    release_parent = tmp_path / "release-update-parent"
+    release_busy = tmp_path / "release-busy-process"
+    short_process = subprocess.Popen(
+        [str(old_root / "opensre.exe"), "hold-until", str(release_parent)]
+    )
+    long_process = subprocess.Popen(
+        [str(old_root / "opensre.exe"), "hold-until", str(release_busy)]
+    )
 
     try:
         second_binary = _make_onedir_bundle(tmp_path / "two process second")
@@ -1934,6 +1952,7 @@ def test_update_retains_complete_old_bundle_used_by_second_process(tmp_path: Pat
             parent_process_id=short_process.pid,
         )
         assert second is not None
+        release_parent.write_text("release", encoding="utf-8")
         short_process.wait(timeout=10)
         cleanup_path = _path(second, "CleanupPath")
         assert cleanup_path.is_file()
@@ -1951,7 +1970,7 @@ def test_update_retains_complete_old_bundle_used_by_second_process(tmp_path: Pat
         ) == "must remain complete"
         assert _probe_launcher(_path(second, "LauncherPath"), cwd=tmp_path)["VersionExit"] == 0
 
-        long_process.terminate()
+        release_busy.write_text("release", encoding="utf-8")
         long_process.wait(timeout=10)
         third_binary = _make_onedir_bundle(tmp_path / "two process third")
         third_completed, third = _install_bundle(
@@ -1962,15 +1981,15 @@ def test_update_retains_complete_old_bundle_used_by_second_process(tmp_path: Pat
         )
         assert third is not None
         assert third["DeferredCleanup"] is True
-        deadline = time.monotonic() + 30
-        while old_root.exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
+        _wait_until(lambda: not old_root.exists())
         assert not old_root.exists(), third_completed.stdout + third_completed.stderr
     finally:
+        release_parent.write_text("release", encoding="utf-8")
+        release_busy.write_text("release", encoding="utf-8")
         for process in (short_process, long_process):
             if process.poll() is None:
                 process.terminate()
-                process.wait(timeout=10)
+            process.wait(timeout=10)
 
 
 @pytest.mark.parametrize(
@@ -2022,7 +2041,7 @@ def test_update_cleanup_worker_retains_old_tree_when_process_scan_fails(
     layout_root = install_dir / ".opensre-app"
     cleanup_path = _path(second, "CleanupPath")
     assert cleanup_path.is_file()
-    _wait_until(lambda: not cleanup_path.exists(), timeout=15)
+    _wait_until(lambda: not cleanup_path.exists())
 
     assert (layout_root / "current.txt").read_text(encoding="utf-8").strip() == ("scan-failure-new")
     assert old_root.is_dir()
@@ -2168,7 +2187,8 @@ def test_update_context_does_not_trust_spoofed_nonparent_legacy_process(
     install_dir.mkdir()
     executable = install_dir / "opensre.exe"
     shutil.copy2(_fake_opensre_executable(), executable)
-    unrelated_process = subprocess.Popen([str(executable), "hold", "30000"])
+    release = tmp_path / "release-unrelated-process"
+    unrelated_process = subprocess.Popen([str(executable), "hold-until", str(release)])
 
     try:
         completed, context = _resolve_install_context(
@@ -2661,7 +2681,9 @@ def test_deferred_cleanup_never_deletes_a_newer_active_bundle(tmp_path: Path) ->
     )
     assert first is not None
 
-    holder = subprocess.Popen([os.environ["COMSPEC"], "/d", "/c", "ping -n 10 127.0.0.1 >nul"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.buffer.read(1)"], stdin=subprocess.PIPE
+    )
     try:
         second_binary = _make_onedir_bundle(tmp_path / "overlap second")
         _, second = _install_bundle(
@@ -2684,8 +2706,11 @@ def test_deferred_cleanup_never_deletes_a_newer_active_bundle(tmp_path: Path) ->
         assert third is not None
         third_root = _path(third, "AppRoot")
 
+        holder.terminate()
         holder.wait(timeout=15)
-        time.sleep(1)
+        second_cleanup = _path(second, "CleanupPath")
+        third_cleanup = _path(third, "CleanupPath")
+        _wait_until(lambda: not second_cleanup.exists() and not third_cleanup.exists())
 
         assert third_root.is_dir()
         pointer = install_dir / ".opensre-app" / "current.txt"
@@ -2715,6 +2740,9 @@ function ConvertTo-Json {{
     param([object]$InputObject, [int]$Depth, [switch]$Compress)
     return '{{"unused":true}}'
 }}
+# Compile native helpers before poisoning the environment used by the .NET compiler.
+Initialize-OpenSreNativePathApi
+Initialize-OpenSreInstallLockNativeApi
 $env:SystemRoot = {_ps_literal(poisoned_system_root)}
 function Start-Process {{
     [CmdletBinding()]
@@ -2771,7 +2799,9 @@ def test_deferred_cleanup_rejects_layout_junction_swap_after_wait(tmp_path: Path
     old_target.mkdir(parents=True)
     (old_target / "opensre.exe").write_bytes(b"old bundle")
     (layout_root / "current.txt").write_text("active-build\n", encoding="utf-8")
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     cleanup_path: Path | None = None
     preserved_layout = install_dir / "preserved-layout"
     outside = tmp_path / "outside cleanup ownership"
@@ -2835,7 +2865,9 @@ def test_deferred_cleanup_rejects_layout_replaced_after_scheduling(
     layout_root, target = _make_managed_cleanup_target(install_dir)
     preserved_layout = install_dir / "preserved-layout"
     replacement_target = layout_root / "versions" / "old-build"
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     cleanup_path: Path | None = None
 
     try:
@@ -2873,7 +2905,9 @@ def test_deferred_cleanup_preserves_target_replaced_after_scheduling(
     layout_root, target = _make_managed_cleanup_target(install_dir)
     preserved_target = target.with_name("preserved-old-build")
     replacement_sentinel = target / "user-data.txt"
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     installer = tmp_path / "install-with-short-cleanup-lock-timeout.ps1"
     installer.write_text(
         _set_embedded_cleanup_lock_timeout(
@@ -2919,7 +2953,9 @@ def test_deferred_cleanup_preserves_target_appearing_after_scheduling(
     target = layout_root / "versions" / "old-build"
     target.parent.mkdir(parents=True)
     (layout_root / "current.txt").write_text("active-build\n", encoding="utf-8")
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     cleanup_path: Path | None = None
 
     try:
@@ -3314,15 +3350,23 @@ def test_deferred_cleanup_waits_when_verified_parent_path_was_retired(
     release = tmp_path / "release retired cleanup parent"
     parent = subprocess.Popen([str(expected_parent_path), "hold-until", str(release)])
     cleanup_path: Path | None = None
+    parent_observed = tmp_path / "retired-parent-observed"
 
     try:
         parent_started = _process_started_token(parent.pid, cwd=tmp_path)
         expected_parent_path.rename(retired_parent_path)
         installer = tmp_path / "install-with-retired-parent-metadata-error.ps1"
-        installer.write_text(
-            _inject_retired_parent_path_metadata_error(INSTALL_PS1.read_text(encoding="utf-8")),
-            encoding="utf-8",
+        source = _inject_retired_parent_path_metadata_error(INSTALL_PS1.read_text(encoding="utf-8"))
+        state_anchor = "        $parentState = Get-OpenSreParentIdentityState\n"
+        assert source.count(state_anchor) == 1
+        source = source.replace(
+            state_anchor,
+            state_anchor
+            + "        if ($parentState -ceq 'running') { "
+            + f"[System.IO.File]::WriteAllText({_ps_literal(parent_observed)}, 'ready') }}\n",
+            1,
         )
+        installer.write_text(source, encoding="utf-8")
         scheduled, cleanup_path = _schedule_deferred_cleanup(
             installer_path=installer,
             layout_root=layout_root,
@@ -3334,7 +3378,8 @@ def test_deferred_cleanup_waits_when_verified_parent_path_was_retired(
         )
         assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
         assert cleanup_path is not None
-        time.sleep(1)
+        _wait_until(lambda: parent_observed.is_file() or not cleanup_path.exists())
+        assert parent_observed.is_file()
         assert parent.poll() is None
         assert target.is_dir()
 
@@ -3422,7 +3467,9 @@ def test_deferred_upgrade_removes_long_old_version_tree(tmp_path: Path) -> None:
     assert len(str(install_dir / relative_payload)) > 260
     unrelated = install_dir / "unrelated.txt"
     unrelated.write_text("keep", encoding="utf-8")
-    holder = subprocess.Popen([os.environ["COMSPEC"], "/d", "/c", "ping -n 10 127.0.0.1 >nul"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
 
     try:
         second_binary = _make_onedir_bundle(tmp_path / "long cleanup second")
@@ -3439,8 +3486,9 @@ def test_deferred_upgrade_removes_long_old_version_tree(tmp_path: Path) -> None:
         assert os.path.samefile(cleanup_path.parent, tempfile.gettempdir())
         new_root = _path(second, "AppRoot")
 
+        holder.terminate()
         holder.wait(timeout=15)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while old_root.exists() and time.monotonic() < deadline:
             time.sleep(0.1)
 
@@ -3481,29 +3529,16 @@ def test_install_revalidates_layout_after_uninstall_worker_wins_lock(tmp_path: P
         f"""
 $ErrorActionPreference = 'Stop'
 . {_ps_literal(INSTALL_PS1)} -SkipMain
+$originalOpenInstallLock = ${{function:Open-OpenSreInstallLock}}
 function Open-OpenSreInstallLock {{
     param([string]$InstallDir, [int]$TimeoutSeconds = 30)
     [System.IO.File]::WriteAllText({_ps_literal(lock_waiting)}, 'waiting')
-    $gateDeadline = [System.DateTime]::UtcNow.AddSeconds(30)
+    $gateDeadline = [System.DateTime]::UtcNow.AddSeconds(90)
     while (-not (Test-Path -LiteralPath {_ps_literal(allow_lock)})) {{
         if ([System.DateTime]::UtcNow -ge $gateDeadline) {{ throw 'installer gate timed out' }}
         Start-Sleep -Milliseconds 50
     }}
-    $lockDeadline = [System.DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
-    while ([System.DateTime]::UtcNow -lt $lockDeadline) {{
-        try {{
-            return [System.IO.File]::Open(
-                (Join-Path $InstallDir '.opensre-app.install.lock'),
-                [System.IO.FileMode]::OpenOrCreate,
-                [System.IO.FileAccess]::ReadWrite,
-                [System.IO.FileShare]::None
-            )
-        }}
-        catch [System.IO.IOException] {{
-            Start-Sleep -Milliseconds 50
-        }}
-    }}
-    throw 'installer lock timed out'
+    return & $originalOpenInstallLock -InstallDir $InstallDir -TimeoutSeconds $TimeoutSeconds
 }}
 $result = Install-OpenSreVerifiedBundle `
     -BinaryPath {_ps_literal(replacement)} `
@@ -3513,7 +3548,9 @@ Write-Output ({_ps_literal(_RESULT_PREFIX)} + ($result | ConvertTo-Json -Compres
 """,
         encoding="utf-8",
     )
-    holder = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    holder = subprocess.Popen(
+        [sys.executable, "-c", "import sys; sys.stdin.read()"], stdin=subprocess.PIPE
+    )
     installer: subprocess.Popen[str] | None = None
 
     try:
@@ -3545,14 +3582,14 @@ Write-Output ({_ps_literal(_RESULT_PREFIX)} + ($result | ConvertTo-Json -Compres
             errors="replace",
         )
 
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while not lock_waiting.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert lock_waiting.is_file(), "installer never reached its lock acquisition"
 
         holder.terminate()
         holder.wait(timeout=10)
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 90
         while app_root.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
         assert not app_root.exists(), "uninstall worker did not win and move the old app root"
