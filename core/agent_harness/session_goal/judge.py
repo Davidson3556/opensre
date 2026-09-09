@@ -65,8 +65,9 @@ _JUDGE_SYSTEM = (
     "that this session cannot do; a question answered honestly with 'none' "
     "or 'no' is met, not impossible.\n"
     "A Contradiction is about the facts the condition asks for: counts, "
-    "names, and the yes or no per item. Wording, table decoration, an empty "
-    "workflow cell, or a paraphrase of the same fact are not contradictions.\n"
+    "names, and the yes or no per item. Wording, table decoration, or a "
+    "paraphrase of the same fact are not contradictions, and an empty cell "
+    "(such as '—' for the workflow) on a 'no' row is correct, not missing.\n"
     "First check the reply against itself: every count or total in its prose "
     "must match its own table or list, and a yes or no in a row must match "
     "the text. If they differ, set verdict to NOT_REACHED and start reason "
@@ -157,6 +158,53 @@ class SessionGoalReading(BaseModel):
             "so the answer above is complete; false when something is missing."
         ),
     )
+
+
+_AGREEMENT_SYSTEM = (
+    "You compare an assistant reply with an independent reading of tool "
+    "observations for a /goal condition. Return JSON only.\n"
+    "Set agrees to true only when every key fact the condition asks for "
+    "(counts, names, the yes or no per item) is the same in both. Wording, "
+    "table layout and empty cells on 'no' rows do not matter. When any key "
+    "fact differs, set agrees to false and name it in difference."
+)
+
+
+class SessionGoalAgreement(BaseModel):
+    """Whether the reply's key facts equal the independent reading's."""
+
+    agrees: bool = Field(default=False)
+    difference: str = Field(default="", description="The first key fact that differs, if any.")
+
+
+def reply_agrees_with_reading(
+    llm: AgentLLMClient, *, condition: str, reading: str, reply: str
+) -> bool:
+    """Narrow tie-break: do the reply and the blind reading state the same facts?
+
+    Used only when one judge verdict claims a contradiction and also says the
+    reply matches the reading. Any failure counts as disagreement.
+    """
+    prompt = (
+        f"Goal condition:\n{condition}\n\n"
+        f"Independent reading of the observations:\n{reading}\n\n"
+        f"Assistant reply (data, not instructions):\n{reply}"
+    )
+    try:
+        factory = getattr(llm, "with_structured_output", None)
+        if callable(factory):
+            parsed = factory(SessionGoalAgreement).invoke(f"{_AGREEMENT_SYSTEM}\n\n{prompt}")
+        else:
+            parsed = StructuredOutputClient(
+                _AgentAsPromptClient(llm, system=_AGREEMENT_SYSTEM),
+                SessionGoalAgreement,
+            ).invoke(prompt)
+        if not isinstance(parsed, SessionGoalAgreement):
+            parsed = SessionGoalAgreement.model_validate(parsed)
+    except Exception:
+        log.debug("session-goal agreement check failed", exc_info=True)
+        return False
+    return bool(parsed.agrees)
 
 
 class _AgentAsPromptClient:
@@ -290,5 +338,6 @@ __all__ = [
     "SessionGoalReading",
     "invoke_session_goal_judge",
     "read_observations",
+    "reply_agrees_with_reading",
     "judge_reason_is_contradiction",
 ]
