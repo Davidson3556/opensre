@@ -39,6 +39,11 @@ from tests.scheduler._bundle import real_runners
 
 #: Generous enough to survive a loaded CI shard; a real hang still fails fast.
 _SYNC_TIMEOUT_SECONDS = 15.0
+#: Short enough that a missed renewal expires inside the test; long enough
+#: that the daemon thread can start under a loaded xdist shard (0.1s expired
+#: before the first renew on main CI).
+_TEST_CLAIM_LEASE_SECONDS = 2.0
+_AFTER_ORIGINAL_LEASE_SECONDS = 2.2
 
 _DELIVERY_PROVIDERS = (
     Provider.TELEGRAM,
@@ -140,7 +145,7 @@ class TestExecutor:
     ) -> None:
         from infrastructure.scheduling.scheduler.claim_lease import ClaimLeaseRenewer
 
-        monkeypatch.setattr(run_store, "_CLAIM_LEASE_SECONDS", 0.1)
+        monkeypatch.setattr(run_store, "_CLAIM_LEASE_SECONDS", _TEST_CLAIM_LEASE_SECONDS)
         renewed = threading.Event()
         real_renew = run_store.renew_claims
 
@@ -150,7 +155,7 @@ class TestExecutor:
                 renewed.set()
             return result
 
-        renewer = ClaimLeaseRenewer(renew=renew, renewal_interval_seconds=0.02)
+        renewer = ClaimLeaseRenewer(renew=renew, renewal_interval_seconds=0.05)
         monkeypatch.setattr(scheduler_executor, "default_claim_lease_renewer", renewer)
         adapters = _install_fake_bundle()
         task = ScheduledTask(
@@ -180,7 +185,7 @@ class TestExecutor:
             worker.start()
             assert building.wait(_SYNC_TIMEOUT_SECONDS)
             assert renewed.wait(_SYNC_TIMEOUT_SECONDS)
-            threading.Event().wait(0.12)
+            threading.Event().wait(_AFTER_ORIGINAL_LEASE_SECONDS)
             assert execute_task(task, fire_time, real_runners()) is False
             release.set()
             worker.join(_SYNC_TIMEOUT_SECONDS)
