@@ -30,6 +30,26 @@ tools:
   - cli_exec
   - slash_invoke
   - ask_user_choice
+references:
+  - common/numbers_from_tools.md
+  - common/ask_once.md
+  - common/progress.md
+after_tool:
+  - after: scan_local_git_workspace
+    tool: ask_user_choice
+    args:
+      title: Which repository should I analyze?
+    options_from: local_git_scan_repos
+    options_extra:
+      - Use the open-source example repository (Tracer-Cloud/opensre)
+  - after: analyze_github_ci_reliability
+    tool: ask_user_choice
+    args:
+      title: What would you like to do next?
+      options:
+        - Set up an agent that improves CI/CD reliability over time
+        - Connect OpenSRE to Slack and hand off DevOps chores for your team
+        - Exit demo
 ---
 
 # CI/CD analytics demo
@@ -55,8 +75,6 @@ Slack setup.
 
 ## Workflow rules
 
-- Every number in the reply comes from a tool result. Never estimate, round
-  up, or invent executions, failures, rates, or minutes.
 - Never run `gh`, `git`, or `shell_run` for this flow; the scan and
   analysis tools own discovery and analysis end to end and are read-only.
   The analysis itself is read-only: no Slack messages, no pushes, no
@@ -70,11 +88,10 @@ Slack setup.
 - If a tool reports a missing GitHub token, say the one command the user runs
   (`opensre integrations setup github`) and offer to continue afterwards. Do
   not fall back to a different data source.
-- Decision points use `ask_user_choice` with the exact option texts below.
-  End the turn after calling it; the answer arrives as the next user message.
-- Ask each question once. When the answer arrives, continue with the next
-  step immediately: do not reload this skill, do not restate the options, and
-  never ask what the answer or the request "means".
+- The host opens the repository menu after `scan_local_git_workspace` and the
+  next-step menu after `analyze_github_ci_reliability`. Do not call
+  `ask_user_choice` for those two questions. End the turn when a menu is
+  queued; the answer arrives as the next user message.
 - Which question was answered decides the next step. An answer to `Which
   repository should I analyze?` (or a repository named in the request) is the
   repository: go straight to step 3. An answer to `What would you like to do
@@ -93,15 +110,11 @@ what was found, using `summary` from the result.
 
 ### 2. Pick the repository
 
-From the scan result, candidates are repositories with a `github` name and
-`has_workflows` true, ordered by `commits`. Then call `ask_user_choice`
-with title `Which repository should I analyze?` and options, in this order:
-
-- up to three candidates as `<owner/repo> (<commits> commits, CI configured)`
-- `Use the open-source example repository (Tracer-Cloud/opensre)`
-
-If there are no candidates, offer only the example repository and say why.
-Wait for the answer.
+The host opens `Which repository should I analyze?` after the scan: up to
+three local repositories with GitHub Actions as
+`<owner/repo> (<commits> commits, CI configured)`, then
+`Use the open-source example repository (Tracer-Cloud/opensre)`. Wait for
+the answer.
 
 ### 3. Analyze CI/CD reliability
 
@@ -115,8 +128,8 @@ the headline: the next assistant text is the step 4 header.
 
 ### 4. Offer what to do next
 
-Call `ask_user_choice` with title `What would you like to do next?` and
-these exact options:
+The host opens `What would you like to do next?` after the analysis with
+these options:
 
 - `Set up an agent that improves CI/CD reliability over time`
 - `Connect OpenSRE to Slack and hand off DevOps chores for your team`
@@ -139,15 +152,3 @@ hand off a chore from Slack: mention OpenSRE in a channel or DM it.
 Never post, reply, or send anything to Slack in this demo.
 
 **Exit demo:** Reply with one line and stop.
-
-## Progress updates
-
-Before every numbered step's tool calls, emit this exact header format as
-assistant text in the same response, followed by one short status sentence:
-
-```text
-### [n/4] <step name>
-<One-sentence status.>
-```
-
-Never start tool calls for a new step without its header.

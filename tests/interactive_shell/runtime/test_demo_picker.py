@@ -13,7 +13,7 @@ import surfaces.interactive_shell.runtime.slash_adapter as slash_adapter
 import surfaces.interactive_shell.runtime.startup.demo_picker as demo_picker
 import surfaces.interactive_shell.runtime.startup.onboarding_telemetry as onboarding_telemetry
 import tools.system.workspace_git_scan.tool as scan_tool
-from config.constants.skills import ONBOARDING_SKILL_NAME
+from config.constants.skills import ONBOARDING_SKILL_NAME, SKIP_DEMO_OPTION
 from core.agent_harness.prompts.action.assemble import build_action_system_prompt_envelope
 from core.agent_harness.prompts.getting_started import GETTING_STARTED_OPTIONS
 from core.agent_harness.prompts.skills import list_action_skills
@@ -78,13 +78,6 @@ def test_boot_paints_only_the_skill_menu_then_selected_child_runs_through_real_t
         [
             tool_response("skill_view", {"name": "cicd-analytics-demo"}),
             tool_response("scan_local_git_workspace"),
-            tool_response(
-                "ask_user_choice",
-                {
-                    "title": "Which repository should I analyze?",
-                    "options": ["acme/one", "acme/two"],
-                },
-            ),
         ]
     )
     scans: list[str] = []
@@ -109,7 +102,7 @@ def test_boot_paints_only_the_skill_menu_then_selected_child_runs_through_real_t
     assert (pending.title, pending.note, pending.options) == (
         _TITLE,
         _NOTE,
-        GETTING_STARTED_OPTIONS,
+        (*GETTING_STARTED_OPTIONS, SKIP_DEMO_OPTION),
     )
     assert session.terminal.pending_prompt_default == "/choose"
     assert session.terminal.awaiting_handoff_answer
@@ -133,6 +126,7 @@ def test_boot_paints_only_the_skill_menu_then_selected_child_runs_through_real_t
         "title": _TITLE,
         "choices": [
             *((option, option) for option in GETTING_STARTED_OPTIONS),
+            (SKIP_DEMO_OPTION, SKIP_DEMO_OPTION),
             (CUSTOM_OPTION, CUSTOM_OPTION),
         ],
         "custom_label": CUSTOM_OPTION,
@@ -151,11 +145,14 @@ def test_boot_paints_only_the_skill_menu_then_selected_child_runs_through_real_t
     assert "## Follow the selected child" not in envelope.render_cached()
 
     run_action_tool_turn(answer, session, console, is_tty=True, llm_factory=lambda: llm)
-    assert llm.invocations == 3
+    assert llm.invocations == 2
     assert len(scans) == 1
     assert session.active_skill == "cicd-analytics-demo"
     assert session.pending_user_choice is not None
     assert session.pending_user_choice.title == "Which repository should I analyze?"
+    assert "Use the open-source example repository (Tracer-Cloud/opensre)" in (
+        session.pending_user_choice.options
+    )
     assert "analyze_github_ci_reliability" in session.active_skill_tools
     assert onboarding_outcomes == [("ci_analytics", False)]
 
