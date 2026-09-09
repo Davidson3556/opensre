@@ -27,6 +27,8 @@ _RESULT_PREFIX = "__OPENSRE_INSTALL_RESULT__"
 _PROBE_PREFIX = "__OPENSRE_LAUNCHER_PROBE__"
 _CONTEXT_PREFIX = "__OPENSRE_INSTALL_CONTEXT__"
 _CLEANUP_PREFIX = "__OPENSRE_CLEANUP__"
+# A cold detached PowerShell host compiles the embedded C# under antivirus scanning.
+_DETACHED_CLEANUP_TIMEOUT = 90
 _FAKE_BINARY_ROOT: Path | None = None
 _FAILED_PROCESS_ENUMERATOR = r"""
 function Get-Process {
@@ -87,17 +89,6 @@ def _inject_owned_process_enumerator(
         }}
     }}
 """
-    parent_observed_probe = ""
-    if parent_observed is not None:
-        observed_payload = base64.b64encode(str(parent_observed).encode("utf-8")).decode("ascii")
-        parent_observed_probe = f"""
-        if ($null -ne $process) {{
-            $observedPath = [System.Text.Encoding]::UTF8.GetString(
-                [System.Convert]::FromBase64String('{observed_payload}')
-            )
-            [System.IO.File]::WriteAllText($observedPath, 'observed')
-        }}
-"""
     process_override = rf"""
 $script:OpenSreTestProcessScanCount = 0
 function Get-OpenSreOwnedTestProcess {{
@@ -125,16 +116,28 @@ function Get-Process {{
     [CmdletBinding()]
     param([int]$Id, [string]$Name)
     if ($PSBoundParameters.ContainsKey('Id')) {{
-        $process = Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
-{parent_observed_probe}
-        return $process
+        return Microsoft.PowerShell.Management\Get-Process @PSBoundParameters
     }}
     $process = Get-OpenSreOwnedTestProcess
 {scan_barrier}
     return $process
 }}
 """
-    return source.replace(anchor, anchor + process_override, 1)
+    injected = source.replace(anchor, anchor + process_override, 1)
+    if parent_observed is None:
+        return injected
+
+    observed_payload = base64.b64encode(str(parent_observed).encode("utf-8")).decode("ascii")
+    state_anchor = "        $parentState = Get-OpenSreParentIdentityState\n"
+    assert injected.count(state_anchor) == 1
+    parent_observed_probe = f"""        if ($parentState -ceq 'running') {{
+            $observedPath = [System.Text.Encoding]::UTF8.GetString(
+                [System.Convert]::FromBase64String('{observed_payload}')
+            )
+            [System.IO.File]::WriteAllText($observedPath, 'observed')
+        }}
+"""
+    return injected.replace(state_anchor, state_anchor + parent_observed_probe, 1)
 
 
 def _write_scoped_cleanup_installer(
@@ -1260,7 +1263,7 @@ def test_running_legacy_onefile_cleanup_waits_for_process_exit(tmp_path: Path) -
             process_started=parent_started,
             parent_observed=worker_observed,
         )
-        _, result = _install_bundle(
+        completed, result = _install_bundle(
             binary_path=replacement_binary,
             install_dir=install_dir,
             install_id="deferred-migration",
@@ -1274,13 +1277,25 @@ def test_running_legacy_onefile_cleanup_waits_for_process_exit(tmp_path: Path) -
         assert result is not None
         assert result["DeferredCleanup"] is True
         assert not legacy_binary.exists()
-        _wait_until(worker_observed.is_file)
-        assert running_legacy.poll() is None
+        cleanup_path = _path(result, "CleanupPath")
+        _wait_until(
+            lambda: (
+                worker_observed.is_file()
+                or not cleanup_path.exists()
+                or running_legacy.poll() is not None
+            ),
+            timeout=_DETACHED_CLEANUP_TIMEOUT,
+        )
+        assert running_legacy.poll() is None, "legacy process exited before worker observation"
+        assert worker_observed.is_file(), (
+            "cleanup worker exited before observing the running parent\n"
+            + completed.stdout
+            + completed.stderr
+        )
 
         release.write_text("release", encoding="utf-8")
         running_legacy.wait(timeout=10)
-        cleanup_path = _path(result, "CleanupPath")
-        _wait_until(lambda: not cleanup_path.exists(), timeout=45)
+        _wait_until(lambda: not cleanup_path.exists(), timeout=_DETACHED_CLEANUP_TIMEOUT)
         layout_root = install_dir / ".opensre-app"
 
         assert list(layout_root.glob("retired-*")) == []
@@ -1312,7 +1327,7 @@ def test_running_legacy_onefile_without_parent_pid_defers_locked_cleanup(
             process_started=process_started,
             second_scan_ready=worker_ready,
         )
-        _, result = _install_bundle(
+        completed, result = _install_bundle(
             binary_path=replacement_binary,
             install_dir=install_dir,
             install_id="deferred-without-pid",
@@ -1324,15 +1339,26 @@ def test_running_legacy_onefile_without_parent_pid_defers_locked_cleanup(
         assert result["DeferredCleanup"] is True
         assert not legacy_binary.exists()
         assert running_legacy.poll() is None
-        _wait_until(worker_ready.is_file)
-        assert running_legacy.poll() is None
+        cleanup_path = _path(result, "CleanupPath")
+        _wait_until(
+            lambda: (
+                worker_ready.is_file()
+                or not cleanup_path.exists()
+                or running_legacy.poll() is not None
+            ),
+            timeout=_DETACHED_CLEANUP_TIMEOUT,
+        )
+        assert running_legacy.poll() is None, "legacy process exited before worker observation"
+        assert worker_ready.is_file(), (
+            "cleanup worker exited before observing the running process\n"
+            + completed.stdout
+            + completed.stderr
+        )
 
         release.write_text("release", encoding="utf-8")
         running_legacy.wait(timeout=15)
-        deadline = time.monotonic() + 30
+        _wait_until(lambda: not cleanup_path.exists(), timeout=_DETACHED_CLEANUP_TIMEOUT)
         layout_root = install_dir / ".opensre-app"
-        while list(layout_root.glob("retired-*")) and time.monotonic() < deadline:
-            time.sleep(0.1)
 
         assert list(layout_root.glob("retired-*")) == []
         launcher = _path(result, "LauncherPath")
@@ -3092,7 +3118,10 @@ def test_deferred_cleanup_fails_closed_when_parent_metadata_is_uncertain(
 
     assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
     assert cleanup_path is not None
-    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists())
+    _wait_until(
+        lambda: cleanup_path is not None and not cleanup_path.exists(),
+        timeout=_DETACHED_CLEANUP_TIMEOUT,
+    )
     assert target.is_dir()
     assert (target / "opensre.exe").is_file()
 
@@ -3138,7 +3167,10 @@ def test_deferred_cleanup_requires_confirmed_exit_with_readable_parent_metadata(
 
     assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
     assert cleanup_path is not None
-    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    _wait_until(
+        lambda: cleanup_path is not None and not cleanup_path.exists(),
+        timeout=_DETACHED_CLEANUP_TIMEOUT,
+    )
     assert target.exists() is not expect_cleanup
     assert not list(layout_root.glob("retired-*"))
 
@@ -3170,7 +3202,10 @@ def test_deferred_cleanup_accepts_parent_exit_during_metadata_inspection(
 
     assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
     assert cleanup_path is not None
-    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    _wait_until(
+        lambda: cleanup_path is not None and not cleanup_path.exists(),
+        timeout=_DETACHED_CLEANUP_TIMEOUT,
+    )
     assert not target.exists()
     assert not list(layout_root.glob("retired-*"))
 
@@ -3201,7 +3236,10 @@ def test_deferred_cleanup_skips_confirmed_exited_process_during_scan(
 
     assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
     assert cleanup_path is not None
-    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    _wait_until(
+        lambda: cleanup_path is not None and not cleanup_path.exists(),
+        timeout=_DETACHED_CLEANUP_TIMEOUT,
+    )
     assert target.exists() is busy_after_exited
     assert not list(layout_root.glob("retired-*"))
 
@@ -3229,7 +3267,10 @@ def test_deferred_cleanup_rechecks_process_before_reporting_target_busy(
 
     assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
     assert cleanup_path is not None
-    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    _wait_until(
+        lambda: cleanup_path is not None and not cleanup_path.exists(),
+        timeout=_DETACHED_CLEANUP_TIMEOUT,
+    )
     assert not target.exists()
     assert not list(layout_root.glob("retired-*"))
 
@@ -3253,7 +3294,10 @@ def test_deferred_cleanup_fails_closed_for_unusable_process_name(tmp_path: Path)
 
     assert scheduled.returncode == 0, scheduled.stdout + scheduled.stderr
     assert cleanup_path is not None
-    _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists(), timeout=15)
+    _wait_until(
+        lambda: cleanup_path is not None and not cleanup_path.exists(),
+        timeout=_DETACHED_CLEANUP_TIMEOUT,
+    )
     assert target.is_dir()
     assert (target / "opensre.exe").is_file()
     assert not list(layout_root.glob("retired-*"))
@@ -3296,7 +3340,10 @@ def test_deferred_cleanup_waits_when_verified_parent_path_was_retired(
 
         release.write_text("release", encoding="utf-8")
         parent.wait(timeout=10)
-        _wait_until(lambda: cleanup_path is not None and not cleanup_path.exists())
+        _wait_until(
+            lambda: cleanup_path is not None and not cleanup_path.exists(),
+            timeout=_DETACHED_CLEANUP_TIMEOUT,
+        )
 
         assert not target.exists()
         assert not list(layout_root.glob("retired-*"))
