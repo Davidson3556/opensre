@@ -19,6 +19,7 @@ red.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,50 @@ def test_transport_keeps_no_local_copy_of_hoisted_concerns(transport: str) -> No
         f"transport {transport!r} reintroduced {copies}; use the shared "
         "gateway.core implementation instead."
     )
+
+
+def _metering_calls(transport: str) -> list[ast.Call]:
+    """Every ``bound_turn_metering(...)`` call in one transport package.
+
+    Parsed, not imported: importing a transport pulls in its platform SDK.
+    """
+    root = REPO_ROOT / "gateway" / "transports" / transport
+    calls: list[ast.Call] = []
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name == "bound_turn_metering":
+                calls.append(node)
+    return calls
+
+
+@pytest.mark.parametrize("transport", _TRANSPORTS)
+def test_metered_turns_bind_an_interpolated_per_delivery_key(transport: str) -> None:
+    """Each metered turn names the delivery it charges, with a real value.
+
+    A substring marker is not enough here: ``idempotency_key=""`` makes the
+    client omit the header entirely, so a constant or empty key would pass a
+    textual check while reintroducing the double debit it exists to stop.
+    Requiring an f-string with at least one interpolation is what pins the key
+    to *this* delivery rather than to the transport.
+    """
+    calls = _metering_calls(transport)
+    assert calls, f"transport '{transport}' never binds turn metering"
+
+    for call in calls:
+        keywords = {kw.arg: kw.value for kw in call.keywords}
+        assert "idempotency_key" in keywords, (
+            f"transport '{transport}' meters a turn without naming its delivery"
+        )
+        value = keywords["idempotency_key"]
+        assert isinstance(value, ast.JoinedStr), (
+            f"transport '{transport}' uses a constant idempotency key; it must be "
+            "derived from the delivery id"
+        )
+        assert any(isinstance(part, ast.FormattedValue) for part in value.values), (
+            f"transport '{transport}' interpolates nothing into its idempotency key"
+        )

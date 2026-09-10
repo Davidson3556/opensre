@@ -20,6 +20,11 @@ class TurnMeteringRequest:
 
     organization_id: str
     reason: str
+    #: Stable per-delivery id (Buzz ``event_id``, Telegram ``update_id``, Slack
+    #: ``ts``, Discord ``message_id``). Required, not optional: the polling
+    #: transports replay after a restart, and a turn that cannot name its
+    #: delivery cannot be deduplicated by the ledger.
+    idempotency_key: str
     on_denied: Callable[[], None]
 
 
@@ -33,6 +38,7 @@ def bound_turn_metering(
     *,
     organization_id: str,
     reason: str,
+    idempotency_key: str,
     on_denied: Callable[[], None],
 ) -> Iterator[None]:
     """Bind the credit request consumed after shared capacity admission."""
@@ -40,6 +46,7 @@ def bound_turn_metering(
         TurnMeteringRequest(
             organization_id=organization_id,
             reason=reason,
+            idempotency_key=idempotency_key,
             on_denied=on_denied,
         )
     )
@@ -54,7 +61,11 @@ def admit_metered_turn() -> bool:
     request = _CURRENT_REQUEST.get()
     if request is None:
         raise RuntimeError("gateway turn has no bound metering request")
-    outcome = consume_credits(request.organization_id, reason=request.reason)
+    outcome = consume_credits(
+        request.organization_id,
+        reason=request.reason,
+        idempotency_key=request.idempotency_key,
+    )
     if outcome in (CreditsOutcome.ALLOWED, CreditsOutcome.DISABLED):
         return True
     if outcome is CreditsOutcome.DENIED:

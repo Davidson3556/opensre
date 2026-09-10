@@ -323,6 +323,7 @@ class DiscordTurnDispatcher:
                         bound_turn_metering(
                             organization_id=scope.principal.id,
                             reason="discord_turn",
+                            idempotency_key=f"{UsageSurface.DISCORD.value}:{inbound.message_id}",
                             on_denied=_on_credit_denied,
                         ),
                     ):

@@ -148,11 +148,17 @@ def _settings(
     )
 
 
-def _inbound(*, text: str = "check the api", ts: str = "100.1") -> SlackInboundMessage:
+def _inbound(
+    *,
+    text: str = "check the api",
+    ts: str = "100.1",
+    team_id: str = "T1",
+    channel_id: str = "C1",
+) -> SlackInboundMessage:
     return SlackInboundMessage(
-        team_id="T1",
+        team_id=team_id,
         user_id="U1",
-        channel_id="C1",
+        channel_id=channel_id,
         ts=ts,
         thread_ts="100.1",
         text=text,
@@ -257,6 +263,37 @@ def test_out_of_credits_blocks_turn_with_short_reply(monkeypatch: pytest.MonkeyP
     assert ("remove", "eyes") in emoji_ops
     assert ("add", "x") in emoji_ops
     assert ("add", "white_check_mark") not in emoji_ops
+
+
+def test_same_ts_in_two_channels_bills_under_two_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Slack ``ts`` is unique per channel, not per workspace, and one org can own
+    # several teams and channels. Keying on ts alone would let the ledger treat
+    # the second, unrelated delivery as a replay of the first and skip its debit.
+    keys: list[str] = []
+
+    def capture(*_args: Any, **kwargs: Any) -> CreditsOutcome:
+        keys.append(kwargs["idempotency_key"])
+        return CreditsOutcome.ALLOWED
+
+    monkeypatch.setattr(turn_metering, "consume_credits", capture)
+
+    def handler(_text: str, _session: Any, sink: Any, _logger: logging.Logger) -> None:
+        sink.finalize("done")
+
+    for channel_id in ("C1", "C2"):
+        _dispatcher(
+            settings=_settings(["U1"]),
+            messaging=_FakeMessagingClient(),
+            resolver=_FakeSessionResolver(),
+            handler=metered_callback(handler),
+        ).dispatch(_inbound(ts="100.1", channel_id=channel_id))
+
+    first, second = keys
+    assert first != second
+    assert first == "slack:T1:C1:100.1"
+    assert second == "slack:T1:C2:100.1"
 
 
 @pytest.mark.parametrize("outcome", [CreditsOutcome.ALLOWED, CreditsOutcome.DISABLED])

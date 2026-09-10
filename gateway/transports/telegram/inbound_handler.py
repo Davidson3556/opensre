@@ -169,6 +169,7 @@ async def handle_polled_inbound_telegram_message(
                     bound_turn_metering(
                         organization_id=scope.principal.id,
                         reason="telegram_turn",
+                        idempotency_key=f"{UsageSurface.TELEGRAM.value}:{event.update_id}",
                         on_denied=_on_credit_denied,
                     ),
                 ):

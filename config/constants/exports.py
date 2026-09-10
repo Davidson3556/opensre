@@ -70,6 +70,7 @@ EXPORTS: dict[str, str] = {
     "BETTERSTACK_USERNAME_ENV": "betterstack",
     # billing
     "CREDITS_HTTP_TIMEOUT_SECONDS": "billing",
+    "CREDITS_IDEMPOTENCY_HEADER": "billing",
     "MACHINE_SECRET_ENV": "billing",
     "ORGANIZATION_ID_ENV": "billing",
     "USAGE_SECRET_ENV": "billing",
