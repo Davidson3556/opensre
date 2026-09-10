@@ -35,6 +35,7 @@ from infrastructure.scheduling.scheduler.storage import (
     complete_run,
     default_task_store_path,
     get_recoverable_runs,
+    get_runs,
     get_task,
     list_tasks,
     record_task_success,
@@ -496,7 +497,12 @@ def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool =
             return False
 
     fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return execute_task(task, fire_time, runners, target_filter=target_filter)
+    result = execute_task(task, fire_time, runners, target_filter=target_filter)
+    if result:
+        run = next((run for run in get_runs(task.id) if run.fire_time == fire_time), None)
+        if run is not None and all(outcome.ok for outcome in run.targets):
+            record_task_success(task.id)
+    return result
 
 
 def failed_retry_scope(task_id: str) -> frozenset[tuple[Provider, str]] | None:

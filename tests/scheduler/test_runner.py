@@ -514,7 +514,25 @@ class TestRunTaskNow:
         )
         assert run_task_now("nonexistent", real_runners()) is False
 
-    def test_runs_existing_task(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    @pytest.mark.parametrize(
+        ("targets", "records_completion"),
+        [
+            ((DeliveryOutcome(provider=Provider.TELEGRAM, ok=True),), True),
+            (
+                (
+                    DeliveryOutcome(provider=Provider.TELEGRAM, ok=True),
+                    DeliveryOutcome(provider=Provider.SLACK, ok=False),
+                ),
+                False,
+            ),
+        ],
+    )
+    def test_runs_existing_task(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        targets: tuple[DeliveryOutcome, ...],
+        records_completion: bool,
+    ) -> None:
         task = ScheduledTask(
             id="run_now_test",
             kind=TaskKind.MANUAL_LOOP,
@@ -526,12 +544,30 @@ class TestRunTaskNow:
             "infrastructure.scheduling.scheduler.runner.get_task", lambda _task_id: task
         )
 
-        with patch("infrastructure.scheduling.scheduler.runner.execute_task") as mock_exec:
+        with (
+            patch("infrastructure.scheduling.scheduler.runner.execute_task") as mock_exec,
+            patch("infrastructure.scheduling.scheduler.runner.get_runs") as mock_runs,
+            patch(
+                "infrastructure.scheduling.scheduler.runner.record_task_success"
+            ) as record_success,
+        ):
             mock_exec.return_value = True
+            mock_runs.side_effect = lambda _task_id: [
+                TaskRun(
+                    task_id=task.id,
+                    fire_time=mock_exec.call_args.args[1],
+                    status=TaskStatus.SUCCESS,
+                    targets=targets,
+                )
+            ]
             result = run_task_now("run_now_test", real_runners())
 
         assert result is True
         mock_exec.assert_called_once()
+        if records_completion:
+            record_success.assert_called_once_with(task.id)
+        else:
+            record_success.assert_not_called()
         # Verify fire_time has seconds (ad-hoc format) and ends with Z
         call_args = mock_exec.call_args
         fire_time = call_args[0][1]
