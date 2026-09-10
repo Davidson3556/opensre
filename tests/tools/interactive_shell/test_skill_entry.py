@@ -19,7 +19,11 @@ import core.agent_harness.prompts.skills.loader as loader
 from config.constants.skills import ONBOARDING_SKILL_NAME
 from core.agent_harness.tools import ActionToolScope
 from surfaces.interactive_shell.session import Session
-from tools.interactive_shell.actions.skill_entry import MENU_QUEUED_INSTRUCTION, enter_skill
+from tools.interactive_shell.actions.skill_entry import (
+    MENU_QUEUED_INSTRUCTION,
+    enter_skill,
+    pre_execute_queued_menu,
+)
 from tools.interactive_shell.actions.skill_view import execute_skill_view_tool
 
 
@@ -151,3 +155,91 @@ def test_skill_view_without_a_session_still_returns_the_body() -> None:
 
     assert result["ok"] is True
     assert result["pre_execute"] == []  # No scope to run hooks against; nothing is queued.
+
+
+def test_the_model_cannot_reopen_a_menu_the_session_already_answered() -> None:
+    """A greeting after a demo used to route back here and ask the same question.
+
+    The managed-service branch ends immediately, so the next plain message
+    re-entered this skill and its ``pre_execute`` opened the demo menu a second
+    and third time.
+    """
+    # Arrange: the host opened the menu once, as it does at startup.
+    session = Session()
+    first = enter_skill(ONBOARDING_SKILL_NAME, _scope(session))
+    assert first["pre_execute"]
+    session.pending_user_choice = None  # the user answered it
+
+    # Act: the model routes back to the same skill later in the session.
+    again = execute_skill_view_tool({"name": ONBOARDING_SKILL_NAME}, _scope(session))
+
+    # Assert: the body still loads, but no second menu is queued.
+    assert again["ok"] is True
+    assert again["pre_execute"] == []
+    assert session.pending_user_choice is None
+
+
+def test_the_host_may_reopen_the_menu_on_request() -> None:
+    """``/demo`` and startup ask for the menu deliberately."""
+    # Arrange
+    session = Session()
+    enter_skill(ONBOARDING_SKILL_NAME, _scope(session))
+    session.pending_user_choice = None
+
+    # Act
+    again = enter_skill(ONBOARDING_SKILL_NAME, _scope(session))
+
+    # Assert
+    assert again["pre_execute"]
+    assert session.pending_user_choice is not None
+
+
+def test_demo_reopens_the_menu_after_the_session_answered_it() -> None:
+    """``/demo`` means ask me again; the session's record must not silence it.
+
+    The session-wide "already answered" guard refused the entry hook as well,
+    so `/demo` queued nothing and the shell printed nothing at all.
+    """
+    # Arrange: the question was answered earlier in this session.
+    session = Session()
+    session.questions_already_answered = {"which demo would you like me to run? (esc to skip)"}
+
+    # Act: the host enters the skill, as `/demo` and startup do.
+    result = enter_skill(ONBOARDING_SKILL_NAME, _scope(session))
+
+    # Assert
+    assert result["pre_execute"]
+    assert session.pending_user_choice is not None
+
+
+def test_a_hook_that_queued_no_menu_does_not_count_as_prompted() -> None:
+    """A refusal or an unavailable menu must not silence the skill for good.
+
+    Recording the skill on any hook result meant one transient failure kept the
+    user from ever seeing the menu again in that session.
+    """
+    # Arrange: no terminal facet, so the menu reports itself unavailable.
+    session = Session()
+    scope = _scope(session, tty=False)
+
+    # Act
+    result = enter_skill(ONBOARDING_SKILL_NAME, scope)
+
+    # Assert: nothing opened, so nothing is remembered.
+    assert not pre_execute_queued_menu(result.get("pre_execute", []))
+    assert session.skills_already_prompted == set()
+
+
+def test_a_fresh_session_forgets_what_was_answered() -> None:
+    """``/new`` means a new session; a remembered answer would suppress its menus."""
+    # Arrange
+    session = Session()
+    enter_skill(ONBOARDING_SKILL_NAME, _scope(session))
+    session.questions_already_answered.add("which demo would you like me to run? (esc to skip)")
+
+    # Act
+    session.clear()
+
+    # Assert
+    assert session.questions_already_answered == set()
+    assert session.skills_already_prompted == set()
