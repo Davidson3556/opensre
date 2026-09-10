@@ -13,8 +13,8 @@ getting_started: Explore a repo and analyze its CI/CD performance (recommended)
 demo_order: 1
 metadata:
   owner: Vincent
-  last_changed_by: Vincent
-  last_changed_at: 2026-09-09
+  last_changed_by: Yauhen
+  last_changed_at: 2026-09-10
   usecases:
     - First-experience demo: scan the machine, pick a repository, analyze its CI/CD
     - CI/CD reliability KPIs for one repository over the last 30 days
@@ -24,7 +24,7 @@ metadata:
     - GitHub token usable by OpenSRE with read access to the repository's Actions history
     - A local git checkout for the workspace scan (optional; a named repository also works)
   type: analytics
-  version: "1.3"
+  version: "1.4"
 tools:
   - scan_local_git_workspace
   - analyze_github_ci_reliability
@@ -70,6 +70,8 @@ Slack setup.
 - If a tool reports a missing GitHub token, say the one command the user runs
   (`opensre integrations setup github`) and offer to continue afterwards. Do
   not fall back to a different data source.
+- If the analysis result is not successful for any other reason, say why in
+  one line and stop; the next-step menu only opens after a report.
 - The host opens the repository menu after `scan_local_git_workspace` and the
   next-step menu after `analyze_github_ci_reliability`. Do not call
   `ask_user_choice` for those two questions. End the turn when a menu is
@@ -99,7 +101,7 @@ Track progress with the `update_plan` tool, not with headers or prose:
   `explanation` (this is not a diagnosis; no hypothesis table):
   `Scan this machine` / `Pick the repository` / `Analyze CI/CD reliability` /
   `Offer what to do next`.
-- When the request already names the repository, the plan is only
+- When the request or an Ask User answer already names the repository, the plan is only
   `Analyze CI/CD reliability` / `Offer what to do next` — omit the skipped
   steps instead of renumbering.
 - After a step's tool results, call `update_plan` marking it `completed` and
@@ -128,11 +130,11 @@ the answer.
 
 Call
 `analyze_github_ci_reliability(owner="<owner>", repo="<repo>", compact=true)`
-for the chosen repository. The tool paints the report (key results first)
-and the comparison table itself. Do not restate figures, do not output
-`headline`, and do not call the tool again for benchmarks. A peer without
-a same-day snapshot is skipped (named in `benchmarks_skipped`); do not
-fetch it yourself.
+for the chosen repository. A saved report from today is reused; otherwise
+this reads GitHub (a token is required). The tool paints the report — the
+cost sentence first, then key results and the comparison against shipped
+Airflow and FastAPI figures. Do not restate figures, do not output
+`headline`, and do not call the tool again for benchmarks.
 
 ### 4. Offer what to do next
 
@@ -143,7 +145,9 @@ these options:
 - `Connect OpenSRE to Slack and hand off DevOps chores for your team`
 - `Exit demo`
 
-Wait for the answer, then follow the selected option.
+Wait for the answer, then follow the selected option. The report already
+named the cost; do not repeat it. The first option schedules a weekday
+7-day version of this report to the shell inbox, not a CI code fix.
 
 **Recurring check:** Call
 `schedule_ci_reliability_loop(owner="<owner>", repo="<repo>")` for the
