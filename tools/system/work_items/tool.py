@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from core.domain.types.tools import ToolSurface
 from core.domain.work_items import (
     WORK_ITEM_PRIORITIES,
     WORK_ITEM_STATUSES,
+    WorkItem,
     WorkItemChannelTarget,
     WorkItemPriority,
     WorkItemUpdates,
@@ -29,6 +31,7 @@ from tools.system.work_items._evidence import map_work_task_list, map_work_task_
 from tools.system.work_items.delivery import delivery_targets, invalid_delivery_targets
 from tools.system.work_items.reminders import (
     disable_existing_item_reminders,
+    existing_item_reminder_timezone,
     schedule_item_reminder,
 )
 from tools.system.work_items.results import (
@@ -51,6 +54,8 @@ from tools.system.work_items.validation import (
     valid_status_detail,
     validate_datetime_arg,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _work_items_available(_sources: dict[str, dict[str, Any]]) -> bool:
@@ -324,7 +329,13 @@ def work_task_complete(selectors: list[str]) -> dict[str, Any]:
                     "additionalProperties": False,
                 },
             },
-            "timezone": {"type": "string", "default": "UTC"},
+            "timezone": {
+                "type": "string",
+                "description": (
+                    "IANA timezone for naive remind_at values. Omit to preserve an existing "
+                    "reminder timezone, or use UTC when adding a reminder."
+                ),
+            },
         },
         "required": ["selector"],
         "additionalProperties": False,
@@ -342,7 +353,7 @@ def work_task_update(
     channel_provider: str = "",
     channel_id: str = "",
     channel_targets: list[dict[str, str]] | None = None,
-    timezone: str = "UTC",
+    timezone: str = "",
     context: AgentToolContext | None = None,
 ) -> dict[str, Any]:
     changes: WorkItemUpdates = {}
@@ -388,23 +399,28 @@ def work_task_update(
             explicit_targets[0].to_dict() if explicit_targets else WorkItemChannelTarget().to_dict()
         )
     reminder_targets: list[WorkItemChannelTarget] = []
+    reminder_timezone = timezone.strip()
     reminder_update_requested = remind_at is not None or target_update_requested
+    existing_item: WorkItem | None = None
     if reminder_update_requested:
         existing = resolve_work_item_selector(selector)
-        if existing.item is None:
+        existing_item = existing.item
+        if existing_item is None:
             payload: dict[str, Any] = {"error": existing.error or "not_found"}
             if existing.candidates:
                 payload["candidates"] = [item_summary(item) for item in existing.candidates]
             return payload
-        effective_remind_at = remind_at if remind_at is not None else existing.item.remind_at
+        effective_remind_at = remind_at if remind_at is not None else existing_item.remind_at
         if effective_remind_at:
+            if not reminder_timezone:
+                reminder_timezone = existing_item_reminder_timezone(existing_item.id) or "UTC"
             reminder_targets = (
                 explicit_targets
                 if target_update_requested
                 else delivery_targets(
                     provider="",
                     chat_id="",
-                    item=existing.item,
+                    item=existing_item,
                     context=context,
                 )
             )
@@ -413,13 +429,13 @@ def work_task_update(
                 return {
                     "error": "invalid_delivery_target",
                     "detail": "; ".join(invalid_reminder_targets),
-                    "task": item_summary(existing.item),
+                    "task": item_summary(existing_item),
                 }
             if not reminder_targets:
                 return {
                     "error": "missing_delivery_target",
                     "detail": "remind_at needs at least one provider target",
-                    "task": item_summary(existing.item),
+                    "task": item_summary(existing_item),
                 }
     result = update_work_item(selector, changes=changes)
     if result.item is None:
@@ -429,18 +445,57 @@ def work_task_update(
         return update_error_payload
     scheduled = None
     if reminder_update_requested:
-        if result.item.remind_at:
-            scheduled = schedule_item_reminder(
-                result.item,
-                targets=reminder_targets,
-                timezone=timezone or "UTC",
+        if existing_item is None:
+            raise RuntimeError("resolved work item disappeared before reminder synchronization")
+        try:
+            if result.item.remind_at:
+                scheduled = schedule_item_reminder(
+                    result.item,
+                    targets=reminder_targets,
+                    timezone=reminder_timezone or "UTC",
+                )
+            else:
+                disable_existing_item_reminders(result.item.id)
+        except Exception:
+            rollback = update_work_item(
+                result.item.id,
+                changes=_rollback_changes(existing_item, changes),
             )
-        else:
-            disable_existing_item_reminders(result.item.id)
+            if rollback.item is None:
+                logger.critical(
+                    "Could not roll back work item %s after reminder synchronization failed: %s",
+                    result.item.id,
+                    rollback.error or "unknown error",
+                )
+            raise
     result_payload = update_result(result.item)
     if scheduled is not None:
         result_payload["scheduled_task_id"] = scheduled.id
     return result_payload
+
+
+def _rollback_changes(item: WorkItem, changes: WorkItemUpdates) -> WorkItemUpdates:
+    """Restore fields changed before a failed scheduler synchronization."""
+    rollback: WorkItemUpdates = {}
+    if "status" in changes:
+        rollback["status"] = item.status
+    if "priority" in changes:
+        rollback["priority"] = item.priority
+    if "owner" in changes:
+        rollback["owner"] = item.owner
+    if "project" in changes:
+        rollback["project"] = item.project
+    if "due_at" in changes:
+        rollback["due_at"] = item.due_at
+    if "remind_at" in changes:
+        rollback["remind_at"] = item.remind_at
+    if "notes" in changes:
+        rollback["notes"] = item.notes
+    if "channel_targets" in changes:
+        rollback["channel_targets"] = item.channel_targets
+    if "channel" in changes:
+        rollback["channel"] = item.channel
+    return rollback
 
 
 @tool(

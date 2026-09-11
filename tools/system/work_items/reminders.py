@@ -11,7 +11,7 @@ from core.domain.work_items import (
     parse_work_item_datetime,
     work_items_path,
 )
-from infrastructure.scheduling.scheduler.storage import replace_matching_tasks
+from infrastructure.scheduling.scheduler.storage import list_tasks, replace_matching_tasks
 from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask, TaskKind
 from tools.system.work_items.validation import validate_provider
 
@@ -26,6 +26,20 @@ def disable_existing_item_reminders(item_id: str) -> int:
         ),
     )
     return disabled
+
+
+def existing_item_reminder_timezone(item_id: str) -> str:
+    """Return the timezone of the latest enabled reminder for ``item_id``."""
+    return next(
+        (
+            task.timezone
+            for task in reversed(list_tasks())
+            if task.enabled
+            and task.kind is TaskKind.WORK_ITEM_REMINDER
+            and task.params.get("work_item_id", "").strip() == item_id
+        ),
+        "",
+    )
 
 
 def schedule_item_reminder(
@@ -78,5 +92,6 @@ __all__ = [
     "_disable_existing_item_reminders",
     "_schedule_item_reminder",
     "disable_existing_item_reminders",
+    "existing_item_reminder_timezone",
     "schedule_item_reminder",
 ]

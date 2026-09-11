@@ -193,9 +193,10 @@ def test_work_task_update_replaces_reminder_destination(
 ) -> None:
     created = work_task_add(
         title="Rotate API key",
-        remind_at="2026-09-12T09:00:00Z",
+        remind_at="2026-09-12T09:00:00",
         channel_provider="slack",
         channel_id="C1",
+        timezone="America/New_York",
     )
 
     updated = work_task_update(
@@ -209,6 +210,7 @@ def test_work_task_update_replaces_reminder_destination(
     assert updated["task"]["channel_targets"] == [{"provider": "slack", "chat_id": "C2"}]
     assert len(tasks) == 2
     assert len(active) == 1
+    assert active[0].timezone == "America/New_York"
     assert json.loads(active[0].params["delivery_targets"]) == [
         {"provider": "slack", "chat_id": "C2"}
     ]
@@ -257,6 +259,41 @@ def test_work_task_update_clears_and_disables_reminder(
     assert "scheduled_task_id" not in updated
     assert len(tasks) == 1
     assert tasks[0].enabled is False
+
+
+def test_work_task_update_rolls_back_when_reminder_sync_fails(
+    work_reminder_store: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = work_task_add(
+        title="Rotate API key",
+        remind_at="2026-09-12T09:00:00Z",
+        channel_provider="slack",
+        channel_id="C1",
+    )
+
+    def _explode(_store_path: Path, _data: list[dict[str, object]]) -> None:
+        raise OSError("replacement write failed")
+
+    monkeypatch.setattr(
+        "infrastructure.scheduling.scheduler.storage.task_store._save_raw", _explode
+    )
+
+    with pytest.raises(OSError, match="replacement write failed"):
+        work_task_update(
+            selector=created["task"]["id"],
+            channel_provider="slack",
+            channel_id="C2",
+        )
+
+    stored_item = work_task_list(status="all")["tasks"][0]
+    tasks = list_tasks(work_reminder_store)
+    assert stored_item["channel_targets"] == [{"provider": "slack", "chat_id": "C1"}]
+    assert len(tasks) == 1
+    assert tasks[0].enabled is True
+    assert json.loads(tasks[0].params["delivery_targets"]) == [
+        {"provider": "slack", "chat_id": "C1"}
+    ]
 
 
 def test_work_task_tools_lifecycle(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
