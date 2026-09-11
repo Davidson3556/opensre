@@ -16,6 +16,73 @@ The skill has a narrow, concrete purpose.
 SKILL.md describes when the skill should activate.
 Tool, shell, network, file, environment, and MCP capabilities are declared when used.
 
+## One action per step
+
+Each workflow step does exactly one thing and has one observable completion
+condition. Split distinct actions into separate numbered steps.
+
+Execute steps and their tool calls sequentially. Finish the current action,
+including delivering any user-facing output, before starting the next.
+Do not batch or parallelize actions, or couple separate steps with wording
+such as "alongside", "at the same time", or "in the same response".
+
+Report delivery and asking what to do next are separate actions: first
+respond with the report as Markdown text; only after it has been shown may
+the next step open a menu. Saying "the report is ready" or updating the plan
+does not deliver the report.
+
+## Default recommended plan
+
+Every workflow `SKILL.md` carries a `## Plan` section directly after its
+purpose statement and before `## Workflow`. It is the default plan the agent
+loads into the live plan via `update_plan` as soon as it reads the skill, so
+the user sees the whole flow up front and progress is tracked per step.
+
+The section has two parts:
+
+1. A short paragraph telling the agent to call `update_plan` to create or
+   revise the named live plan from the steps below, keep reporting and
+   follow-up as separate plan items, mark already-satisfied steps
+   `completed`, and update statuses as each step's completion condition is
+   met.
+2. A checklist with one `- [ ] Step N. …` line per numbered `## Workflow`
+   heading, in the same order and with the same count. Each line names the
+   step's outcome and the tool it uses (`scan_local_git_workspace`,
+   `ask_user_choice`, …) in one sentence.
+
+Example shape for a workflow with eight separate steps:
+
+```markdown
+## Plan
+
+After reading this skill, use `update_plan` to create or revise the live
+CI/CD Reliability Progress plan using the eight numbered workflow headings
+below as its steps. Keep reporting and follow-up as separate plan items.
+Mark already-satisfied steps `completed` and update statuses when each
+step's completion condition is met.
+
+- [ ] Step 1. Scan local repositories with scan_local_git_workspace.
+- [ ] Step 2. Select a repository using ask_user_choice.
+- [ ] Step 3. Read the metric and benchmark references with skill_view.
+- [ ] Step 4. Collect complete 30-day workflow, rerun, and merged-PR history.
+- [ ] Step 5. Calculate the required metrics from the collected history.
+- [ ] Step 6. Validate the calculations against the coverage and consistency requirements.
+- [ ] Step 7. Respond with the report as a Markdown table and its coverage notes.
+- [ ] Step 8. After the report is shown, use ask_user_choice to offer the next step.
+```
+
+Rules:
+
+- The plan and the `## Workflow` headings are one list in two places. Adding,
+  removing, or reordering a workflow step changes the plan in the same edit;
+  a skill whose plan and headings disagree is incomplete.
+- Each workflow step states its completion condition ("Complete when …") so
+  the agent can move the matching plan item to `completed` without guessing.
+- Steps the flow may legitimately skip (for example a repository already
+  named in the request) say so in the step body and tell the agent to mark
+  the skipped plan items satisfied rather than delete them.
+- Tool-usage cards describe one call, not a flow, and do not carry a plan.
+
 ## Colocated workflow tests
 
 Major skills that orchestrate a multi-step workflow must keep an end-to-end
@@ -24,6 +91,14 @@ shipped skill, checking tool-call order, arguments, and user-choice pauses.
 Script model responses and external tool I/O for offline CI; keep skill loading
 and host hooks real. Include the skill directory in default pytest discovery
 and a CI shard, and run its test when changing the workflow.
+
+These files sit inside `core/`, so the layer contracts apply to them: never
+import `tools`, `integrations`, `surfaces`, or `bootstrap`. Resolve real action
+tools (`ask_user_choice`, `skill_view`) through
+`core.agent_harness.tools.action_tools.get_action_tool`; the registry behind it
+is installed around every test by `tests/harness_providers_plugin.py`
+(loaded from `pytest.ini`), not by `tests/conftest.py`, which does not reach
+this tree.
 
 
 ## Skill metadata ownership and change date
@@ -194,4 +269,4 @@ The onboarding tree's pre-convention slugs (`onboarding-cicd-fix`,
 5. Finalize and save the document
 
 
-## 
+##

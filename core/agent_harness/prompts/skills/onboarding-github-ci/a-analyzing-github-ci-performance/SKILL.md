@@ -1,167 +1,154 @@
 ---
 name: analyzing-github-ci-performance
 description: >-
-  CI/CD performance and reliability analytics for one repository over the
-  last 30 days: executions, PR failure rate, CI-caused vs source failures,
-  developer time blocked, default-branch red time, via
-  analyze_github_ci_reliability; also the first-experience demo that scans the
-  machine and picks a repository first. Use for "analyze <repo> CI/CD
-  performance", "how reliable is our CI", "what does flaky CI cost us". Not for
-  listing currently failing checks (reporting-github-ci-failures). Multi-step; load before
-  acting.
+  Computes a CI/CD metrics table from raw GitHub Actions records for one
+  repository over the last 30 days, including failure rates and developer
+  waiting time. Use for historical
+  CI performance questions or the first-experience repository demo.
+  For currently failing checks, use reporting-github-ci-failures.
 getting_started: Explore a repo and analyze its CI/CD performance (recommended)
 demo_order: 1
 metadata:
   owner: Vincent
-  last_changed_by: Jan
+  last_changed_by: Vincent
   last_changed_at: 2026-09-11
   usecases:
     - First-experience demo: scan the machine, pick a repository, analyze its CI/CD
     - CI/CD reliability KPIs for one repository over the last 30 days
     - Developer time blocked by unreliable CI, estimated bottom-up per merged PR
-    - Scheduling the weekday CI reliability report to this shell
+    - Handing off to the weekday report loop (scheduling-github-ci-fixes) or Slack setup after the report
   requires:
     - GitHub token usable by OpenSRE with read access to the repository's Actions history
-    - A local git checkout for the workspace scan (optional; a named repository also works)
+    - A local git checkout for the workspace scan (the example repository works without one)
   type: analytics
-  version: "1.4"
-tools:
-  - scan_local_git_workspace
-  - analyze_github_ci_reliability
-  - schedule_ci_reliability_loop
-  - cli_exec
-  - slash_invoke
-  - ask_user_choice
-references:
-  - common/numbers_from_tools.md
-  - common/ask_once.md
-after_tool:
-  - after: scan_local_git_workspace
-    tool: ask_user_choice
-    args:
-      title: Which repository should I analyze?
-    options_from: local_git_scan_repos
-    options_extra:
-      - Use the open-source example repository (Tracer-Cloud/opensre)
-  - after: analyze_github_ci_reliability
-    tool: ask_user_choice
-    args:
-      title: What would you like to do next?
-      options:
-        - Set up an agent that improves CI/CD reliability over time
-        - Connect OpenSRE to Slack and hand off DevOps chores for your team
-        - Exit demo
+  version: "1.14"
+
 ---
 
-# CI/CD analytics demo
+# CI/CD analytics
 
-Analyze one repository's CI/CD reliability, then offer a recurring check or
-Slack setup.
-
-## Workflow rules
-
-- Never run `gh`, `git`, or `shell_run` for this flow; the scan and
-  analysis tools own discovery and analysis end to end. Use `cli_exec` only
-  to verify Slack in step 4; queue setup with `slash_invoke`
-  (`/integrations setup slack`), never `cli_exec`.
-- The tools paint the workspace chart and the finished report in the shell
-  themselves; never restate their figures, repeat the repository list, or add
-  a recap of your own.
-- If a tool reports a missing GitHub token, say the one command the user runs
-  (`opensre integrations setup github`) and offer to continue afterwards. Do
-  not fall back to a different data source.
-- If the analysis result is not successful for any other reason, say why in
-  one line and stop; the next-step menu only opens after a report.
-- The host opens the repository menu after `scan_local_git_workspace` and the
-  next-step menu after `analyze_github_ci_reliability`. Do not call
-  `ask_user_choice` for those two questions. End the turn when a menu is
-  queued; the answer arrives as the next user message.
-- Which question was answered decides the next step. An answer to `Which
-  repository should I analyze?` (or a repository named in the request) is the
-  repository: go straight to step 3. An answer to `What would you like to do
-  next?` picks a branch under step 4: the analysis is already done, do not run
-  it again, go straight to that branch and call only its tool.
-
-## References
-
-- **Metric definitions**: [references/metrics.md](references/metrics.md).
-  Load it only when the user asks what a figure means or which metric to
-  fix first, with `skill_view(name="analyzing-github-ci-performance", reference="metrics")`;
-  answer from it and the tool's numbers. Do not load it during steps 1-4.
-- **Benchmark table**: [references/benchmarks.md](references/benchmarks.md).
-  Load it only when the user asks what a compared figure means. The analyze
-  call already paints the comparison; do not load this to re-run peers.
+Produce a CI/CD reliability report for one repository from raw GitHub
+Actions records, including an estimate of CI waiting time on merged pull
+requests. Use a 30-day window unless the request specifies another period.
 
 ## Plan
 
-Track progress with the `update_plan` tool, not with headers or prose:
+After reading this skill, use `update_plan` to create or revise the live
+CI/CD Reliability Progress plan using the five numbered workflow headings below as its steps. 
 
-- On entry, before the first workflow tool call, call `update_plan` with the
-  steps below verbatim, the first step `in_progress`, and a one-line
-  `explanation` (this is not a diagnosis; no hypothesis table):
-  `Scan this machine` / `Pick the repository` / `Analyze CI/CD reliability` /
-  `Offer what to do next`.
-- When the request or an Ask User answer already names the repository, the plan is only
-  `Analyze CI/CD reliability` / `Offer what to do next` — omit the skipped
-  steps instead of renumbering.
-- After a step's tool results, call `update_plan` marking it `completed` and
-  the next step `in_progress`, in the same response as the next step's tool
-  calls. When the host queues a menu after a step's tool result, mark the
-  step in that same response and end the turn.
-- Do not narrate the plan or repeat step names in prose; the shell renders
-  the checklist.
+- [ ] Step 1. Scan local repositories with scan_local_git_workspace.
+- [ ] Step 2. Select a repository using ask_user_choice.
+- [ ] Step 3. Collect and compute the 30-day metrics with analyze_github_ci_reliability.
+- [ ] Step 4. Display a metrics table as Markdown text
+- [ ] Step 5. Use ask_user_choice to offer scheduling, Slack setup, or finish.
 
 ## Workflow
 
 ### 1. Scan this machine
 
-Call `scan_local_git_workspace()` with no arguments. Say in one sentence
-what was found, using `summary` from the result.
+Call `scan_local_git_workspace()` with no arguments.
+
+Complete when `scan_local_git_workspace` has returned in this turn, even
+with an empty result; the example repository remains available in step 2.
 
 ### 2. Pick the repository
 
-The host opens `Which repository should I analyze?` after the scan: up to
-three local repositories with GitHub Actions as
-`<owner/repo> (<commits> commits, CI configured)`, then
-`Use the open-source example repository (Tracer-Cloud/opensre)`. Wait for
-the answer.
+Call `ask_user_choice` with the title `Which repository should I analyze?`.
+Offer up to 5 scanned repositories that have GitHub Actions workflows
+as `<owner/repo>`, then `Tracer-Cloud/opensre` as an example option.
+Offer the picker even when only one repository was found; a single scan
+result is not a selection.
 
-### 3. Analyze CI/CD reliability
+End the turn after calling `ask_user_choice`; the answer arrives as the
+next user message.
 
-Call
-`analyze_github_ci_reliability(owner="<owner>", repo="<repo>", compact=true)`
-for the chosen repository. A saved report from today is reused; otherwise
-this reads GitHub (a token is required). The tool paints the report — the
-cost sentence first, then key results and the comparison against shipped
-Airflow and FastAPI figures. Do not restate figures, do not output
-`headline`, and do not call the tool again for benchmarks.
+Complete when the user's answer to `ask_user_choice` has arrived as a
+message. Resume at step 3 with that repository.
 
-### 4. Offer what to do next
+### 3. Collect and compute the metrics
 
-The host opens `What would you like to do next?` after the analysis with
-these options:
+Call `analyze_github_ci_reliability(owner="<owner>", repo="<repo>", days=30)`.
+It reads the whole window of Actions history (default-branch runs, PR runs,
+rerun attempts, merged PRs), computes every metric in the report, and returns
+figures only: `headline`, `key_results`, `comparison_figures` (the repository's
+column of the comparison table), `benchmarks` (the peer columns),
+`coverage_notices`, and the raw counts. It renders nothing; the report below
+is yours to write. Do not paginate the REST API or run `execute_python_code`
+yourself.
 
-- `Set up an agent that improves CI/CD reliability over time`
-- `Connect OpenSRE to Slack and hand off DevOps chores for your team`
-- `Exit demo`
+If the tool reports a missing token, tell the user to run
+`opensre integrations setup github` and carry that blocker into step 4 as a
+coverage gap.
 
-Wait for the answer, then follow the selected option. The report already
-named the cost; do not repeat it. The first option schedules a weekday
-7-day version of this report to the shell inbox, not a CI code fix.
+Metric definitions live in [Metrics](references/metrics.md)
+(`skill_view(name="analyzing-github-ci-performance", reference="metrics")`); read it only
+when the user asks how a figure is defined.
 
-**Recurring check:** Call
-`schedule_ci_reliability_loop(owner="<owner>", repo="<repo>")` for the
-analyzed repository, output its `response_text` verbatim, and stop. The
-report was already shown in step 3, so do not pass `include_report`.
-Each later tick is the same analytics report, not a CI code fix. `/loops service
-install` keeps it running when no shell is open. Do not call
-`fix_github_pr_ci` from this skill.
+Complete when `analyze_github_ci_reliability` has returned in this turn,
+either with `key_results` or with a named blocker.
 
-**Slack setup:** Call `cli_exec` with payload `integrations verify slack`.
-If Slack is not configured, call `slash_invoke` with
-`/integrations setup slack` and stop; that wizard needs a full terminal.
-If Slack is already connected, say so. Then explain in two sentences how to
-hand off a chore from Slack: mention OpenSRE in a channel or DM it.
-Never post, reply, or send anything to Slack in this demo.
+### 4. Display a metrics table as Markdown text
 
-**Exit demo:** Reply with one line and stop.
+Read [Benchmarks](references/benchmarks.md) via
+`skill_view(name="analyzing-github-ci-performance", reference="benchmarks")` now for
+the comparison values and their interpretation limits. Check each table
+cell against a calculation result or this reference.
+
+If a cell has no source in the step 3 result or this reference, return to
+step 3: reread `coverage_notices` for the named gap, and if the analysis did
+not return success, run it again once. A cell still without a source is
+`n/a` with the gap stated under the table; never estimate it.
+
+Prepare the report below for delivery.
+
+#### Report format
+After calculating the metrics, respond directly with the report as a Markdown table. Writing that response delivers the report.
+
+Identify the repository, default branch, UTC window, and coverage. Render
+this table as text, replacing every placeholder with a calculated value or a
+benchmark from the reference:
+
+```
+Developer impact: 
+- xx developer-hours spent waiting on CI across xx developers.
+- Most affected developer: up to xx h/week waiting on CI.
+- xx% of PR runs failed, creating substantial retry and investigation overhead.
+
+Compared with langchain-ai/langchain and anomalyco/opencode:
+
+| Metric | <owner/repo> | langchain-ai/langchain | anomalyco/opencode |
+|---|---:|---:|---:|
+| Red time on main | <hours and % of window> | <benchmark> | <benchmark> |
+| Mean time to green | <hours> | <benchmark> | <benchmark> |
+| CI-caused failure rate | <% of PR workflow runs> | <benchmark> | <benchmark> |
+| Slowest normal run | <minutes and workflow> | <benchmark> | <benchmark> |
+| PR failure rate | <% of PR workflow runs> | <benchmark> | <benchmark> |
+
+What insights stand out: 
+- CI-caused failures account for x.x% of all PR runs, roughly x.x-x.x× higher than the comparison repositories.
+```
+
+Complete when `skill_view` has returned the benchmarks reference in this
+turn and the assistant reply contains the table.
+
+### 5. Offer the next step
+
+Call `ask_user_choice` with the title
+`What would you like to do next?` and these options:
+
+- Schedule local loops
+- Slack setup
+- Finish
+
+Complete when the `ask_user_choice` call for this menu has returned in
+this turn. The user's answer arrives in the next turn. Each branch except
+`Finish` is owned by a sibling skill: load it with `skill_view` and follow
+its plan; do not reimplement its steps here.
+
+- **Schedule local loops:** call `skill_view(name="scheduling-github-ci-fixes")`
+  and follow that skill. The repository is already chosen and analyzed in
+  this session, so its plan omits the scan and repository-pick steps and
+  its analyze step reuses today's saved report.
+- **Slack setup:** call `skill_view(name="connecting-slack")` and follow that
+  skill.
+- **Finish:** acknowledge in one line and conclude.

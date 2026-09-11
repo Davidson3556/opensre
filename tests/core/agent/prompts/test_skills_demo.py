@@ -63,28 +63,40 @@ def test_master_menu_matches_four_unique_children_and_preserves_specialists() ->
         assert skill.path.parent.parent.name == ONBOARDING_SKILL_NAME
         assert loader.load_skill_body(skill.name)
     analytics = next(s for s in children if s.name == "analyzing-github-ci-performance")
-    assert [hook.after for hook in analytics.after_tool] == [
-        "scan_local_git_workspace",
-        "analyze_github_ci_reliability",
-    ]
-    next_options = analytics.after_tool[1].call.args["options"]
-    assert tuple(next_options) == (
-        "Set up an agent that improves CI/CD reliability over time",
-        "Connect OpenSRE to Slack and hand off DevOps chores for your team",
-        "Exit demo",
-    )
+    # The analytics card runs its menus from the plan the model follows, not
+    # from host hooks, and keeps the full tool catalog.
+    assert analytics.after_tool == ()
+    assert analytics.pre_execute == ()
+    assert analytics.tools == ()
     body = loader.load_skill_body("analyzing-github-ci-performance")
-    # The comparison is the tool's job, not a flag the model can forget.
+    assert "`Which repository should I analyze?`" in body
+    assert "`What would you like to do next?`" in body
+    for option in ("- Schedule local loops", "- Slack setup", "- Finish"):
+        assert option in body
+    # Each next-step branch hands off to its sibling skill instead of inlining it.
+    assert 'skill_view(name="scheduling-github-ci-fixes")' in body
+    assert 'skill_view(name="connecting-slack")' in body
+    # The comparison is the tool's job, not a flag the model can forget; the
+    # report shape is the skill's, so no flag on the tool picks one either.
     assert "include_benchmarks" not in body
-    assert "compact=true" in body
+    assert "compact=" not in body
     assert "Compare these numbers" not in body
     assert "Output its `headline`" not in body
     assert "same-day snapshot" not in body
-    reliability = loader.load_skill_body("scheduling-github-ci-fixes")
-    assert "analyze_github_ci_reliability" in reliability
-    assert "compact=true" in reliability
-    assert "include_report=true" not in reliability
-    assert "same-day snapshot" not in reliability
+    fix_loop = loader.load_skill_body("scheduling-github-ci-fixes")
+    # The fix loop repairs red pull requests; it is not the analytics report
+    # loop, so it never reaches for the analytics or report-scheduling tools.
+    assert "fix_github_pr_ci" in fix_loop
+    assert "summarize_github_pr_status" in fix_loop
+    assert "analyze_github_ci_reliability" not in fix_loop
+    assert "schedule_ci_reliability_loop" not in fix_loop
+    # Its menus are the model's own ask_user_choice calls, with fixed titles.
+    for title in (
+        "`Which repository should the agent watch?`",
+        "`Should I create a broken pull request to demonstrate the fix?`",
+        "`Delete the demo repository now?`",
+    ):
+        assert title in fix_loop
     assert menu["allow_custom"] is False
     assert GETTING_STARTED_CUSTOM not in master
     assert "not implemented yet" in loader.load_skill_body("delegating-github-ci-fixes")
@@ -224,16 +236,20 @@ def test_references_append_sibling_markdown_and_ignore_paths_outside_the_tree(
 
 def test_onboarding_children_load_shared_rules_once() -> None:
     loader.clear_skills_caches()
-    analytics = loader.load_skill_body("analyzing-github-ci-performance")
+    by_name = {s.name: s for s in loader.list_action_skills()}
     reliability = loader.load_skill_body("scheduling-github-ci-fixes")
-    analytics_card = next(
-        s for s in loader.list_action_skills() if s.name == "analyzing-github-ci-performance"
-    ).path.read_text(encoding="utf-8")
-    assert "Every number in the reply comes from a tool result" in analytics
-    assert "Ask each question once." in analytics
-    assert "Ask each question once." in reliability
-    assert analytics.count("Every number in the reply comes from a tool result") == 1
-    assert "Every number in the reply comes from a tool result" not in analytics_card
+    analytics = loader.load_skill_body("analyzing-github-ci-performance")
+    analytics_card = by_name["analyzing-github-ci-performance"].path.read_text(encoding="utf-8")
+    # Shared rules resolve from the skills-tree ``common/`` folder and are
+    # appended exactly once, never copied into the card body.
+    assert by_name["scheduling-github-ci-fixes"].references == ("common/ask_once.md",)
+    assert reliability.count("Ask each question once.") == 1
+    assert "Ask each question once." not in by_name["scheduling-github-ci-fixes"].path.read_text(
+        encoding="utf-8"
+    )
+    # The analytics card lists no shared rules; its plan carries its own wording.
+    assert by_name["analyzing-github-ci-performance"].references == ()
+    assert "SHARED RULES from" not in analytics
     assert "## Progress updates" not in analytics_card
 
 

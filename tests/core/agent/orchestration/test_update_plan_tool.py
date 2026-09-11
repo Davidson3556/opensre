@@ -7,11 +7,13 @@ from typing import Any
 
 from rich.console import Console
 
+from core.agent_harness.task_plan.evidence import record_plan_evidence
 from core.agent_harness.task_plan.plan import (
     PlanStepStatus,
     parse_task_plan,
     task_plan_from_payload,
 )
+from core.agent_harness.task_plan.work_log import take_completed_plan_breakdown
 from core.agent_harness.tools.tool_context import ActionToolScope
 from surfaces.interactive_shell.session import Session
 from tools.interactive_shell.actions.update_plan import (
@@ -26,6 +28,12 @@ def _ctx(session: Session | None = None) -> ActionToolScope:
         session=session if session is not None else Session(),
         console=console,
     )
+
+
+def _worked(session: Session) -> Session:
+    """A tool returned this turn, so a plan may carry completed steps."""
+    record_plan_evidence(session, "shell_run")
+    return session
 
 
 _PLAN: list[dict[str, Any]] = [
@@ -46,7 +54,7 @@ def test_update_plan_tool_is_action_surface_read_only() -> None:
 
 
 def test_update_plan_stores_the_checklist_on_the_session() -> None:
-    session = Session()
+    session = _worked(Session())
     result = execute_update_plan_tool({"plan": _PLAN}, _ctx(session=session))
 
     assert result["ok"] is True
@@ -55,7 +63,46 @@ def test_update_plan_stores_the_checklist_on_the_session() -> None:
     assert session.task_plan is not None
     assert session.task_plan.current_index == 2
     assert "Plan · 2/3" in result["summary"]
-    assert "(verify)" in result["summary"]
+
+
+def test_update_plan_preserves_report_and_followup_after_verification() -> None:
+    session = _worked(Session())
+    labels = [
+        "Scan local repositories",
+        "Select a repository",
+        "Collect history and references",
+        "Calculate metrics and verify coverage",
+        "Display the report",
+        "Offer the next step",
+    ]
+    items = [
+        {"step": label, "status": "completed" if index < 4 else "pending"}
+        for index, label in enumerate(labels)
+    ]
+    items[4]["status"] = "in_progress"
+    result = execute_update_plan_tool({"plan": items}, _ctx(session=session))
+
+    assert result["ok"] is True
+    assert result["plan"] == items
+    assert result["summary"].splitlines()[-2:] == [
+        "  ● Display the report",
+        "  ○ Offer the next step",
+    ]
+    assert session.task_plan is not None
+    assert [step.step for step in session.task_plan.steps] == labels
+
+    # More work lands, the menu step becomes active, then the whole checklist
+    # closes: the active last step may close without a tool of its own.
+    items[4]["status"] = "completed"
+    items[5]["status"] = "in_progress"
+    result = execute_update_plan_tool({"plan": items}, _ctx(session=_worked(session)))
+    assert result["ok"] is True
+    completed = [{"step": label, "status": "completed"} for label in labels]
+    result = execute_update_plan_tool({"plan": completed}, _ctx(session=session))
+    assert result["ok"] is True
+    breakdown = take_completed_plan_breakdown(session)
+    assert breakdown.startswith("Plan complete · 6/6")
+    assert breakdown.splitlines()[-1] == "  ✓ Offer the next step"
 
 
 def test_update_plan_rejects_two_in_progress_steps() -> None:
@@ -92,7 +139,9 @@ def test_update_plan_stores_explanation_and_revises_in_place() -> None:
     assert session.task_plan.total == 2
     assert session.task_plan.explanation == "first diagnosis"
 
-    # Act: a second call revises to three advanced steps and a new diagnosis.
+    # Act: after more work, a second call revises to three advanced steps and a
+    # new diagnosis.
+    _worked(session)
     revised = [
         {"step": "Capture 502 samples from checkout", "status": "completed"},
         {"step": "Trace 502s to the last deploy", "status": "completed"},
@@ -122,8 +171,9 @@ def test_update_plan_tool_name_is_the_action_enum() -> None:
 
 
 def test_update_plan_marks_a_fully_completed_plan_as_terminal() -> None:
-    # Arrange / Act: every step completed (the verification step last).
-    session = Session()
+    # Arrange / Act: every step completed (the verification step last), written
+    # after the work ran this turn.
+    session = _worked(Session())
     done: list[dict[str, Any]] = [
         {"step": "Capture 502 samples from checkout", "status": "completed"},
         {"step": "Trace 502s to the last deploy", "status": "completed"},
@@ -142,11 +192,28 @@ def test_update_plan_marks_a_fully_completed_plan_as_terminal() -> None:
     assert "Execution is authorized" not in result["instruction"]
 
 
+def test_update_plan_does_not_accept_a_plan_born_complete_before_any_work() -> None:
+    # Arrange / Act: the same fully completed plan, but no tool has run this turn.
+    session = Session()
+    done: list[dict[str, Any]] = [
+        {"step": "Capture 502 samples from checkout", "status": "completed"},
+        {"step": "Trace 502s to the last deploy", "status": "completed"},
+        {"step": "Confirm checkout returns 2xx", "status": "completed"},
+    ]
+    result = execute_update_plan_tool({"plan": done}, _ctx(session=session))
+
+    # Assert: the write lands, but every unearned tick is reopened.
+    assert result["ok"] is True
+    assert session.task_plan is not None
+    assert session.task_plan.all_completed is False
+    assert all(step.status is not PlanStepStatus.COMPLETED for step in session.task_plan.steps)
+
+
 def test_update_plan_normal_create_carries_only_the_base_instruction() -> None:
     # A plain create (no plan_only, no Ask User answers on the turn) must not
     # emit the plan-only or execution-authorized suffixes; incomplete plans get
     # a continue nudge so the model does not idle with pending steps.
-    session = Session()
+    session = _worked(Session())
     result = execute_update_plan_tool({"plan": _PLAN}, _ctx(session=session))
 
     assert result["ok"] is True
@@ -158,7 +225,7 @@ def test_update_plan_normal_create_carries_only_the_base_instruction() -> None:
 
 def test_update_plan_promotes_next_pending_when_model_leaves_a_gap() -> None:
     """Completed + pending with no in_progress must not idle as Plan · 2/3 ○ ○."""
-    session = Session()
+    session = _worked(Session())
     gapped: list[dict[str, Any]] = [
         {"step": "Confirm checkout latency telemetry source", "status": "completed"},
         {"step": "Query recent checkout latency", "status": "pending"},
@@ -179,7 +246,7 @@ def test_update_plan_promotes_next_pending_when_model_leaves_a_gap() -> None:
 def test_update_plan_result_payload_is_a_reparseable_durable_record() -> None:
     # The tool result doubles as the durable CURRENT PLAN record: it must parse
     # back into an equivalent plan when older messages drop from context.
-    session = Session()
+    session = _worked(Session())
     result = execute_update_plan_tool({"plan": _PLAN}, _ctx(session=session))
 
     restored = task_plan_from_payload(result)

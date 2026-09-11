@@ -1,4 +1,4 @@
-"""Offline workflow E2E: real turns and skill hooks, scripted model and tool I/O."""
+"""Offline workflow E2E: real turns and menu queueing, scripted model and tool I/O."""
 
 from __future__ import annotations
 
@@ -9,9 +9,14 @@ from typing import Any
 import pytest
 
 from config.constants import OPENSRE_MEMORY_AUTOEXTRACT_DISABLED_ENV, OPENSRE_MEMORY_DIR_ENV
+from config.constants.skills import (
+    ANALYZING_GITHUB_CI_PERFORMANCE_SKILL_NAME,
+    SCHEDULING_GITHUB_CI_FIXES_SKILL_NAME,
+)
 from core.agent_harness.ports import TurnBinding
 from core.agent_harness.prompts.skills.loader import list_action_skills, load_skill_body
 from core.agent_harness.session.pending_choice import PendingUserChoice, format_ask_user_answers
+from core.agent_harness.tools.action_tools import get_action_tool
 from core.agent_harness.tools.tool_provider import DefaultToolProvider
 from core.agent_harness.turns.headless_adapters import (
     BufferOutputSink,
@@ -26,6 +31,10 @@ from tests.core.agent.orchestration.action_execution_test_harness import (
     no_tool_response,
     tool_response,
 )
+
+_REPOSITORY_QUESTION = "Which repository should I analyze?"
+_NEXT_QUESTION = "What would you like to do next?"
+_SCHEDULE_LOOPS = "Schedule local loops"
 
 
 @dataclass
@@ -43,7 +52,28 @@ class _Session(InMemorySessionState):
     active_skill_tools: tuple[str, ...] = ()
     pending_user_choice: PendingUserChoice | None = None
     skill_hooks_fired: set[str] = field(default_factory=set)
+    skills_already_prompted: set[str] = field(default_factory=set)
+    questions_already_answered: set[str] = field(default_factory=set)
     terminal: _Terminal = field(default_factory=_Terminal)
+
+
+class _Ports:
+    """Minimal slash-ports fake: ``ask_user_choice`` only consults ``tty_interactive``."""
+
+    def tty_interactive(self) -> bool:
+        return True
+
+
+def _real_action_tool(name: str) -> RegisteredTool:
+    """The registered action tool, resolved through the harness provider port.
+
+    ``core/agent_harness`` must not import ``tools.*`` (layer contracts), so the
+    menu and skill-handoff tools come from the provider that
+    ``tests/harness_providers_plugin.py`` installs around every test.
+    """
+    tool = get_action_tool(name)
+    assert tool is not None, f"action tool {name!r} is not registered"
+    return tool
 
 
 def _batch(*responses: AgentLLMResponse) -> AgentLLMResponse:
@@ -67,7 +97,7 @@ def _answer(session: _Session, *, title: str, option: str) -> str:
     return format_ask_user_answers(pending.items(), (option,))
 
 
-def test_local_analysis_waits_for_choices_before_analyzing_and_scheduling(
+def test_local_analysis_waits_for_choices_before_analyzing_and_handing_off(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv(OPENSRE_MEMORY_AUTOEXTRACT_DISABLED_ENV, "1")
@@ -77,6 +107,7 @@ def test_local_analysis_waits_for_choices_before_analyzing_and_scheduling(
         for skill in list_action_skills()
         if skill.path == Path(__file__).with_name("SKILL.md")
     )
+    assert skill.name == ANALYZING_GITHUB_CI_PERFORMANCE_SKILL_NAME
     session = _Session(
         active_skill=skill.name,
         active_skill_tools=skill.tools,
@@ -107,13 +138,30 @@ def test_local_analysis_waits_for_choices_before_analyzing_and_scheduling(
             "repos": [{"github": "acme/widget", "has_workflows": True, "commits": 7}],
         },
     )
-    analyze = tool("analyze_github_ci_reliability", {"success": True, "summary": "Report ready."})
+    analyze = tool(
+        "analyze_github_ci_reliability",
+        {"success": True, "headline": "Report ready.", "key_results": []},
+    )
+    # The scheduling of the analytics report was retired from this demo: the
+    # next-step menu hands off to the sibling skill instead. Keeping the tool
+    # available proves the model is never scripted into calling it.
     schedule = tool(
         "schedule_ci_reliability_loop",
         {"success": True, "response_text": "Scheduled the weekday CI reliability report."},
     )
-    analyze_call = tool_response(analyze.name, {"owner": "acme", "repo": "widget", "compact": True})
-    schedule_call = tool_response(schedule.name, {"owner": "acme", "repo": "widget"})
+    ask_user_choice = _real_action_tool("ask_user_choice")
+    skill_view = _real_action_tool("skill_view")
+    analyze_args = {"owner": "acme", "repo": "widget", "days": 30}
+    analyze_call = tool_response(analyze.name, analyze_args)
+    repository_menu = tool_response(
+        ask_user_choice.name,
+        {"title": _REPOSITORY_QUESTION, "options": ["acme/widget", "Tracer-Cloud/opensre"]},
+    )
+    next_menu = tool_response(
+        ask_user_choice.name,
+        {"title": _NEXT_QUESTION, "options": [_SCHEDULE_LOOPS, "Slack setup", "Finish"]},
+    )
+    handoff_call = tool_response(skill_view.name, {"name": SCHEDULING_GITHUB_CI_FIXES_SKILL_NAME})
 
     class SkillLLM(FakeActionLLM):
         def invoke(
@@ -132,16 +180,19 @@ def test_local_analysis_waits_for_choices_before_analyzing_and_scheduling(
     llm = SkillLLM(
         [
             # Deliberately attempt the next action in the same batch: each
-            # host-owned menu must stop it until its answer arrives.
-            _batch(tool_response(scan.name), analyze_call),
-            _batch(analyze_call, schedule_call),
-            schedule_call,
-            no_tool_response("Scheduled the weekday CI reliability report."),
+            # queued menu must stop it until its answer arrives.
+            _batch(tool_response(scan.name), repository_menu, analyze_call),
+            _batch(analyze_call, next_menu, handoff_call),
+            handoff_call,
+            no_tool_response("Following the scheduling skill."),
         ]
     )
     output = BufferOutputSink()
     provider = DefaultToolProvider(
-        session, output, precomputed_action_tools=[scan, analyze, schedule]
+        session,
+        output,
+        precomputed_action_tools=[scan, analyze, schedule, ask_user_choice, skill_view],
+        slash_ports_factory=_Ports,
     )
     agent = InMemoryHeadlessBuild(session=session, output=output).agent(
         tools=provider,
@@ -158,33 +209,22 @@ def test_local_analysis_waits_for_choices_before_analyzing_and_scheduling(
 
     assert calls == [(scan.name, {})]
     assert llm.invocations == 1
-    repository_answer = _answer(
-        session,
-        title="Which repository should I analyze?",
-        option="acme/widget (7 commits, CI configured)",
-    )
+    repository_answer = _answer(session, title=_REPOSITORY_QUESTION, option="acme/widget")
 
     agent.handle(repository_answer, binding)
 
-    assert calls == [
-        (scan.name, {}),
-        (analyze.name, {"owner": "acme", "repo": "widget", "compact": True}),
-    ]
+    assert calls == [(scan.name, {}), (analyze.name, analyze_args)]
     assert llm.invocations == 2
-    next_answer = _answer(
-        session,
-        title="What would you like to do next?",
-        option="Set up an agent that improves CI/CD reliability over time",
-    )
+    assert session.active_skill == skill.name
+    next_answer = _answer(session, title=_NEXT_QUESTION, option=_SCHEDULE_LOOPS)
 
     result = agent.handle(next_answer, binding)
 
-    assert calls == [
-        (scan.name, {}),
-        (analyze.name, {"owner": "acme", "repo": "widget", "compact": True}),
-        (schedule.name, {"owner": "acme", "repo": "widget"}),
-    ]
+    # The sibling skill is entered only after the user chose it, and the
+    # retired report-scheduling tool is never called.
+    assert calls == [(scan.name, {}), (analyze.name, analyze_args)]
+    assert session.active_skill == SCHEDULING_GITHUB_CI_FIXES_SKILL_NAME
     assert session.pending_user_choice is None
     assert llm.invocations == 4
     assert not llm.responses
-    assert "Scheduled the weekday CI reliability report." in result.primary_response_text
+    assert "Following the scheduling skill." in result.primary_response_text
