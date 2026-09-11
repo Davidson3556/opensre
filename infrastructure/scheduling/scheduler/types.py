@@ -6,7 +6,7 @@ import uuid
 from datetime import UTC, datetime
 from enum import StrEnum
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class TaskKind(StrEnum):
@@ -84,6 +84,16 @@ class ScheduledTask(BaseModel):
     created_at: str = Field(default_factory=lambda: datetime.now(UTC).isoformat())
     last_run: str | None = None
     next_run: str | None = None
+
+    @model_validator(mode="after")
+    def _require_work_item_id_for_reminders(self) -> ScheduledTask:
+        """Require the durable work-item reference used to build a reminder."""
+        if (
+            self.kind is TaskKind.WORK_ITEM_REMINDER
+            and not self.params.get("work_item_id", "").strip()
+        ):
+            raise ValueError("work_item_reminder requires a non-empty params.work_item_id")
+        return self
 
     def display_id(self) -> str:
         """Short display ID for CLI output."""

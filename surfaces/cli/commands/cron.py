@@ -34,6 +34,18 @@ _KIND_CHOICES = [k.value for k in _CRON_ADD_SUPPORTED_KINDS]
 _PROVIDER_CHOICES = [p.value for p in Provider]
 
 
+def _reject_generic_work_item_reminder(
+    _ctx: click.Context, _param: click.Parameter, kind: str
+) -> str:
+    """Keep reminders on the work-item creation path that supplies their ID."""
+    if kind == TaskKind.WORK_ITEM_REMINDER.value:
+        raise click.BadParameter(
+            "work_item_reminder tasks must be created with `opensre work add --remind-at`.",
+            param_hint="--kind",
+        )
+    return kind
+
+
 @click.group(name="cron")
 def cron_command() -> None:
     """Manage cron-driven scheduled deliveries to messaging providers."""
@@ -51,6 +63,7 @@ def cron_command() -> None:
     "--kind",
     type=click.Choice(_KIND_CHOICES, case_sensitive=False),
     required=True,
+    callback=_reject_generic_work_item_reminder,
     help="The kind of scheduled task.",
 )
 @click.option(

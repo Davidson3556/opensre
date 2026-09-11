@@ -29,6 +29,24 @@ def test_cron_add_kind_choices_exclude_sentry_kinds() -> None:
     }
 
 
+def test_cron_add_rejects_work_item_reminder_without_a_work_item() -> None:
+    result = CliRunner().invoke(
+        cron_command,
+        [
+            "add",
+            "--kind",
+            "work_item_reminder",
+            "--cron",
+            "0 9 * * *",
+            "--provider",
+            "interactive_shell",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "opensre work add --remind-at" in result.output
+
+
 def test_cron_list_surfaces_legacy_task_migration_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
