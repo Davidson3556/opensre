@@ -189,6 +189,40 @@ class TestStore:
         assert stored[0].id == previous.id
         assert stored[0].enabled is True
 
+    def test_replacement_factory_inherits_state_under_store_lock(self, store_path: Path) -> None:
+        previous = ScheduledTask(
+            kind=TaskKind.WORK_ITEM_REMINDER,
+            cron="0 9 12 9 *",
+            timezone="America/New_York",
+            provider=Provider.SLACK,
+            chat_id="C1",
+            params={"work_item_id": "work-1"},
+        )
+        add_task(previous, store_path)
+
+        def _replacement(matches: tuple[ScheduledTask, ...]) -> ScheduledTask:
+            assert [task.id for task in matches] == [previous.id]
+            return ScheduledTask(
+                kind=TaskKind.WORK_ITEM_REMINDER,
+                cron="0 9 13 9 *",
+                timezone=matches[-1].timezone,
+                provider=Provider.SLACK,
+                chat_id="C2",
+                params={"work_item_id": "work-1"},
+            )
+
+        replacement, disabled = replace_matching_tasks(
+            predicate=lambda task: task.params.get("work_item_id") == "work-1",
+            replacement_factory=_replacement,
+            store_path=store_path,
+        )
+
+        assert replacement is not None
+        assert replacement.timezone == "America/New_York"
+        assert disabled == 1
+        stored = list_tasks(store_path)
+        assert [task.enabled for task in stored] == [False, True]
+
     def test_multiple_tasks(self, store_path: Path) -> None:
         for i in range(3):
             task = ScheduledTask(

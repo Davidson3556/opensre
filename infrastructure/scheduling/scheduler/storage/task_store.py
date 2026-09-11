@@ -243,27 +243,31 @@ def add_task(task: ScheduledTask, store_path: Path | None = None) -> ScheduledTa
 
 
 def replace_matching_tasks(
-    replacement: ScheduledTask | None,
+    replacement: ScheduledTask | None = None,
     *,
     predicate: Callable[[ScheduledTask], bool],
+    replacement_factory: Callable[[tuple[ScheduledTask, ...]], ScheduledTask | None] | None = None,
     store_path: Path | None = None,
 ) -> tuple[ScheduledTask | None, int]:
-    """Atomically add ``replacement`` and disable enabled matching tasks.
+    """Atomically disable enabled matches and optionally append a replacement.
 
-    If persisting the combined state fails, the previous store remains intact,
-    so an existing schedule is never disabled without its replacement.
+    ``replacement_factory`` runs under the store lock with the enabled matches,
+    allowing replacement configuration to inherit their state without a stale
+    read. If the combined write fails, the previous store remains intact.
     """
+    if replacement is not None and replacement_factory is not None:
+        raise ValueError("provide replacement or replacement_factory, not both")
     path = store_path or default_task_store_path()
     lock = FileLock(_lock_path(path))
     with lock:
-        if replacement is None:
+        if replacement is None and replacement_factory is None:
             raw, readable = _read_raw(path)
             if not readable:
                 return None, 0
         else:
             raw = _load_for_write(path)
 
-        disabled = 0
+        matches: list[tuple[dict[str, object], ScheduledTask]] = []
         for entry in raw:
             try:
                 task = ScheduledTask.model_validate(entry)
@@ -271,17 +275,25 @@ def replace_matching_tasks(
                 logger.warning("Skipping invalid task entry during replacement: %s", exc)
                 continue
             if task.enabled and predicate(task):
-                entry["enabled"] = False
-                disabled += 1
+                matches.append((entry, task))
 
-        if replacement is not None:
-            raw.append(replacement.model_dump(mode="json"))
-        if replacement is None and disabled == 0:
+        resolved_replacement = (
+            replacement_factory(tuple(task for _entry, task in matches))
+            if replacement_factory is not None
+            else replacement
+        )
+        for entry, _task in matches:
+            entry["enabled"] = False
+        disabled = len(matches)
+
+        if resolved_replacement is not None:
+            raw.append(resolved_replacement.model_dump(mode="json"))
+        if resolved_replacement is None and disabled == 0:
             return None, 0
         _save_raw(path, raw)
 
     reload_signal.request_scheduler_reload()
-    return replacement, disabled
+    return resolved_replacement, disabled
 
 
 def remove_task(task_id: str, store_path: Path | None = None) -> bool:
