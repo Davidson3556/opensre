@@ -11,8 +11,17 @@ from surfaces.interactive_shell.command_registry import dispatch_slash, work_cmd
 from surfaces.interactive_shell.session import Session
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "/work add rotate API key --remind 2026-09-12T09:00",
+        "/work add rotate API key --remind=2026-09-12T09:00",
+        "/work add rotate API key --remind-at 2026-09-12T09:00",
+    ],
+)
 def test_work_add_rejects_unscheduled_reminder_before_persistence(
     monkeypatch: pytest.MonkeyPatch,
+    command: str,
 ) -> None:
     confirm_calls: list[str] = []
 
@@ -30,7 +39,7 @@ def test_work_add_rejects_unscheduled_reminder_before_persistence(
 
     assert (
         dispatch_slash(
-            "/work add rotate API key --remind 2026-09-12T09:00",
+            command,
             session,
             console,
             confirm_fn=_confirm,

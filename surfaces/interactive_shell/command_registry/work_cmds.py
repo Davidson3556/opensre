@@ -29,6 +29,7 @@ from surfaces.interactive_shell.ui import (
 
 _STATUSES = frozenset({"open", "completed", "blocked", "deferred", "active", "all"})
 _OPTION_NAMES = frozenset({"--project", "--owner", "--priority", "--due"})
+_REMINDER_OPTIONS = frozenset({"--remind", "--remind-at"})
 _REMINDER_ERROR = (
     f"[{ERROR}]/work add cannot schedule reminders because it has no delivery target.[/] "
     "Use `opensre work add <title> --remind-at <datetime> "
@@ -37,7 +38,7 @@ _REMINDER_ERROR = (
 
 
 def _unsupported_reminder_error(args: Sequence[str]) -> str | None:
-    if "--remind" in args:
+    if any(arg.partition("=")[0] in _REMINDER_OPTIONS for arg in args):
         return _REMINDER_ERROR
     return None
 
