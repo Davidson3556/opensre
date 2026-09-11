@@ -8,7 +8,7 @@ import logging
 import os
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -242,6 +242,48 @@ def add_task(task: ScheduledTask, store_path: Path | None = None) -> ScheduledTa
     return stored_task
 
 
+def replace_matching_tasks(
+    replacement: ScheduledTask | None,
+    *,
+    predicate: Callable[[ScheduledTask], bool],
+    store_path: Path | None = None,
+) -> tuple[ScheduledTask | None, int]:
+    """Atomically add ``replacement`` and disable enabled matching tasks.
+
+    If persisting the combined state fails, the previous store remains intact,
+    so an existing schedule is never disabled without its replacement.
+    """
+    path = store_path or default_task_store_path()
+    lock = FileLock(_lock_path(path))
+    with lock:
+        if replacement is None:
+            raw, readable = _read_raw(path)
+            if not readable:
+                return None, 0
+        else:
+            raw = _load_for_write(path)
+
+        disabled = 0
+        for entry in raw:
+            try:
+                task = ScheduledTask.model_validate(entry)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Skipping invalid task entry during replacement: %s", exc)
+                continue
+            if task.enabled and predicate(task):
+                entry["enabled"] = False
+                disabled += 1
+
+        if replacement is not None:
+            raw.append(replacement.model_dump(mode="json"))
+        if replacement is None and disabled == 0:
+            return None, 0
+        _save_raw(path, raw)
+
+    reload_signal.request_scheduler_reload()
+    return replacement, disabled
+
+
 def remove_task(task_id: str, store_path: Path | None = None) -> bool:
     """Remove a task by ID and cascade-delete its run records.
 
@@ -318,5 +360,6 @@ __all__ = [
     "list_tasks",
     "record_task_success",
     "remove_task",
+    "replace_matching_tasks",
     "update_task",
 ]

@@ -27,7 +27,10 @@ from infrastructure.scheduling.scheduler.storage import add_task as add_schedule
 from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask, TaskKind
 from tools.system.work_items._evidence import map_work_task_list, map_work_task_prioritize
 from tools.system.work_items.delivery import delivery_targets, invalid_delivery_targets
-from tools.system.work_items.reminders import schedule_item_reminder
+from tools.system.work_items.reminders import (
+    disable_existing_item_reminders,
+    schedule_item_reminder,
+)
 from tools.system.work_items.results import (
     added_result,
     complete_result,
@@ -299,7 +302,13 @@ def work_task_complete(selectors: list[str]) -> dict[str, Any]:
             "owner": {"type": "string"},
             "project": {"type": "string"},
             "due_at": {"type": "string"},
-            "remind_at": {"type": "string"},
+            "remind_at": {
+                "type": "string",
+                "description": (
+                    "Optional ISO-like reminder datetime; pass an empty string to clear and "
+                    "disable the reminder."
+                ),
+            },
             "notes": {"type": "string"},
             "channel_provider": {"type": "string"},
             "channel_id": {"type": "string"},
@@ -328,7 +337,7 @@ def work_task_update(
     owner: str = "",
     project: str = "",
     due_at: str = "",
-    remind_at: str = "",
+    remind_at: str | None = None,
     notes: str = "",
     channel_provider: str = "",
     channel_id: str = "",
@@ -353,14 +362,18 @@ def work_task_update(
         changes["project"] = project
     if due_at:
         changes["due_at"] = due_at
-    if remind_at:
+    if remind_at is not None:
         changes["remind_at"] = remind_at
     if notes:
         changes["notes"] = notes
-    for field_name, value in (("due_at", due_at), ("remind_at", remind_at)):
+    datetime_updates = [("due_at", due_at)]
+    if remind_at is not None:
+        datetime_updates.append(("remind_at", remind_at))
+    for field_name, value in datetime_updates:
         error = validate_datetime_arg(value, field=field_name)
         if error is not None:
             return error
+    target_update_requested = channel_targets is not None or bool(channel_provider.strip())
     explicit_targets = delivery_targets(
         provider=channel_provider,
         chat_id=channel_id,
@@ -369,39 +382,45 @@ def work_task_update(
     invalid_targets = invalid_delivery_targets(explicit_targets)
     if invalid_targets:
         return {"error": "invalid_delivery_target", "detail": "; ".join(invalid_targets)}
-    if explicit_targets:
+    if target_update_requested:
         changes["channel_targets"] = explicit_targets
         changes["channel"] = (
             explicit_targets[0].to_dict() if explicit_targets else WorkItemChannelTarget().to_dict()
         )
     reminder_targets: list[WorkItemChannelTarget] = []
-    if remind_at:
+    reminder_update_requested = remind_at is not None or target_update_requested
+    if reminder_update_requested:
         existing = resolve_work_item_selector(selector)
         if existing.item is None:
             payload: dict[str, Any] = {"error": existing.error or "not_found"}
             if existing.candidates:
                 payload["candidates"] = [item_summary(item) for item in existing.candidates]
             return payload
-        reminder_targets = delivery_targets(
-            provider=channel_provider,
-            chat_id=channel_id,
-            item=existing.item,
-            channel_targets=channel_targets,
-            context=context,
-        )
-        invalid_reminder_targets = invalid_delivery_targets(reminder_targets)
-        if invalid_reminder_targets:
-            return {
-                "error": "invalid_delivery_target",
-                "detail": "; ".join(invalid_reminder_targets),
-                "task": item_summary(existing.item),
-            }
-        if not reminder_targets:
-            return {
-                "error": "missing_delivery_target",
-                "detail": "remind_at needs at least one provider target",
-                "task": item_summary(existing.item),
-            }
+        effective_remind_at = remind_at if remind_at is not None else existing.item.remind_at
+        if effective_remind_at:
+            reminder_targets = (
+                explicit_targets
+                if target_update_requested
+                else delivery_targets(
+                    provider="",
+                    chat_id="",
+                    item=existing.item,
+                    context=context,
+                )
+            )
+            invalid_reminder_targets = invalid_delivery_targets(reminder_targets)
+            if invalid_reminder_targets:
+                return {
+                    "error": "invalid_delivery_target",
+                    "detail": "; ".join(invalid_reminder_targets),
+                    "task": item_summary(existing.item),
+                }
+            if not reminder_targets:
+                return {
+                    "error": "missing_delivery_target",
+                    "detail": "remind_at needs at least one provider target",
+                    "task": item_summary(existing.item),
+                }
     result = update_work_item(selector, changes=changes)
     if result.item is None:
         update_error_payload: dict[str, Any] = {"error": result.error or "not_found"}
@@ -409,12 +428,15 @@ def work_task_update(
             update_error_payload["candidates"] = [item_summary(item) for item in result.candidates]
         return update_error_payload
     scheduled = None
-    if remind_at:
-        scheduled = schedule_item_reminder(
-            result.item,
-            targets=reminder_targets,
-            timezone=timezone or "UTC",
-        )
+    if reminder_update_requested:
+        if result.item.remind_at:
+            scheduled = schedule_item_reminder(
+                result.item,
+                targets=reminder_targets,
+                timezone=timezone or "UTC",
+            )
+        else:
+            disable_existing_item_reminders(result.item.id)
     result_payload = update_result(result.item)
     if scheduled is not None:
         result_payload["scheduled_task_id"] = scheduled.id
