@@ -3,8 +3,7 @@
 Tool calls are buffered per turn and flushed here as bordered sections, one per
 run of same-kind calls (all ``GitHub CLI`` calls together, etc.). Each section
 shows concise status lines — never the inline ``key: value ·`` arguments — and
-stashes the full call + result detail for Ctrl+O. The log reads as a secondary
-execution record beneath the reply, the way Cursor and Droid render tool chrome.
+stashes the full call + result detail for Ctrl+O.
 """
 
 from __future__ import annotations
@@ -17,6 +16,11 @@ from rich.text import Text
 from infrastructure.terminal.theme import DIM, SECONDARY
 from surfaces.interactive_shell.session import Session
 from surfaces.interactive_shell.session.terminal_session import ActionLogEntry
+from surfaces.interactive_shell.ui.transcript import (
+    TranscriptRole,
+    compact_transcript_prefix,
+    transcript_prefix,
+)
 from surfaces.shared.terminal.components.rendering import print_repl_renderable, repl_output_width
 from surfaces.shared.terminal.prompt_layout import terminal_columns
 
@@ -26,11 +30,12 @@ _TL = "╭"
 _TR = "╮"
 _BL = "╰"
 _BR = "╯"
-_MARKER = "⏺"
 #: Never let the box exceed the terminal; keep a small right margin.
 _BOX_MARGIN = 2
 #: Floor so a short section still reads as a box, not a stub.
 _MIN_INNER = 12
+# Keep enough of the tool identity visible to distinguish narrow rows.
+_MIN_SINGLE_ROW_BODY_WIDTH = 7
 #: Only draw a box once this many same-kind calls run back to back; a lone call
 #: reads as a single dim line, not a one-row box.
 _MIN_GROUP_FOR_BOX = 2
@@ -92,11 +97,17 @@ def _single_row(session: Session, entry: ActionLogEntry, *, width: int) -> Text:
     if entry.detail:
         session.terminal.stash_collapsed_tool_output(entry.detail)
     label = f"{entry.kind} · {entry.concise}" if entry.concise else entry.kind
-    line = f"{_MARKER} {label}"
     max_width = max(_MIN_INNER, width - _BOX_MARGIN)
+    prefix = transcript_prefix(TranscriptRole.TOOL)
+    if max_width - len(prefix) < _MIN_SINGLE_ROW_BODY_WIDTH:
+        prefix = compact_transcript_prefix(TranscriptRole.TOOL)
+    line = f"{prefix}{label}"
     if len(line) > max_width:
         line = line[: max_width - 1] + "…"
-    return Text(line, style=str(DIM))
+    row = Text()
+    row.append(line[: len(prefix)], style=str(SECONDARY))
+    row.append(line[len(prefix) :], style=str(DIM))
+    return row
 
 
 def _section_rows(session: Session, group: list[ActionLogEntry], *, width: int) -> list[Text]:

@@ -151,7 +151,7 @@ def _load_skill(observer: ActionRenderObserver, call_id: str, name: str) -> None
 
 
 def test_skill_view_renders_single_activation_line() -> None:
-    """Loading a skill shows one ``Skill activated <name>`` line, nothing underneath."""
+    """Loading a skill shows one labeled status line, nothing underneath."""
     observer, buffer = _skill_observer()
 
     observer(
@@ -375,6 +375,26 @@ def test_generic_tool_call_display_is_bounded_and_omits_execution_controls() -> 
     assert "secret-token" not in content
 
 
+def test_generic_tool_detail_children_align_beneath_the_body_column() -> None:
+    observer, _buffer = _observer_with_buffer()
+
+    observer(
+        "tool_start",
+        {
+            "id": "t1",
+            "name": "custom_registry_tool",
+            "input": {"query": "incidents", "limit": 25},
+        },
+    )
+
+    detail = observer.session.terminal.action_log_entries[0].detail
+    assert detail.splitlines() == [
+        "Tool     custom registry tool",
+        "         limit: 25",
+        "         query: incidents",
+    ]
+
+
 def test_intermediate_message_strips_terminal_controls_before_markdown() -> None:
     # Arrange: a real terminal, where Rich would otherwise pass the model's
     # control bytes straight through (a non-terminal console strips them anyway,
@@ -420,7 +440,7 @@ def test_skill_view_failure_renders_failure_child() -> None:
         },
     )
 
-    assert buffer.getvalue() == "\nSkill failed to load no-such-skill\n"
+    assert buffer.getvalue() == "\nError    Could not load skill · no-such-skill\n"
 
 
 def test_skill_view_tool_end_without_start_prints_nothing() -> None:
@@ -492,7 +512,7 @@ def test_non_skill_tool_end_prints_nothing() -> None:
 
 
 def test_generic_tool_end_nests_the_result_under_the_call() -> None:
-    """Droid / Claude Code / Cursor attach the result to the call as a ``↳`` child."""
+    """Attach a concise result to its tool call as a ``↳`` child."""
     observer, buffer = _observer_with_buffer()
 
     observer(
@@ -513,7 +533,7 @@ def test_generic_tool_end_nests_the_result_under_the_call() -> None:
     entries = observer.session.terminal.action_log_entries
     assert len(entries) == 1
     assert entries[0].kind == "GitHub CLI"
-    assert "↳ GitHub API call succeeded" in entries[0].detail
+    assert "\n         ↳ GitHub API call succeeded" in entries[0].detail
     assert observer.session.terminal.inline_tool_results is True
 
     observer("agent_end", {})
