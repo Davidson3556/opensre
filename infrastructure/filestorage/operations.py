@@ -32,9 +32,9 @@ from infrastructure.filestorage.engine import (
     run_sync,
 )
 from infrastructure.filestorage.enums import SyncDirection, SyncRootName
-from infrastructure.filestorage.errors import OrgScopeNotSupportedError
 from infrastructure.filestorage.exclusions import NO_EXCLUSIONS, ExclusionRules
 from infrastructure.filestorage.exposure import PublicAccessStatus
+from infrastructure.filestorage.key_namespace import scope_key_prefix
 from infrastructure.filestorage.providers import (
     build_object_store,
     check_bucket_exposure,
@@ -95,21 +95,6 @@ def _owned_report(report: SyncReport) -> SyncReport:
     )
 
 
-def _refuse_org_scoped_turn() -> None:
-    """Fail closed when the caller is an organization member, not a laptop user.
-
-    Object keys carry no principal or actor, so every member of an organization
-    would write and read the same keys.
-    """
-    scope = current_scope()
-    if scope is not None and scope.principal.kind == "org":
-        raise OrgScopeNotSupportedError(
-            "Remote sync mirrors a personal machine. This conversation belongs to "
-            "an organization, whose history already persists in the shared context "
-            "root, so nothing is mirrored."
-        )
-
-
 def _root_status(root: SyncRoot, exclusions: ExclusionRules) -> SyncRootStatus:
     """Describe one root, counting held-back files only when asked to.
 
@@ -136,7 +121,6 @@ def get_sync_status() -> SyncStatus:
     is on, and only if the provider registered a checker; see
     :func:`~infrastructure.filestorage.providers.check_bucket_exposure`.
     """
-    _refuse_org_scoped_turn()
     config = load_remote_sync_config()
     exclusions = config.exclude if config is not None else NO_EXCLUSIONS
     roots = tuple(_root_status(root, exclusions) for root in syncable_roots())
@@ -162,7 +146,6 @@ def run_remote_sync(
     single place CLI and slash both get live progress from, so neither
     re-derives it. See :class:`infrastructure.filestorage.engine.SyncProgress`.
     """
-    _refuse_org_scoped_turn()
     resolved = (
         direction
         if direction is not None
@@ -183,6 +166,7 @@ def run_remote_sync(
             on_progress=on_progress,
             # The backend, not the engine, knows how hard it can be pushed.
             max_parallel_uploads=max_parallel_uploads_for_provider(config.provider),
+            object_key_prefix=scope_key_prefix(current_scope()),
         )
     )
 

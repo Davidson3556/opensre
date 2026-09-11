@@ -7,6 +7,7 @@ file are excluded by an allowlist of roots and again by name.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -50,9 +51,12 @@ class FakeObjectStore:
         self.objects: dict[str, bytes] = {}
         self.modified: dict[str, datetime] = {}
         self.listings = 0
+        self.listed_prefixes: list[str] = []
+        self.read_keys: list[str] = []
 
     def list_objects(self, prefix: str) -> list[RemoteObject]:
         self.listings += 1
+        self.listed_prefixes.append(prefix)
         return [
             RemoteObject(
                 key=key,
@@ -65,6 +69,7 @@ class FakeObjectStore:
         ]
 
     def get_object(self, key: str) -> bytes:
+        self.read_keys.append(key)
         return self.objects[key]
 
     def put_object(self, key: str, data: bytes) -> None:
@@ -1100,27 +1105,111 @@ def test_env_enabled_overrides_a_malformed_stored_enabled(
     assert load_remote_sync_config() is None
 
 
-# ── Org-scoped turns must not sync (keys carry no principal or actor) ────────
+# ── Org-scoped turns namespace keys by organization and member ──────────────
 
 
-def test_org_scoped_turn_refuses_to_sync(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Two members of one org would otherwise share every object key."""
+def test_org_members_cannot_read_each_others_objects(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Similar member ids still get exact, non-overlapping list prefixes."""
     # Arrange
+    from config.constants import paths
     from config.principal import Actor, Principal, StorageScope
     from config.scope_context import bound_storage_scope
-    from infrastructure.filestorage.errors import OrgScopeNotSupportedError
-    from infrastructure.filestorage.operations import get_sync_status, run_remote_sync
+    from infrastructure.filestorage import operations
+    from infrastructure.filestorage.enums import BucketExposure
+    from infrastructure.filestorage.exposure import PublicAccessStatus
 
+    monkeypatch.setattr(paths, "OPENSRE_HOME_DIR", home)
+    monkeypatch.delenv(paths.CONTEXT_ROOT_ENV, raising=False)
     monkeypatch.setenv(REMOTE_SYNC_ENV, "1")
     monkeypatch.setenv(REMOTE_SYNC_BUCKET_ENV, "shared-bucket")
-    scope = StorageScope(principal=Principal.org("org_acme"), actor=Actor(id="U_ALICE"))
+    store = FakeObjectStore()
+    monkeypatch.setattr(operations, "build_object_store", lambda _config: store)
+    unknown = PublicAccessStatus(BucketExposure.UNKNOWN)
+    monkeypatch.setattr(operations, "check_bucket_exposure", lambda _config: unknown)
 
-    # Act / Assert: both entry points fail closed while the scope is bound.
+    organization = Principal.org("org_acme")
+    member_u1 = StorageScope(principal=organization, actor=Actor(id="U1"))
+    member_u10 = StorageScope(principal=organization, actor=Actor(id="U10"))
+    u1_session = home / "orgs" / "org_acme" / "users" / "U1" / "sessions" / "shared.jsonl"
+    u10_session = home / "orgs" / "org_acme" / "users" / "U10" / "sessions" / "shared.jsonl"
+    u1_session.parent.mkdir(parents=True)
+    u10_session.parent.mkdir(parents=True)
+    u1_session.write_bytes(b"member U1")
+    u10_session.write_bytes(b"member U10")
+
+    # Act: each member pushes, then U1 restores its deleted local copy.
+    with bound_storage_scope(member_u1):
+        assert operations.get_sync_status().enabled is True
+        operations.run_remote_sync(push_only=True)
+    with bound_storage_scope(member_u10):
+        operations.run_remote_sync(push_only=True)
+    u1_session.unlink()
+    store.read_keys.clear()
+    with bound_storage_scope(member_u1):
+        operations.run_remote_sync(pull_only=True)
+
+    # Assert: the trailing delimiter prevents U1 from listing U10's objects.
+    assert store.objects["orgs/org_acme/users/U1/sessions/shared.jsonl"] == b"member U1"
+    assert store.objects["orgs/org_acme/users/U10/sessions/shared.jsonl"] == b"member U10"
+    assert all(
+        key.startswith(("orgs/org_acme/users/U1/", "orgs/org_acme/users/U10/"))
+        for key in store.objects
+    )
+    assert all(LEAKED_SECRET.encode() not in data for data in store.objects.values())
+    assert store.listed_prefixes[-1] == "orgs/org_acme/users/U1/"
+    assert store.read_keys == ["orgs/org_acme/users/U1/sessions/shared.jsonl"]
+    assert u1_session.read_bytes() == b"member U1"
+
+
+def test_org_namespace_encodes_key_path_delimiters() -> None:
+    """Opaque identity values cannot inject or escape namespace segments."""
+    from config.principal import Actor, Principal, StorageScope
+    from infrastructure.filestorage.key_namespace import scope_key_prefix
+
+    scope = StorageScope(
+        principal=Principal.org("../org/acme"),
+        actor=Actor(id="../U/1"),
+    )
+
+    assert scope_key_prefix(scope) == "orgs/%2E%2E%2Forg%2Facme/users/%2E%2E%2FU%2F1/"
+
+
+@pytest.mark.parametrize("sync_operation", (push, pull, run_sync))
+def test_public_engine_entry_points_default_to_the_bound_org_namespace(
+    sync_operation: Callable[..., object],
+    roots: tuple[SyncRoot, ...],
+) -> None:
+    """Direct callers cannot accidentally fall back to flat organization keys."""
+    from config.principal import Actor, Principal, StorageScope
+    from config.scope_context import bound_storage_scope
+
+    store = FakeObjectStore()
+    scope = StorageScope(principal=Principal.org("org_acme"), actor=Actor(id="U1"))
+
     with bound_storage_scope(scope):
-        with pytest.raises(OrgScopeNotSupportedError):
-            run_remote_sync()
-        with pytest.raises(OrgScopeNotSupportedError):
-            get_sync_status()
+        sync_operation(store, roots=roots)
+
+    assert store.listed_prefixes == ["orgs/org_acme/users/U1/"]
+    assert all(key.startswith("orgs/org_acme/users/U1/") for key in store.objects)
+
+
+def test_bound_org_namespace_cannot_be_overridden_with_a_flat_prefix(
+    roots: tuple[SyncRoot, ...],
+) -> None:
+    """The low-level override cannot reopen the cross-member key space."""
+    from config.principal import Actor, Principal, StorageScope
+    from config.scope_context import bound_storage_scope
+
+    store = FakeObjectStore()
+    scope = StorageScope(principal=Principal.org("org_acme"), actor=Actor(id="U1"))
+
+    with bound_storage_scope(scope):
+        run_sync(store, roots=roots, object_key_prefix="")
+
+    assert store.listed_prefixes == ["orgs/org_acme/users/U1/"]
+    assert all(key.startswith("orgs/org_acme/users/U1/") for key in store.objects)
 
 
 def test_unbound_laptop_turn_still_syncs(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

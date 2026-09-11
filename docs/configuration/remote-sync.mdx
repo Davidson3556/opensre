@@ -55,7 +55,7 @@ A bucket name alone does nothing — you must also set `OPENSRE_REMOTE_SYNC=1` (
 | `OPENSRE_REMOTE_SYNC` | `1` / `true` turns sync on |
 | `OPENSRE_REMOTE_SYNC_PROVIDER` | `aws` (default), `gcs`, `vercel`, `azure`, or `s3compat` |
 | `OPENSRE_REMOTE_SYNC_BUCKET` | Bucket, container, or Blob store name (required when on) |
-| `OPENSRE_REMOTE_SYNC_PREFIX` | Key prefix (default `opensre`). Same prefix = shared history |
+| `OPENSRE_REMOTE_SYNC_PREFIX` | Key prefix (default `opensre`). Same prefix shares personal history; organization members remain isolated |
 | `OPENSRE_REMOTE_SYNC_REGION` | AWS region (AWS only) |
 | `OPENSRE_REMOTE_SYNC_PROFILE` | AWS profile name, or Azure storage account name when `provider=azure` |
 | `OPENSRE_REMOTE_SYNC_ENDPOINT_URL` | Custom S3 endpoint when `provider=s3compat` (MinIO / R2 / Spaces) |
@@ -89,7 +89,9 @@ session remains manual-only. If the automatic sync fails, OpenSRE prints a
 warning without changing the shell's exit status.
 
 <Warning>
-Remote sync is for a **personal machine**. Org-bound Slack/Discord turns are refused — those already persist under the org context root.
+Unbound local turns use the configured prefix directly. Organization-bound gateway turns
+use a separate `orgs/&lt;organization&gt;/users/&lt;member&gt;/` namespace beneath it, so members
+using the same store and configured prefix cannot read one another's history.
 </Warning>
 
 ## Providers

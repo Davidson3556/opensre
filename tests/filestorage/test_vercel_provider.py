@@ -152,6 +152,18 @@ def test_put_list_get_round_trip() -> None:
     assert "opensre/sessions/a.jsonl" in transport.objects
 
 
+def test_encoded_org_namespace_round_trip() -> None:
+    """A literal percent escape in a scoped key survives private-CDN URL parsing."""
+    transport = _FakeTransport()
+    store = _store(transport)
+    key = "orgs/org%2Eacme/users/U%2E1/sessions/a.jsonl"
+
+    store.put_object(key, b"scoped history")
+
+    assert [obj.key for obj in store.list_objects("orgs/org%2Eacme/users/U%2E1/")] == [key]
+    assert store.get_object(key) == b"scoped history"
+
+
 def test_list_prefix_isolation() -> None:
     transport = _FakeTransport()
     store = _store(transport)

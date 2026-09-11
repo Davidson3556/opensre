@@ -36,6 +36,7 @@ from infrastructure.filestorage.contracts import ObjectStore, RemoteObject
 from infrastructure.filestorage.enums import SyncDirection
 from infrastructure.filestorage.errors import RemoteSyncConfigError, UnsyncablePathError
 from infrastructure.filestorage.exclusions import NO_EXCLUSIONS, ExclusionRules
+from infrastructure.filestorage.key_namespace import resolved_key_prefix
 from infrastructure.filestorage.syncable import SyncRoot, resolved_roots, syncable_roots
 
 logger = logging.getLogger(__name__)
@@ -193,6 +194,7 @@ def push(
     dry_run: bool = False,
     on_progress: ProgressCallback | None = None,
     max_parallel_uploads: int = DEFAULT_MAX_PARALLEL_UPLOADS,
+    object_key_prefix: str | None = None,
 ) -> SyncReport:
     """Upload local files whose contents differ from the bucket.
 
@@ -218,10 +220,15 @@ def push(
     local file at all (nothing pulled it before) never reaches the scan below,
     so it is counted as skipped separately — a real sync would have written it
     and then found this same scan matching it.
+
+    ``object_key_prefix`` is an optional namespace for unbound low-level
+    callers. A bound organization scope always uses its organization/member
+    namespace, even when an empty override is supplied.
     """
     roots = roots if roots is not None else syncable_roots()
     result = report if report is not None else SyncReport()
-    listing = remote if remote is not None else store.list_objects("")
+    key_prefix = resolved_key_prefix(object_key_prefix)
+    listing = remote if remote is not None else store.list_objects(key_prefix)
     by_key = {obj.key: obj for obj in listing}
     # Resolve each root once rather than per file: this loop touches every
     # session and memory file on the machine.
@@ -240,11 +247,11 @@ def push(
             if not allowed.contains(path):
                 # Reaching here means a root pointed somewhere it should not.
                 raise UnsyncablePathError(f"refusing to upload {path}")
-            key = relative_key(root, path)
-            if exclusions.excludes(key):
-                result.excluded.add(key)
+            logical_key = relative_key(root, path)
+            if exclusions.excludes(logical_key):
+                result.excluded.add(logical_key)
                 continue
-            planned.append((key, path))
+            planned.append((f"{key_prefix}{logical_key}", path))
 
     total = len(planned)
 
@@ -319,17 +326,20 @@ def pull(
     exclusions: ExclusionRules = NO_EXCLUSIONS,
     dry_run: bool = False,
     on_progress: ProgressCallback | None = None,
+    object_key_prefix: str | None = None,
 ) -> SyncReport:
     """Download bucket objects missing locally, or newer than the local copy.
 
     Under ``dry_run`` nothing is fetched or written: the listing already has
     the size needed to report what would move, so previewing costs no request
-    beyond the one listing call.
+    beyond the one listing call. ``object_key_prefix`` follows :func:`push`'s
+    bound-organization safety rule.
     """
     roots = roots if roots is not None else syncable_roots()
     result = report if report is not None else SyncReport()
     by_name = {root.name: root for root in roots}
-    listing = remote if remote is not None else store.list_objects("")
+    key_prefix = resolved_key_prefix(object_key_prefix)
+    listing = remote if remote is not None else store.list_objects(key_prefix)
     total = len(listing)
 
     def _report(key: str, completed: int) -> None:
@@ -337,15 +347,19 @@ def pull(
             on_progress(SyncProgress(SyncDirection.PULL, key, completed, total))
 
     for completed, obj in enumerate(listing, start=1):
-        target = _local_path_for(obj, by_name)
+        if key_prefix and not obj.key.startswith(key_prefix):
+            _report(obj.key, completed)
+            continue
+        logical_key = obj.key[len(key_prefix) :]
+        target = _local_path_for(logical_key, by_name)
         if target is None:
             _report(obj.key, completed)
             continue
         # Excluding a path means it does not belong on this machine, so the
         # pattern holds in both directions: a file another machine still
         # uploads is not pulled back down here.
-        if exclusions.excludes(obj.key):
-            result.excluded.add(obj.key)
+        if exclusions.excludes(logical_key):
+            result.excluded.add(logical_key)
             _report(obj.key, completed)
             continue
         if not _should_download(obj, target):
@@ -365,12 +379,12 @@ def pull(
     return result
 
 
-def _local_path_for(obj: RemoteObject, by_name: dict[str, SyncRoot]) -> Path | None:
+def _local_path_for(key: str, by_name: dict[str, SyncRoot]) -> Path | None:
     """Local file for one object key, or None when the key is not ours."""
-    head, _, tail = obj.key.partition("/")
+    head, _, tail = key.partition("/")
     root = by_name.get(head)
     if root is None or not tail:
-        logger.debug("[remote-sync] ignoring unrecognised key %s", obj.key)
+        logger.debug("[remote-sync] ignoring unrecognised key %s", key)
         return None
     # A key may not climb out of its root.
     candidate = (root.path / tail).resolve()
@@ -399,6 +413,7 @@ def run_sync(
     dry_run: bool = False,
     on_progress: ProgressCallback | None = None,
     max_parallel_uploads: int = DEFAULT_MAX_PARALLEL_UPLOADS,
+    object_key_prefix: str | None = None,
 ) -> SyncReport:
     """Move files in ``direction``. Both ways pulls first, so an offline edit wins.
 
@@ -409,10 +424,12 @@ def run_sync(
     for the push pass — see :data:`ProgressCallback`. ``max_parallel_uploads``
     caps concurrent uploads in the push pass; callers that built the store from
     a config should pass the provider's own declared limit rather than rely on
-    the conservative default.
+    the conservative default. ``object_key_prefix`` follows :func:`push`'s
+    bound-organization safety rule.
     """
     report = SyncReport()
-    listing = store.list_objects("")
+    key_prefix = resolved_key_prefix(object_key_prefix)
+    listing = store.list_objects(key_prefix)
     if direction is not SyncDirection.PUSH:
         pull(
             store,
@@ -422,6 +439,7 @@ def run_sync(
             exclusions=exclusions,
             dry_run=dry_run,
             on_progress=on_progress,
+            object_key_prefix=key_prefix,
         )
     if direction is not SyncDirection.PULL:
         push(
@@ -433,6 +451,7 @@ def run_sync(
             dry_run=dry_run,
             on_progress=on_progress,
             max_parallel_uploads=max_parallel_uploads,
+            object_key_prefix=key_prefix,
         )
     return report
 

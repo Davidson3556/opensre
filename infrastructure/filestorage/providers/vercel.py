@@ -6,7 +6,7 @@ import os
 from datetime import UTC, datetime
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -188,7 +188,8 @@ def _store_id_from_token(token: str) -> str:
 
 
 def _private_blob_url(store_id: str, pathname: str) -> str:
-    return f"https://{store_id}.private.blob.vercel-storage.com/{pathname.lstrip('/')}"
+    encoded_path = quote(pathname.lstrip("/"), safe="/")
+    return f"https://{store_id}.private.blob.vercel-storage.com/{encoded_path}"
 
 
 def _parse_uploaded_at(value: object) -> datetime:
