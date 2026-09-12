@@ -63,8 +63,6 @@ def offer_demo(session: Session, console: Console | None = None, *, force: bool 
             result.get("error", "pre_execute queued no menu"),
         )
         session.active_skill = None
-        session.active_skill_tools = ()
-        session.skill_hooks_fired = set()
         return False
     # A new demo may ask its children's questions again, while unrelated
     # decisions and their authorization remain part of this session.

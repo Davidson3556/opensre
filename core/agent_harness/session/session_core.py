@@ -157,14 +157,11 @@ class SessionCore:
     """Ask-User clarification rounds asked this workload; caps repeated batches.
     Reset on a genuine user turn."""
 
+    skill_discovery_enabled: bool = True
+    """Host-owned policy for the skill index and skill_view; never restored from history."""
+
     active_skill: str | None = None
     """Skill loaded by ``skill_view`` in the current flow; cleared on a genuine user turn."""
-
-    active_skill_tools: tuple[str, ...] = ()
-    """The active skill's declared tools; an answer turn inside the flow offers only these."""
-
-    skill_hooks_fired: set[str] = field(default_factory=set)
-    """``after_tool`` hook keys already queued for this skill activation."""
 
     questions_already_answered: set[str] = field(default_factory=set)
     """Menu questions this session has answered, normalized for comparison.

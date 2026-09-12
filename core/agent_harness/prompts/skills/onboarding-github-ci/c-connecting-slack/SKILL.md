@@ -1,12 +1,10 @@
 ---
 name: connecting-slack
 description: >-
-  Connect OpenSRE to Slack and show how to hand off DevOps chores from a
-  channel mention or a DM. Verifies with cli_exec; if Slack is missing, queues
-  `/integrations setup slack` via slash_invoke (the wizard needs a full
-  terminal). Use for the startup demo option "Connect OpenSRE to Slack and
-  hand off DevOps chores for your team". Never post, reply, or send to Slack
-  in this flow. Multi-step; load before acting.
+  Connect OpenSRE to Slack and show how to hand off DevOps chores from a channel mention or a DM. Verifies
+  with cli_exec; if Slack is missing, queues `/integrations setup slack` via slash_invoke (the wizard
+  needs a full terminal). Use for the startup demo option "Connect OpenSRE to Slack and hand off DevOps
+  chores for your team". Never post, reply, or send to Slack in this flow. Multi-step; load before acting.
 getting_started: Connect OpenSRE to Slack and hand off DevOps chores for your team
 demo_order: 3
 metadata:
@@ -14,17 +12,13 @@ metadata:
   last_changed_by: Jan
   last_changed_at: 2026-09-12
   usecases:
-    - First-experience demo: connect OpenSRE to Slack and show the handoff path
-    - Verify Slack is configured, then run the Slack setup wizard if it is missing
-    - Explain how a team hands off DevOps chores from a Slack mention or DM
+  - For Slack workspace administrators connecting OpenSRE for their team.
+  - For users verifying an existing Slack connection and learning channel or DM handoffs.
   requires:
-    - Slack workspace the user can add the OpenSRE bot to
-    - Interactive terminal for `/integrations setup slack` when Slack is not configured
-  type: onboarding
-  version: "1.2"
-tools:
-  - cli_exec
-  - slash_invoke
+  - Permission to add the OpenSRE bot to the target Slack workspace.
+  - The cli_exec and slash_invoke tools.
+  - When Slack setup is needed, an interactive terminal for /integrations setup slack.
+  version: '1.1'
 ---
 
 # Slack handoff

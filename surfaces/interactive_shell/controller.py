@@ -289,7 +289,7 @@ class InteractiveShellController:
                     plan = self.session.task_plan
                     if (
                         plan is not None
-                        and plan.all_completed
+                        and plan.is_settled
                         and not self.state.is_dispatch_running()
                     ):
                         discard_task_plan(self.session)

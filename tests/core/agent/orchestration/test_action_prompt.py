@@ -27,6 +27,7 @@ from core.agent_harness.prompts.skills.loader import (
     load_skills_block as cached_load_skills_block,
 )
 from core.agent_harness.turns.turn_snapshot import TurnSnapshot
+from tests.utils.skill_cards import skill_card
 
 
 def _skill_instruction_text(name: str) -> str:
@@ -197,7 +198,7 @@ def test_skill_body_appends_sibling_report_template_but_index_stays_thin(
     skill_dir = tmp_path / "auditing"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
-        "---\nname: auditing\ndescription: audit recipe\n---\nCall audit_clone_repo first.",
+        skill_card("auditing", "Call audit_clone_repo first.", description="audit recipe"),
         encoding="utf-8",
     )
     (skill_dir / "auditing_report.md").write_text("### Findings by severity\n", encoding="utf-8")
@@ -268,7 +269,7 @@ def test_skill_matches_take_priority_over_generic_docs_answer() -> None:
 
     assert "Skill matches outrank a generic docs/how-to answer" in index
     assert '"onboard me"' in index
-    assert "hand execution to its child skill" in body
+    assert "owns the onboarding question" in body
     # Skills index still rides the assembled prompt after the markdown base.
     assert SKILLS_HEADER in prompt
     assert ONBOARDING_SKILL_NAME in prompt
@@ -366,7 +367,7 @@ def test_scheduling_guidance_survives_prompt_assembly() -> None:
     # Assert — recurring skill + thin index survive assembly; cron details live
     # in the skill body, not the markdown base.
     assert "delivering-morning-briefings" in assembled
-    assert "recurring: weekdays 08:00" in assembled
+    assert "[recurring]" in assembled
     assert "skill_view" in assembled
     assert "propose_scheduled_delivery" in body
     assert "you plan actions for the opensre interactive shell" in assembled
