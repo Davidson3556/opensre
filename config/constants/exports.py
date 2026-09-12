@@ -310,6 +310,7 @@ EXPORTS: dict[str, str] = {
     "RELEASE_STAGE": "product",
     "RELEASE_STAGE_BANNER": "product",
     "RELEASES_API_URL_ENV": "product",
+    "SIGN_IN_OR_OWN_MODEL_PROMPT": "product",
     "SIGN_IN_PROMPT": "product",
     "UV_RUN_RECURSION_DEPTH_ENV": "product",
     "WELCOME_DESCRIPTION": "product",

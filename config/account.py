@@ -205,6 +205,11 @@ def restore_account_llm_route() -> None:
     os.environ.pop(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, None)
 
 
+def account_llm_route_ignored() -> bool:
+    """Whether this process dropped the hosted route in favour of the user's own model."""
+    return bool(os.getenv(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, "").strip())
+
+
 def account_llm_route() -> AccountLLMRoute | None:
     """Return the hosted OpenAI route only when account metadata and token exist.
 
@@ -213,7 +218,7 @@ def account_llm_route() -> AccountLLMRoute | None:
     that let the user pick a local provider instead first call
     :func:`ignore_account_llm_route`.
     """
-    if os.getenv(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, "").strip():
+    if account_llm_route_ignored():
         return None
     record = load_account_record()
     if record is None or record.llm_provider != "openai" or not resolve_account_token():
@@ -228,6 +233,7 @@ __all__ = [
     "AccountRecord",
     "AccountLLMRoute",
     "account_llm_route",
+    "account_llm_route_ignored",
     "ignore_account_llm_route",
     "restore_account_llm_route",
     "account_metadata_path",

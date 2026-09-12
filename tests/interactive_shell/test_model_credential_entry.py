@@ -90,6 +90,7 @@ def test_account_login_blocks_every_model_change(monkeypatch: Any, change: Any) 
         "config.account.account_llm_route",
         lambda: SimpleNamespace(model="gpt-5.4-mini"),
     )
+    monkeypatch.setattr("config.llm_settings.has_user_configured_llm_provider", lambda: True)
     console = _Console()
 
     assert change(console) is False
@@ -182,3 +183,31 @@ def test_custom_provider_no_model_uses_legacy_model(monkeypatch: Any) -> None:
     monkeypatch.setenv(provider.legacy_model_env, "gateway-model")
 
     assert switching._resolve_omitted_model(provider) == "gateway-model"
+
+
+def test_model_lock_names_the_setup_command_when_no_provider_is_configured(
+    monkeypatch: Any,
+) -> None:
+    # "Log out first" dead-ends for someone with no provider of their own: the
+    # logout then closes the shell. The lock has to name the way out.
+    monkeypatch.setattr(
+        "config.account.account_llm_route",
+        lambda: SimpleNamespace(model="gpt-5.4-mini"),
+    )
+    monkeypatch.setattr("config.llm_settings.has_user_configured_llm_provider", lambda: False)
+    console = _Console()
+
+    assert switching.switch_llm_provider("anthropic", console) is False
+    assert any("opensre onboard local_llm" in line for line in console.printed)
+
+
+def test_model_lock_omits_the_setup_command_when_a_provider_exists(monkeypatch: Any) -> None:
+    monkeypatch.setattr(
+        "config.account.account_llm_route",
+        lambda: SimpleNamespace(model="gpt-5.4-mini"),
+    )
+    monkeypatch.setattr("config.llm_settings.has_user_configured_llm_provider", lambda: True)
+    console = _Console()
+
+    assert switching.switch_llm_provider("anthropic", console) is False
+    assert not any("opensre onboard local_llm" in line for line in console.printed)

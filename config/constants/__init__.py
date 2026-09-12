@@ -766,6 +766,9 @@ if TYPE_CHECKING:
         RELEASES_API_URL_ENV as RELEASES_API_URL_ENV,
     )
     from config.constants.product import (
+        SIGN_IN_OR_OWN_MODEL_PROMPT as SIGN_IN_OR_OWN_MODEL_PROMPT,
+    )
+    from config.constants.product import (
         SIGN_IN_PROMPT as SIGN_IN_PROMPT,
     )
     from config.constants.product import (

@@ -10,6 +10,7 @@ from collections.abc import Callable
 import click
 from rich.console import Console
 
+from config.account import account_llm_route_ignored
 from config.repl_config import ReplConfig
 from core.agent_harness import SessionManager
 from infrastructure.analytics.github_identity import identify_saved_github_username
@@ -22,6 +23,7 @@ from surfaces.interactive_shell.runtime.startup.account_gate import (
 )
 from surfaces.interactive_shell.runtime.startup.demo_picker import offer_demo
 from surfaces.interactive_shell.runtime.startup.initial_input import run_initial_input
+from surfaces.interactive_shell.ui.sign_in import render_own_model_notice
 from surfaces.interactive_shell.ui.terminal_ui import render_terminal_ui
 from surfaces.shared.terminal.banner import animate_launch_wordmark
 from surfaces.shared.terminal.components.rendering import repl_clear_screen
@@ -41,6 +43,7 @@ async def run_repl_async(
     cli_command_group: click.Command | None = None,
     finish_banner: Callable[[], None] | None = None,
     after_banner: Callable[[], None] | None = None,
+    announce_own_model: bool = False,
 ) -> int:
     """Run the shell on an existing event loop and return its exit code.
 
@@ -87,6 +90,10 @@ async def run_repl_async(
     # with it for the interpreter.
     if after_banner is not None:
         after_banner()
+    # The gate cannot say this itself: ``run_repl`` clears the screen between
+    # the choice and the banner, so the notice only survives here.
+    if announce_own_model:
+        render_own_model_notice(out)
 
     try:
         if resume_session_id:
@@ -161,10 +168,15 @@ def run_repl(
         return 0
 
     finish_banner: Callable[[], None] | None = None
+    announce_own_model = False
     try:
         if not initial_input:
+            # A route already ignored on entry was the caller's own env var, not
+            # a choice made here, so only a flip during the gate is ours to announce.
+            route_was_live = not account_llm_route_ignored()
             if not pass_sign_in_gate(out):
                 return 0
+            announce_own_model = route_was_live and account_llm_route_ignored()
             # Wipe the calling shell or completed sign-in screen so the REPL
             # reads as its own screen, then boot it under the launch animation.
             repl_clear_screen()
@@ -178,6 +190,7 @@ def run_repl(
                 console=out,
                 cli_command_group=cli_command_group,
                 finish_banner=finish_banner,
+                announce_own_model=announce_own_model,
                 after_banner=after_banner,
             )
         )

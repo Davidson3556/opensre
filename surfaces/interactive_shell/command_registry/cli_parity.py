@@ -272,7 +272,9 @@ def _cmd_account(session: Session, console: Console, args: list[str]) -> bool:  
             # Logging out to reach a local model is the documented route off the
             # hosted lock, so keep the shell open when the user has a provider.
             if has_user_configured_llm_provider():
-                console.print(f"[{DIM}]Signed out. Using your configured LLM provider.[/]")
+                from surfaces.interactive_shell.ui.sign_in import render_own_model_notice
+
+                render_own_model_notice(console)
                 return handled
             console.print(f"[{DIM}]Signed out. Closing the interactive shell.[/]")
             return False

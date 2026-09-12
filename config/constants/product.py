@@ -23,6 +23,12 @@ WELCOME_DESCRIPTION: Final[str] = (
 )
 SIGN_IN_PROMPT: Final[str] = "Sign in or create an OpenSRE account to use the interactive shell."
 
+#: Replaces :data:`SIGN_IN_PROMPT` when the gate can also offer the user's own
+#: provider, where an account is one way in rather than the only one.
+SIGN_IN_OR_OWN_MODEL_PROMPT: Final[str] = (
+    "Sign in to OpenSRE, or continue with the model you already configured."
+)
+
 #: Release maturity, as users see it. Keep in step with the README badge.
 RELEASE_STAGE: Final[str] = "Public Alpha"
 
@@ -48,6 +54,7 @@ __all__ = [
     "RELEASES_API_URL_ENV",
     "RELEASE_STAGE",
     "RELEASE_STAGE_BANNER",
+    "SIGN_IN_OR_OWN_MODEL_PROMPT",
     "SIGN_IN_PROMPT",
     "UV_RUN_RECURSION_DEPTH_ENV",
     "WELCOME_DESCRIPTION",

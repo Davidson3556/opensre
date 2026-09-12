@@ -134,6 +134,48 @@ class TestDispatchSlash:
         assert dispatch_slash("/account logout", Session(), console) is True
         assert "Closing the interactive shell" not in output.getvalue()
 
+    def test_account_login_restores_a_hosted_route_dropped_for_an_own_model_shell(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Someone who entered on their own model can sign in mid-session. Without
+        # this the process keeps the ignore flag and the account's hosted model
+        # is silently skipped for the rest of the shell.
+        from types import SimpleNamespace
+
+        from config.account import account_llm_route_ignored, ignore_account_llm_route
+        from surfaces.interactive_shell.command_registry import cli_parity as m
+
+        monkeypatch.setattr(m, "run_cli_command", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            "surfaces.shared.account_session.account_status",
+            lambda: SimpleNamespace(authenticated=True),
+        )
+        console, _ = _capture()
+        ignore_account_llm_route()
+
+        assert dispatch_slash("/account login", Session(), console) is True
+        assert account_llm_route_ignored() is False
+
+    def test_account_login_that_does_not_authenticate_keeps_the_own_model_choice(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        from config.account import account_llm_route_ignored, ignore_account_llm_route
+        from surfaces.interactive_shell.command_registry import cli_parity as m
+
+        monkeypatch.setattr(m, "run_cli_command", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr(
+            "surfaces.shared.account_session.account_status",
+            lambda: SimpleNamespace(authenticated=False),
+        )
+        console, _ = _capture()
+        ignore_account_llm_route()
+
+        dispatch_slash("/account login", Session(), console)
+
+        assert account_llm_route_ignored() is True
+
     def test_help_lists_all_commands(self) -> None:
         session = Session()
         console, buf = _capture()

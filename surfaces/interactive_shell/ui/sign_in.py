@@ -17,7 +17,12 @@ from rich.console import Console, Group, RenderableType
 from rich.panel import Panel
 from rich.text import Text
 
-from config.constants import SIGN_IN_PROMPT, WELCOME_DESCRIPTION, WELCOME_TITLE
+from config.constants import (
+    SIGN_IN_OR_OWN_MODEL_PROMPT,
+    SIGN_IN_PROMPT,
+    WELCOME_DESCRIPTION,
+    WELCOME_TITLE,
+)
 from infrastructure.terminal.theme import DIM, ERROR, HIGHLIGHT, SECONDARY, TEXT
 from surfaces.shared.terminal.banner import animate_launch_wordmark, build_launch_banner
 from surfaces.shared.terminal.components.choice_menu import repl_choose_one, repl_tty_interactive
@@ -45,13 +50,19 @@ def build_welcome_box() -> RenderableType:
     return Panel(body, box=ROUNDED, border_style=str(DIM), padding=(1, 2))
 
 
-def render_sign_in_screen(console: Console) -> None:
-    """Paint the launch banner, the welcome box, and the sign-in prompt line."""
+def render_sign_in_screen(console: Console, *, offer_own_model: bool = False) -> None:
+    """Paint the launch banner, the welcome box, and the sign-in prompt line.
+
+    ``offer_own_model`` must match what the menu below will offer: the default
+    prompt calls an account mandatory, which is untrue once the own-model choice
+    is on screen.
+    """
+    prompt = SIGN_IN_OR_OWN_MODEL_PROMPT if offer_own_model else SIGN_IN_PROMPT
     screen = Group(
         build_launch_banner(console),
         build_welcome_box(),
         Text(),
-        Text(SIGN_IN_PROMPT, style=str(SECONDARY)),
+        Text(prompt, style=str(SECONDARY)),
     )
     animate_launch_wordmark(console)
     console.print(screen)
@@ -73,6 +84,11 @@ def prompt_login_or_exit(*, offer_own_model: bool = False) -> SignInChoice | Non
         numbered=False,
     )
     return next((choice for choice in offered if picked == choice), None)
+
+
+def render_own_model_notice(console: Console) -> None:
+    """Say the shell is running signed out on the user's own configured provider."""
+    console.print(f"[{DIM}]Signed out. Using your configured LLM provider.[/]")
 
 
 def run_sign_in_gate(
@@ -102,8 +118,8 @@ def run_sign_in_gate(
         )
         console.print("Run [bold]opensre account login[/bold] from an interactive terminal.")
         return False
-    render_sign_in_screen(console)
     offer_own_model = has_own_provider()
+    render_sign_in_screen(console, offer_own_model=offer_own_model)
     while True:
         choice = prompt_login_or_exit(offer_own_model=offer_own_model)
         if choice is SignInChoice.LOGIN:
@@ -112,7 +128,8 @@ def run_sign_in_gate(
             continue  # login failed — offer the choice again
         if choice is SignInChoice.OWN_MODEL:
             on_own_provider()
-            console.print(f"[{DIM}]Signed out. Using your configured LLM provider.[/]")
+            # No notice here: ``run_repl`` clears the screen before the REPL
+            # paints, so the shell announces the choice after its banner.
             return True
         return False  # Exit or Esc
 
@@ -121,6 +138,7 @@ __all__ = [
     "SignInChoice",
     "build_welcome_box",
     "prompt_login_or_exit",
+    "render_own_model_notice",
     "render_sign_in_screen",
     "run_sign_in_gate",
 ]

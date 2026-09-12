@@ -54,7 +54,9 @@ def test_welcome_title_renders_in_the_accent_colour() -> None:
 def test_gate_proceeds_immediately_when_already_signed_in(monkeypatch) -> None:
     # No screen, no menu when the user is already signed in.
     rendered: list[bool] = []
-    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c: rendered.append(True))
+    monkeypatch.setattr(
+        sign_in, "render_sign_in_screen", lambda _c, **_kwargs: rendered.append(True)
+    )
     console, _ = _console()
 
     result = run_sign_in_gate(console, is_signed_in=lambda: True, login=lambda: False)
@@ -76,7 +78,7 @@ def test_gate_fails_closed_on_non_interactive_stdin(monkeypatch) -> None:
 def test_gate_logs_in_then_proceeds(monkeypatch) -> None:
     login_calls: list[bool] = []
     monkeypatch.setattr(sign_in, "repl_tty_interactive", lambda: True)
-    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c: None)
+    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c, **_kwargs: None)
     monkeypatch.setattr(sign_in, "prompt_login_or_exit", lambda **_kwargs: SignInChoice.LOGIN)
     console, _ = _console()
 
@@ -92,7 +94,7 @@ def test_gate_logs_in_then_proceeds(monkeypatch) -> None:
 
 def test_gate_exit_declines(monkeypatch) -> None:
     monkeypatch.setattr(sign_in, "repl_tty_interactive", lambda: True)
-    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c: None)
+    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c, **_kwargs: None)
     monkeypatch.setattr(sign_in, "prompt_login_or_exit", lambda **_kwargs: SignInChoice.EXIT)
     console, _ = _console()
 
@@ -109,7 +111,7 @@ def test_gate_retries_after_a_failed_login_then_exits(monkeypatch) -> None:
     # Login fails once, then the user picks Exit — the gate re-prompts, does not loop forever.
     choices = iter([SignInChoice.LOGIN, SignInChoice.EXIT])
     monkeypatch.setattr(sign_in, "repl_tty_interactive", lambda: True)
-    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c: None)
+    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c, **_kwargs: None)
     monkeypatch.setattr(sign_in, "prompt_login_or_exit", lambda **_kwargs: next(choices))
     console, _ = _console()
 
@@ -124,7 +126,7 @@ def test_gate_enters_the_shell_on_a_configured_provider_without_signing_in(monke
     # local model must drop it or the shell keeps calling the hosted proxy.
     dropped: list[bool] = []
     monkeypatch.setattr(sign_in, "repl_tty_interactive", lambda: True)
-    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c: None)
+    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c, **_kwargs: None)
     monkeypatch.setattr(sign_in, "prompt_login_or_exit", lambda **_kwargs: SignInChoice.OWN_MODEL)
     console, _ = _console()
 
@@ -158,3 +160,35 @@ def test_menu_hides_the_own_model_row_without_a_configured_provider(monkeypatch)
 
     assert offered[0] == [SignInChoice.LOGIN, SignInChoice.EXIT]
     assert SignInChoice.OWN_MODEL in offered[1]
+
+
+def test_prompt_line_stops_claiming_an_account_is_required_when_it_is_not() -> None:
+    # The default copy calls an account mandatory. Printing it above a menu that
+    # offers a way in without one contradicts the row directly below it.
+    from config.constants import SIGN_IN_OR_OWN_MODEL_PROMPT
+
+    console, buf = _console()
+    render_sign_in_screen(console, offer_own_model=True)
+
+    out = buf.getvalue()
+    assert SIGN_IN_OR_OWN_MODEL_PROMPT in out
+    assert SIGN_IN_PROMPT not in out
+
+
+def test_gate_leaves_the_own_model_notice_to_the_shell(monkeypatch) -> None:
+    # run_repl clears the screen between this choice and the banner, so anything
+    # the gate prints here is wiped before the user can read it.
+    monkeypatch.setattr(sign_in, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(sign_in, "render_sign_in_screen", lambda _c, **_kwargs: None)
+    monkeypatch.setattr(sign_in, "prompt_login_or_exit", lambda **_kwargs: SignInChoice.OWN_MODEL)
+    console, output = _console()
+
+    result = run_sign_in_gate(
+        console,
+        is_signed_in=lambda: False,
+        login=lambda: False,
+        has_own_provider=lambda: True,
+    )
+
+    assert result is True
+    assert output.getvalue() == ""
