@@ -107,6 +107,7 @@ Full walkthrough with GIFs: [Quickstart](/quickstart).
 - **Command not found** — open a new terminal, or add the bin directory the installer printed to your PATH
 - **The shell keeps asking you to sign in** — run `opensre account status`; expired, revoked, incomplete, or unreachable sessions do not open the shell
 - **You want a local model instead of the hosted one** — run `opensre onboard local_llm`, then `opensre account logout`; the sign-in screen then offers "Continue with my own model"
+- **`opensre ask` fails with a connection error after a session expires** — the stored session still routes the model even once it stops validating. Run `opensre account logout`, or prefix a single command with `OPENSRE_IGNORE_ACCOUNT_ROUTE=1` to use your own provider instead
 - **Docker / `make` missing** — see [Quickstart troubleshooting](/quickstart#troubleshooting)
 
 Need deploy options beyond a laptop binary? See [Deployment](/deployment).
