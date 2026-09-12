@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 import time
@@ -13,6 +14,7 @@ from typing import Any
 
 import psutil
 import pytest
+from filelock import FileLock
 
 from config.constants.ci_repair import CI_REPAIR_FINISH_RESERVE_SECONDS
 from config.constants.github import GITHUB_CI_DEMO_REPOSITORY
@@ -30,6 +32,7 @@ def _run(run_id: str = "a" * 12, **kwargs: Any) -> RepairRun:
         id=run_id,
         owner="alice",
         actor="alice",
+        actor_id=123,
         repo=GITHUB_CI_DEMO_REPOSITORY,
         demo=True,
         started_at=now,
@@ -58,7 +61,7 @@ def test_concurrent_reservations_and_restarts_keep_one_run_and_deadline(tmp_path
     resumed, reused = RepairStore(tmp_path).reserve(_run("f" * 12))
     assert reused and resumed.deadline == winner.deadline
     with pytest.raises(ValueError, match="Another GitHub account"):
-        store.reserve(_run("e" * 12).model_copy(update={"actor": "someone-else"}))
+        store.reserve(_run("e" * 12).model_copy(update={"actor_id": 456}))
     winner.status = RepairStatus.FAILED
     store.save(winner)
     fresh, reused = store.reserve(_run("f" * 12))
@@ -72,6 +75,28 @@ def test_corrupt_or_future_storage_is_preserved(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="version"):
         store.reserve(_run())
     assert store.path.read_text() == original
+
+
+def test_expired_legacy_run_releases_scope_only_after_its_supervisor_stops(tmp_path: Path) -> None:
+    store = RepairStore(tmp_path)
+    legacy = _run().model_dump()
+    legacy.pop("actor_id")
+    legacy["deadline"] = time.time() - 1
+    store.path.write_text(json.dumps({"version": 1, "runs": {legacy["id"]: legacy}}))
+    candidate = _run("b" * 12).model_copy(update={"actor_id": 456})
+    with FileLock(str(store.directory(str(legacy["id"]))) + ".execution.lock"):
+        with pytest.raises(ValueError, match="stopping"):
+            store.reserve(candidate)
+        assert store.get(str(legacy["id"])).status is RepairStatus.QUEUED
+    fresh, reused = RepairStore(tmp_path).reserve(candidate)
+    assert not reused and fresh.id == candidate.id and fresh.actor_id == 456
+    previous = store.get(str(legacy["id"]))
+    assert previous.status is RepairStatus.TIMED_OUT and previous.actor_id == 0
+    assert previous.deadline == legacy["deadline"] and previous.finished_at is not None
+    resumed, reused = RepairStore(tmp_path).reserve(
+        _run("c" * 12).model_copy(update={"actor_id": 456})
+    )
+    assert reused and resumed.id == fresh.id and resumed.deadline == fresh.deadline
 
 
 def _git_sha(content: str) -> str:
@@ -108,7 +133,7 @@ class _GitHub:
         route = path.removeprefix(f"repos/alice/{GITHUB_CI_DEMO_REPOSITORY}")
         body = kwargs.get("body", {})
         if path == "user":
-            return {"login": "alice"}
+            return {"login": "alice", "id": 123}
         if path == "user/repos":
             assert self.repository is None
             return self._create()
@@ -398,7 +423,12 @@ def test_account_change_stops_before_any_remote_write(
     monkeypatch.setattr(worker, "configured_token", lambda: "test-token")
     monkeypatch.setattr(worker, "verify_coding_agent", lambda: (True, "ready"))
     monkeypatch.setattr(worker, "GitHubRestClient", lambda _token: api)
-    run = _run().model_copy(update={"actor": "different-account"})
+    run = _run().model_copy(update={"actor_id": 456})
+
+    def refuse_clone(*_args: Any, **_kwargs: Any) -> None:
+        raise AssertionError("An unauthorized worker must not reach a repository checkout.")
+
+    monkeypatch.setattr(worker, "clone_repository", refuse_clone)
     with pytest.raises(ValueError, match="account changed"):
         worker.execute_repair(run, RepairStore(tmp_path))
     assert [(method, path) for method, path, _ in api.calls] == [("GET", "user")]
@@ -497,3 +527,121 @@ def test_existing_green_pr_still_waits_for_late_checks(
     worker._repair(run, RepairStore(tmp_path), "test-token")
     assert checked == ["green-head"]
     assert run.status is RepairStatus.CANCELLED
+
+
+def test_reports_require_the_recorded_github_account(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from integrations.github.tools.ci_repair_loop import tool
+
+    store = RepairStore(tmp_path)
+    run = _run(pr_number=123)
+    store.save(run)
+    monkeypatch.setattr(tool, "RepairStore", lambda: store)
+    monkeypatch.setattr(tool, "configured_token", lambda _token: "request-token", raising=False)
+
+    class Reader:
+        actor = "alice"
+        account_id = 456
+
+        def request(self, *_args: Any) -> dict[str, Any]:
+            return {"login": self.actor, "id": self.account_id}
+
+    reader = Reader()
+    monkeypatch.setattr(tool, "GitHubRestClient", lambda _token: reader, raising=False)
+    rejected = tool.get_ci_repair_loop(run.id)
+    assert not rejected["ok"] and run.repo not in str(rejected) and run.pr_url not in str(rejected)
+    reader.actor = "renamed-alice"
+    reader.account_id = 123
+    allowed = tool.get_ci_repair_loop(run.id)
+    assert allowed["ok"] and allowed["pr_url"] == run.pr_url
+    store.save(run.model_copy(update={"actor_id": 0}))
+    assert not tool.get_ci_repair_loop(run.id)["ok"]
+
+
+def test_interrupted_registration_recovers_original_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RepairStore(tmp_path)
+    original, _ = store.reserve(_run().model_copy(update={"actor": "old-alice"}))
+    tasks: dict[str, ScheduledTask] = {}
+    monkeypatch.setattr(schedule, "configured_token", lambda _token: "test-token")
+    monkeypatch.setattr(schedule, "GitHubRestClient", lambda _token: _GitHub())
+    monkeypatch.setattr(schedule, "get_task", tasks.get)
+    monkeypatch.setattr(schedule, "ensure_background_service", lambda **_kw: None)
+
+    def add(task: ScheduledTask) -> ScheduledTask:
+        tasks[task.id] = task
+        return task
+
+    monkeypatch.setattr(schedule, "add_task", add)
+    resumed, reused, _ = schedule.schedule_repair(demo=True, store=store)
+    assert reused and resumed.id == original.id and resumed.deadline == original.deadline
+    assert resumed.status is RepairStatus.QUEUED and len(tasks) == 1
+
+
+def test_evidence_links_require_the_reported_outcome() -> None:
+    from integrations.github.tools.ci_repair_loop import worker
+
+    prefix = "https://github.com/alice/demo/actions/runs/"
+    rows = [
+        {"conclusion": "", "status": "QUEUED", "detailsUrl": prefix + "queued"},
+        {"conclusion": "ACTION_REQUIRED", "detailsUrl": prefix + "action-required"},
+        {"conclusion": "SKIPPED", "detailsUrl": prefix + "skipped"},
+        {"conclusion": "SUCCESS", "detailsUrl": prefix + "passed"},
+    ]
+    assert worker._run_link(rows, failed=True) == prefix + "action-required"
+    assert worker._run_link(rows, failed=False) == prefix + "passed"
+
+
+def test_setup_exception_details_stay_out_of_persisted_reports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RepairStore(tmp_path)
+    monkeypatch.setattr(schedule, "configured_token", lambda _token: "test-token")
+    monkeypatch.setattr(schedule, "GitHubRestClient", lambda _token: _GitHub())
+    monkeypatch.setattr(schedule, "get_task", lambda _id: None)
+
+    def fail_service(**_kwargs: Any) -> None:
+        raise RuntimeError("secret-provider-internal-detail")
+
+    monkeypatch.setattr(schedule, "ensure_background_service", fail_service)
+    run, _, _ = schedule.schedule_repair(demo=True, store=store)
+    assert run.status is RepairStatus.FAILED
+    assert "secret-provider-internal-detail" not in render_report(store.get(run.id), tmp_path)
+
+
+def test_worker_exception_details_stay_in_local_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import threading
+
+    from integrations.github.tools.ci_repair_loop import worker
+
+    store = RepairStore(tmp_path)
+    run = _run()
+    store.save(run)
+    monkeypatch.setattr(worker, "start_watchdog", lambda _deadline: threading.Event())
+
+    def fail(*_args: Any) -> None:
+        raise ValueError("private-provider-exception-detail")
+
+    monkeypatch.setattr(worker, "execute_repair", fail)
+    worker.run_ci_repair_worker(tmp_path, run.id)
+    saved = store.get(run.id)
+    assert saved.status is RepairStatus.FAILED
+    assert "private-provider-exception-detail" not in render_report(saved, tmp_path)
+    assert "private-provider-exception-detail" in caplog.text
+
+
+def test_registration_publish_preserves_an_already_started_worker(tmp_path: Path) -> None:
+    store = RepairStore(tmp_path)
+    run, _ = store.reserve(_run())
+    active = run.model_copy(update={"status": RepairStatus.RUNNING, "pr_number": 17})
+    store.save(active)
+    published = store.mark_registered(run.id)
+    assert (
+        published.registered
+        and published.pr_number == 17
+        and published.status is RepairStatus.RUNNING
+    )

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import time
@@ -24,11 +25,13 @@ from infrastructure.scheduling.scheduler.runner import compute_next_run
 from infrastructure.scheduling.scheduler.storage import add_task, get_task
 from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask, TaskKind
 from integrations.github.client import GitHubRestClient
-from integrations.github.tools.ci_repair_loop.credentials import configured_token
+from integrations.github.tools.ci_repair_loop.credentials import account_id, configured_token
 from integrations.github.tools.ci_repair_loop.fixture import object_response
 from integrations.github.tools.ci_repair_loop.models import RepairRun, RepairStatus
 from integrations.github.tools.ci_repair_loop.storage import RepairStore
 from integrations.github.tools.ci_repair_loop.supervisor import finish_run
+
+logger = logging.getLogger(__name__)
 
 
 def _component(value: str) -> str:
@@ -50,6 +53,7 @@ def schedule_repair(
     started = time.time()
     token = configured_token(github_token)
     user = object_response(GitHubRestClient(token).request("GET", "user"))
+    actor_id = account_id(user)
     actor = _component(str(user.get("login") or ""))
     owner = _component(owner.strip() or actor)
     if demo:
@@ -69,6 +73,7 @@ def schedule_repair(
                 owner=owner,
                 repo=repo,
                 actor=actor,
+                actor_id=actor_id,
                 demo=demo,
                 started_at=started,
                 deadline=started + CI_REPAIR_SECONDS,
@@ -76,9 +81,11 @@ def schedule_repair(
             )
         )
         existing = get_task(run.id)
-        if reused:
-            if existing is not None and existing.enabled:
-                return run, True, existing.next_run
+        if reused and existing is not None and existing.enabled:
+            return run, True, existing.next_run
+        if reused and (
+            existing is not None or run.registered or run.status is not RepairStatus.QUEUED
+        ):
             try:
                 with FileLock(str(store.directory(run.id)) + ".execution.lock", timeout=0):
                     run = store.get(run.id)
@@ -117,8 +124,13 @@ def schedule_repair(
                 )
                 task.next_run = compute_next_run(task)
                 existing = add_task(task)
-        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
-            run.status, run.reason = RepairStatus.FAILED, str(exc)
+                run = store.mark_registered(run.id)
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError):
+            logger.exception("CI repair registration failed")
+            run.status, run.reason = (
+                RepairStatus.FAILED,
+                "Could not register the background repair; check the local scheduler log.",
+            )
             finish_run(store, run)
             return run, reused, None
     return run, reused, existing.next_run

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import shutil
-import sys
 import time
 from http import HTTPStatus
 from pathlib import Path
@@ -21,9 +20,14 @@ from integrations.github.tools.ci_fix.errors import GitHubCiFixError
 from integrations.github.tools.ci_fix.gh import run_gh_json
 from integrations.github.tools.ci_fix.ledger import record_ci_fix_outcome
 from integrations.github.tools.ci_fix.runner import run_ci_fix
-from integrations.github.tools.ci_fix.verification import CheckState, wait_for_pr_checks
-from integrations.github.tools.ci_repair_loop.credentials import configured_token
+from integrations.github.tools.ci_fix.verification import (
+    CheckState,
+    check_failed,
+    wait_for_pr_checks,
+)
+from integrations.github.tools.ci_repair_loop.credentials import account_id, configured_token
 from integrations.github.tools.ci_repair_loop.fixture import (
+    DemoRepositoryMismatch,
     cleanup_demo,
     object_response,
     prepare_demo,
@@ -46,7 +50,8 @@ def _read_pr(run: RepairRun, token: str) -> dict[str, Any]:
 def _run_link(rows: list[dict[str, Any]], *, failed: bool) -> str:
     for row in rows:
         conclusion = str(row.get("conclusion") or row.get("state") or "").upper()
-        if (conclusion in {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED"}) == failed:
+        matches = check_failed(row, expected_skips=set()) if failed else conclusion == "SUCCESS"
+        if matches:
             link = str(row.get("detailsUrl") or row.get("targetUrl") or "")
             if link.startswith("https://github.com/"):
                 return link
@@ -100,11 +105,7 @@ def _repair(run: RepairRun, store: RepairStore, token: str) -> None:
             run.status, run.reason = RepairStatus.CANCELLED, "The PR was closed."
             return
         rows = pr.get("statusCheckRollup") or []
-        failed = any(
-            str(row.get("conclusion") or row.get("state") or "").upper()
-            in {"FAILURE", "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED"}
-            for row in rows
-        )
+        failed = any(check_failed(row, expected_skips=set()) for row in rows)
         if not failed:
             # A new fixture must first be observed failing. Empty or queued checks prove nothing.
             if (
@@ -168,7 +169,7 @@ def execute_repair(run: RepairRun, store: RepairStore) -> None:
     token = configured_token()
     client = GitHubRestClient(token)
     user = object_response(client.request("GET", "user"))
-    if str(user.get("login", "")).casefold() != run.actor.casefold():
+    if not run.actor_id or account_id(user) != run.actor_id:
         raise ValueError("The background GitHub account changed; repair stopped.")
     if run.demo:
         prepare_demo(client, run, store)
@@ -188,10 +189,11 @@ def execute_repair(run: RepairRun, store: RepairStore) -> None:
         run.status = RepairStatus.SUCCEEDED
 
 
-def main() -> None:
+def run_ci_repair_worker(store_directory: Path, run_id: str) -> None:
+    """Run a persisted repair in the supervised child process."""
     logging.basicConfig(level=logging.INFO)
-    store = RepairStore(Path(sys.argv[1]))
-    run = store.get(sys.argv[2])
+    store = RepairStore(store_directory)
+    run = store.get(run_id)
     work_deadline = run.deadline - CI_REPAIR_FINISH_RESERVE_SECONDS
     watchdog = start_watchdog(work_deadline)
     try:
@@ -210,9 +212,18 @@ def main() -> None:
                     if exc.status_code in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN}
                     else "GitHub could not complete the demo; inspect retained diagnostics."
                 )
-            except (ValueError, GitHubCiFixError) as exc:
+            except DemoRepositoryMismatch:
+                logger.exception("Demo repository ownership or baseline check failed")
+                run.status, run.reason = (
+                    RepairStatus.FAILED,
+                    "The fixed repository is unrecognized or modified; existing files were preserved.",
+                )
+            except (ValueError, GitHubCiFixError):
                 logger.exception("CI repair could not continue")
-                run.status, run.reason = RepairStatus.FAILED, str(exc)
+                run.status, run.reason = (
+                    RepairStatus.FAILED,
+                    "The repair could not continue; inspect the local worker log.",
+                )
             except Exception as exc:
                 logger.exception("CI repair worker failed")
                 run.status, run.reason = (
@@ -223,7 +234,3 @@ def main() -> None:
         store.save(run)
     finally:
         watchdog.set()
-
-
-if __name__ == "__main__":
-    main()
