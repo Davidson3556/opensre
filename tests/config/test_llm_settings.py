@@ -441,3 +441,56 @@ def test_user_configured_provider_rejects_settings_that_cannot_resolve(monkeypat
     monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
 
     assert has_user_configured_llm_provider() is False
+
+
+def test_own_provider_gate_rejects_a_record_whose_secret_is_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # credential_status may not read secrets, so it calls an API-key provider
+    # configured on its non-secret record alone. Entering the shell on that
+    # record hands the user a session that fails its first turn.
+    from types import SimpleNamespace
+
+    import config.llm_settings as llm_settings
+
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
+    monkeypatch.setattr(llm_settings, "bootstrap_opensre_env", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        llm_settings, "resolve_llm_settings", lambda: SimpleNamespace(provider="openai")
+    )
+    monkeypatch.setattr(
+        llm_settings,
+        "credential_status",
+        lambda _provider: SimpleNamespace(configured=True, stale=False),
+    )
+    monkeypatch.setattr(
+        "config.llm_auth.credentials.resolve_for_request",
+        lambda _provider: SimpleNamespace(ok=False),
+    )
+
+    assert llm_settings.has_user_configured_llm_provider() is False
+
+
+def test_own_provider_gate_accepts_a_credential_that_resolves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    import config.llm_settings as llm_settings
+
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setattr(llm_settings, "bootstrap_opensre_env", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        llm_settings, "resolve_llm_settings", lambda: SimpleNamespace(provider="ollama")
+    )
+    monkeypatch.setattr(
+        llm_settings,
+        "credential_status",
+        lambda _provider: SimpleNamespace(configured=True, stale=False),
+    )
+    monkeypatch.setattr(
+        "config.llm_auth.credentials.resolve_for_request",
+        lambda _provider: SimpleNamespace(ok=True),
+    )
+
+    assert llm_settings.has_user_configured_llm_provider() is True

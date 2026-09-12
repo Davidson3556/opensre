@@ -199,3 +199,20 @@ def test_ignoring_the_account_route_survives_a_stored_session(
     restore_account_llm_route()
 
     assert account_llm_route() is not None
+
+
+def test_ignore_route_flag_reads_conventional_false_values_as_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The variable is documented for users now, so "=0" must not silently route
+    # someone away from their account.
+    from config.account import account_llm_route_ignored
+    from config.constants import OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV
+
+    for off in ("", "0", "false", "FALSE", "off", "no"):
+        monkeypatch.setenv(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, off)
+        assert account_llm_route_ignored() is False, off
+
+    for on in ("1", "true", "yes"):
+        monkeypatch.setenv(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, on)
+        assert account_llm_route_ignored() is True, on

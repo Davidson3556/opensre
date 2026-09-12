@@ -31,6 +31,8 @@ from config.secrets.store import (
 )
 
 _VERSION = 1
+#: Matches config.repl_config: an env flag is off unless set to something truthy.
+_FALSE_VALUES = ("", "0", "false", "off", "no")
 _LOCK_TIMEOUT_SECONDS = 10.0
 
 
@@ -206,8 +208,13 @@ def restore_account_llm_route() -> None:
 
 
 def account_llm_route_ignored() -> bool:
-    """Whether this process dropped the hosted route in favour of the user's own model."""
-    return bool(os.getenv(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, "").strip())
+    """Whether this process dropped the hosted route in favour of the user's own model.
+
+    Parsed like the repo's other boolean env settings: the variable is documented
+    for users now, so ``=0`` or ``=false`` must read as off rather than silently
+    routing them away from their account.
+    """
+    return os.getenv(OPENSRE_IGNORE_ACCOUNT_ROUTE_ENV, "").strip().lower() not in _FALSE_VALUES
 
 
 def account_llm_route() -> AccountLLMRoute | None:

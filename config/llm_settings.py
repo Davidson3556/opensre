@@ -490,6 +490,23 @@ def has_credentials_for_active_llm_provider() -> bool:
     return auth_status.configured and not auth_status.stale
 
 
+def _provider_credential_is_readable(provider: str) -> bool:
+    """Confirm the credential can actually be read, not merely that a record exists.
+
+    ``credential_status`` is contractually barred from reading secrets, so it
+    calls an API-key provider configured on the strength of its non-secret
+    record alone. That record outlives the secret (keyring disabled, credentials
+    file deleted), and acting on it hands the user a shell that fails its first
+    turn. Keyless kinds (CLI, ambient, local) resolve without touching storage.
+    """
+    from config.llm_auth.credentials import resolve_for_request
+
+    try:
+        return bool(resolve_for_request(provider).ok)
+    except Exception:
+        return False
+
+
 def has_user_configured_llm_provider() -> bool:
     """Return whether the user picked their own LLM provider and it has credentials.
 
@@ -509,4 +526,6 @@ def has_user_configured_llm_provider() -> bool:
         # offering a route that fails on the first turn.
         return False
     auth_status = credential_status(settings.provider)
-    return auth_status.configured and not auth_status.stale
+    if not auth_status.configured or auth_status.stale:
+        return False
+    return _provider_credential_is_readable(settings.provider)
