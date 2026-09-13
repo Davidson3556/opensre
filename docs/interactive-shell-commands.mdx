@@ -168,9 +168,8 @@ Bare invocation opens a picker or submenu:
 | `/history` | show / clear / off / on / retention |
 | `/resume` | Numbered list of recent sessions |
 
-These menus stay open. A read-only pick such as `/model show` prints its output
-and returns you to the menu, so leave with **done** or Esc when you are finished.
-A pick that changes something closes the menu itself.
+`/model` keeps its menu running: picking `show` prints the current models and
+hands you back to the menu, so leave it with **done** or Esc.
 
 ## Commands
 
@@ -841,7 +840,7 @@ Reopen the selection menu the agent is waiting on. Useful when the menu scrolled
 /choose
 ```
 
-Prints `No selection menu is pending.` when the agent has not asked anything. Outside a TTY it lists the options as text for you to answer in a reply instead of opening a picker.
+Prints `No selection menu is pending.` when the agent has not asked anything. Outside a TTY it lists the options as text for you to answer in a reply instead of opening a picker — except for a pending onboarding demo choice, which it drops with "Guided demo selection is unavailable here", leaving you to ask for what you want directly.
 
 </Accordion>
 
