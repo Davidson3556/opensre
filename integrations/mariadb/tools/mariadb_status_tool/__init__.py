@@ -46,7 +46,7 @@ def _map_get_mariadb_global_status(
     description="Retrieve key MariaDB server metrics including connections, threads, slow queries, InnoDB buffer pool stats, and uptime from SHOW GLOBAL STATUS.",
     use_cases=[
         "Check MariaDB connection counts, thread usage, and buffer pool health",
-        "Confirm whether connection pressure or slow queries are rising server-wide",
+        "Check server-wide connection pressure and the cumulative slow-query count",
     ],
     source="mariadb",
     surfaces=(ToolSurface.CHAT,),

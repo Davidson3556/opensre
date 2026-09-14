@@ -50,7 +50,7 @@ def _map_get_mariadb_process_list(
     ),
     use_cases=[
         "Find which MariaDB queries or connections are active right now",
-        "Identify a long-running or blocking MariaDB query",
+        "Identify a long-running active MariaDB query",
     ],
     source="mariadb",
     surfaces=(ToolSurface.CHAT,),

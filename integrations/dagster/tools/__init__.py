@@ -19,7 +19,7 @@ from integrations.dagster import (
     description="List Dagster assets and their latest materialization status.",
     use_cases=[
         "Check the latest materialization status of Dagster assets",
-        "Find Dagster assets that stopped materializing",
+        "Find Dagster assets whose latest materialization is old or failed",
     ],
     source="dagster",
     surfaces=(ToolSurface.CHAT,),

@@ -39,7 +39,7 @@ def _map_get_mongodb_current_ops(
     description="Retrieve currently executing MongoDB operations above a specific duration threshold.",
     use_cases=[
         "Find MongoDB operations running longer than a threshold right now",
-        "Identify a stuck or blocking MongoDB operation",
+        "Find a MongoDB operation that is long-running or waiting on a lock",
     ],
     source="mongodb",
     surfaces=(ToolSurface.CHAT,),
