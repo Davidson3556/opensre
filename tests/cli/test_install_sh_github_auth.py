@@ -78,6 +78,53 @@ def test_no_authorization_header_without_a_token(tmp_path: Path) -> None:
     assert not (tmp_path / "stdin.txt").read_text(encoding="utf-8").strip()
 
 
+def _run_with_env(tmp_path: Path, env_vars: dict[str, str]) -> str:
+    """Resolve the token from public variables exactly as install.sh does, then fetch.
+
+    Setting ``GITHUB_API_TOKEN`` directly would skip the lookup line, so a
+    misspelt variable there would leave the canary anonymous with every test
+    still green. This drives the real assignment instead and returns the
+    config curl received.
+    """
+    bin_dir = _fake_curl(tmp_path)
+    exports = "\n".join(f"export {name}={shlex.quote(value)}" for name, value in env_vars.items())
+    script = textwrap.dedent(f"""        unset OPENSRE_GITHUB_TOKEN GITHUB_TOKEN GH_TOKEN GITHUB_API_TOKEN
+        {{exports}}
+        __assign=$(grep -m1 '^GITHUB_API_TOKEN=' {shlex.quote(str(INSTALL_SH))})
+        __fn=$(awk '/^download_text\\(\\)/{{p=1}} p{{print}} p&&/^}}$/{{exit}}' {shlex.quote(str(INSTALL_SH))})
+        if [ -z "$__assign" ] || [ -z "$__fn" ]; then
+            echo "token lookup or download_text not found in install.sh" >&2
+            exit 1
+        fi
+        eval "$__assign"
+        eval "$__fn"
+        CURL_FLAGS=(--fail --silent)
+        PATH={shlex.quote(str(bin_dir))}:$PATH
+        download_text https://api.github.com/repos/o/r/releases/latest
+    """).replace("{exports}", exports)
+    result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    return (tmp_path / "stdin.txt").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("name", ["OPENSRE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"])
+def test_each_public_variable_authenticates_the_lookup(tmp_path: Path, name: str) -> None:
+    # The canary passes GITHUB_TOKEN; a typo in that name alone was enough to
+    # keep it anonymous while the other tests passed.
+    config = _run_with_env(tmp_path, {name: f"token-from-{name}"})
+
+    assert f"Authorization: Bearer token-from-{name}" in config
+
+
+def test_opensre_variable_wins_over_the_conventional_ones(tmp_path: Path) -> None:
+    config = _run_with_env(
+        tmp_path,
+        {"OPENSRE_GITHUB_TOKEN": "opensre", "GITHUB_TOKEN": "github", "GH_TOKEN": "gh"},
+    )
+
+    assert config.strip() == 'header = "Authorization: Bearer opensre"'
+
+
 def _run_hint(*, token: str) -> subprocess.CompletedProcess[str]:
     script = textwrap.dedent(f"""\
         __fn=$(awk '/^github_api_failure_hint\\(\\)/{{p=1}} p{{print}} p&&/^}}$/{{exit}}' \
