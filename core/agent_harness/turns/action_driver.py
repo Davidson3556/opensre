@@ -42,6 +42,11 @@ from core.agent_harness.session.integration_resolution import resolve_and_cache_
 from core.agent_harness.session.pending_choice import parse_ask_user_answers
 from core.agent_harness.session.terminal_access import execute_cli_onboard_on_missing_key
 from core.agent_harness.session_goal.review_input import collect_tool_evidence
+from core.agent_harness.task_plan.conclusion import (
+    blocked_steps_await_the_user,
+    task_plan_awaits_reply,
+    task_plan_blocks_conclusion,
+)
 from core.agent_harness.turns.action_dedup import (
     coerce_fingerprint_quiet,
     with_duplicate_action_call_guard,
@@ -61,10 +66,8 @@ from core.agent_harness.turns.display_text import (
 from core.agent_harness.turns.goal_review import (
     build_goal_reviewer,
     tap_executed_tool_names,
-    task_plan_awaits_reply,
-    task_plan_blocks_conclusion,
 )
-from core.agent_harness.turns.plan_evidence_hook import with_plan_evidence
+from core.agent_harness.turns.plan_hooks import with_task_plan_hooks
 from core.agent_harness.turns.skill_activation import prepare_active_skill
 from core.agent_harness.turns.turn_plan import TurnPlan
 from core.agent_harness.turns.turn_results import ToolCallingTurnResult
@@ -606,6 +609,9 @@ def _build_action_agent(
                 task_plan=getattr(session, "task_plan", None)
             ),
             on_plan_deferred_reply=_deferred_reply_presenter(output, deferred_replies),
+            blocked_needs_user=lambda: blocked_steps_await_the_user(
+                session, user_answered=bool(parse_ask_user_answers(message))
+            ),
             trace_context=lambda: turn_trace_state(session),
         )
 
@@ -946,9 +952,19 @@ def _end_silent_tool_turn(output: OutputSink) -> None:
 
 
 def _show_completed_plan_breakdown(output: OutputSink, session: SessionState) -> None:
-    """Print the one-shot per-step work breakdown when the plan is complete."""
+    """Print the one-shot per-step work breakdown when the plan is complete.
+
+    Not while a question to the user is queued or its answer is on its way:
+    a plan ending on blocked steps is still being resolved with them.
+    """
+    from core.agent_harness.session.terminal_access import session_terminal
     from core.agent_harness.task_plan.work_log import take_completed_plan_breakdown
 
+    if getattr(session, "pending_user_choice", None) is not None:
+        return
+    terminal = session_terminal(session)
+    if terminal is not None and getattr(terminal, "awaiting_handoff_answer", False):
+        return
     breakdown = take_completed_plan_breakdown(session)
     if not breakdown:
         return
@@ -1025,7 +1041,7 @@ def _run_action_turn(
             resolved_integrations=resolved_integrations,
             llm_factory=args.llm_factory,
             tool_hooks=with_menu_turn_end(
-                with_plan_evidence(with_duplicate_action_call_guard(args.tool_hooks), session),
+                with_task_plan_hooks(with_duplicate_action_call_guard(args.tool_hooks), session),
                 session,
             ),
             tool_resources=tool_resources,
