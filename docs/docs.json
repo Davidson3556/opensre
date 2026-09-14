@@ -208,6 +208,7 @@
                   "github-ci-fix",
                   "github-ci-health-scan",
                   "github-security-fix",
+                  "resolve-merge-conflicts",
                   "github-workflow-tools",
                   "integrations/github-actions",
                   "gitlab",
