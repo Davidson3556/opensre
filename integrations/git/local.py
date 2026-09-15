@@ -369,7 +369,13 @@ def checkout_branch(workspace: str, branch: str) -> None:
         )
 
 
-def commit_paths(workspace: str, paths: Sequence[str], message: str) -> None:
+def commit_paths(
+    workspace: str,
+    paths: Sequence[str],
+    message: str,
+    *,
+    analytics_workflow: str = "unspecified",
+) -> None:
     """Stage and commit *only* the given paths, excluding any other WIP in the tree.
 
     ``git add`` registers the paths (so newly created files are tracked), and
@@ -399,6 +405,13 @@ def commit_paths(workspace: str, paths: Sequence[str], message: str) -> None:
     )
     if commit.returncode != 0:
         raise GitCommandError(COMMIT_FAILED, f"git commit failed: {commit.stderr.strip()}")
+    from infrastructure.analytics.capture import capture_opensre_commit_created
+
+    capture_opensre_commit_created(
+        workflow=analytics_workflow,
+        commit_kind="content",
+        changed_file_count=len(set(paths)),
+    )
 
 
 def upstream_branch(workspace: str) -> str:

@@ -564,7 +564,12 @@ def _commit(
         )
     _stop_if_cancelled(finish, ws, before="commit", summary=summary, rendered=rendered)
     try:
-        sha = conclude_merge(ws, conflicts, baseline=baseline)
+        sha = conclude_merge(
+            ws,
+            conflicts,
+            baseline=baseline,
+            analytics_workflow="resolve_merge_conflicts",
+        )
     except GitCommandError as exc:
         raise ResolveMergeError(
             exc.kind,

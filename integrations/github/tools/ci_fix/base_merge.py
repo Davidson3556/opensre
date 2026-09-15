@@ -85,7 +85,12 @@ def merge_base_into_head(
     base_ref = f"origin/{ctx.base_branch}"
     try:
         fetch_remote_branch(workspace, ctx.base_branch, token=token)
-        if merge_ref(workspace, base_ref, message=_merge_message(ctx)):
+        if merge_ref(
+            workspace,
+            base_ref,
+            message=_merge_message(ctx),
+            analytics_workflow="github_ci_fix",
+        ):
             return BaseMergeResult(base_branch=ctx.base_branch, commit_sha=head_sha(workspace))
         conflicts = merge_conflicts(workspace, ours=ctx.head_branch, theirs=ctx.base_branch)
         merging = merge_head_sha(workspace)
@@ -114,7 +119,12 @@ def merge_base_into_head(
                 ours=ctx.head_branch,
                 theirs=ctx.base_branch,
             )
-        sha = conclude_merge(workspace, conflicts, baseline=baseline)
+        sha = conclude_merge(
+            workspace,
+            conflicts,
+            baseline=baseline,
+            analytics_workflow="github_ci_fix",
+        )
     except GitCommandError as exc:
         abort_merge(workspace)
         raise GitHubCiFixError(exc.kind, exc.message, branch_name=ctx.head_branch) from exc

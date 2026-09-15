@@ -227,7 +227,11 @@ def unresolved_conflicts(workspace: str, conflicts: MergeConflicts) -> list[Conf
 
 
 def conclude_merge(
-    workspace: str, conflicts: MergeConflicts, *, baseline: Mapping[str, str]
+    workspace: str,
+    conflicts: MergeConflicts,
+    *,
+    baseline: Mapping[str, str],
+    analytics_workflow: str = "unspecified",
 ) -> str:
     """Stage the resolver's edits plus the conflicted paths and commit the merge.
 
@@ -249,7 +253,7 @@ def conclude_merge(
             MERGE_FAILED,
             f"Conflicts remain in {', '.join(remaining)}; the merge was not committed.",
         )
-    return commit_merge(workspace)
+    return commit_merge(workspace, analytics_workflow=analytics_workflow)
 
 
 @dataclass(frozen=True)
