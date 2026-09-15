@@ -13,13 +13,14 @@ import shutil
 import sys
 from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Literal, cast
 
-from rich import box
 from rich.console import Console
 from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
+
+from infrastructure.terminal.markdown import REPLY_TABLE_BOX
 
 _REPL_OUTPUT_PREPARED = ContextVar("_REPL_OUTPUT_PREPARED", default=False)
 
@@ -44,6 +45,11 @@ def _repl_table_width(console: Console) -> int:
     # terminals (first-char clipping / duplicate right border when a row lands
     # exactly on the terminal width).
     return max(40, min(console.width, term_cols) - 1)
+
+
+def repl_output_width(console: Console) -> int:
+    """The width :func:`print_repl_renderable` renders at; size full-width rows to it."""
+    return _repl_table_width(console)
 
 
 def _prepare_tty_for_rich(console: Console) -> int:
@@ -95,11 +101,19 @@ def _write_repl_tty_buffered(
 ) -> None:
     """Render Rich output to a buffer and write it in one TTY-safe stdout call."""
     buf = io.StringIO()
+    # Inherit the caller's color depth and NO_COLOR decision so theme colours
+    # are not down-converted or stripped on a truecolor terminal (Rich would
+    # otherwise re-detect both from the env).
     buf_console = Console(
         file=buf,
         force_terminal=True,
         highlight=False,
         width=width,
+        color_system=cast(
+            Literal["auto", "standard", "256", "truecolor", "windows"],
+            console.color_system or "auto",
+        ),
+        no_color=console.no_color,
     )
     render_to_buffer(buf_console)
     styled = buf.getvalue()
@@ -202,6 +216,34 @@ def print_repl_text(console: Console, text: str, *, markup: bool = False) -> Non
     _console_print_prepared(console, text, markup=markup)
 
 
+def print_repl_renderable(console: Console, renderable: Any) -> None:
+    """Print one Rich renderable with CRLF under ``patch_stdout(raw=True)``.
+
+    Same buffered path as :func:`print_repl_text`, for styled multi-row
+    output (``Text``/``Group``) that would otherwise staircase in raw mode.
+    """
+    if console.file is sys.stdout and sys.stdout.isatty() and not _console_is_capturing(console):
+        width = _prepare_tty_for_rich(console)
+        _write_repl_tty_buffered(
+            console=console,
+            width=width,
+            leading_blank=False,
+            render_to_buffer=lambda buf_console: buf_console.print(renderable),
+        )
+        return
+    _console_print_prepared(console, renderable)
+
+
+def hyperlink(url: str, *, style: str = "") -> Text:
+    """The URL as clickable terminal text (OSC 8), still readable where links are unsupported.
+
+    The visible text stays the URL itself, so terminals that only auto-detect
+    URLs (or none at all) still show something the user can copy.
+    """
+    link_style = f"{style} link {url}".strip()
+    return Text(url, style=link_style)
+
+
 def repl_print(console: Console, *objects: Any, **kwargs: Any) -> None:
     """Print via Rich after resetting the TTY column (inline-menu safe)."""
     from surfaces.shared.terminal.components.choice_menu import prepare_repl_output_line
@@ -247,7 +289,7 @@ def repl_clear_screen() -> None:
 def repl_table(**kwargs: Any) -> Table:
     """Minimal outer borders — closer to Claude Code than full ASCII grids."""
     opts: dict[str, Any] = {
-        "box": box.MINIMAL_HEAVY_HEAD,
+        "box": REPLY_TABLE_BOX,
         "show_edge": False,
         "pad_edge": False,
         "title_justify": "left",
@@ -259,10 +301,13 @@ def repl_table(**kwargs: Any) -> Table:
 __all__ = [
     "_repl_output_already_prepared",
     "_repl_table_width",
+    "hyperlink",
     "print_repl_json",
+    "print_repl_renderable",
     "print_repl_table",
     "print_repl_text",
     "repl_clear_screen",
+    "repl_output_width",
     "repl_print",
     "repl_print_continue",
     "repl_table",

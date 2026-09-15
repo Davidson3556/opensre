@@ -4,7 +4,10 @@ from __future__ import annotations
 
 TOOL_MODULES = (
     "actions",
+    "ci_analytics",
     "ci_fix",
+    "ci_health_scan",
+    "ci_repair_loop",
     "commits",
     "file_contents",
     "issues",

@@ -10,22 +10,28 @@ from dataclasses import dataclass
 from integrations.coding_agent import CodingResult
 from integrations.git import (
     BRANCH_FAILED,
-    COMMIT_FAILED,
     GitCommandError,
     assert_not_protected,
-    changed_paths,
+    changed_since_baseline,
     checkout_branch,
     commit_paths,
     current_branch,
     ensure_git_repo,
-    file_fingerprints,
+    fetch_local_branch,
+    head_sha,
     push_branch,
+    remote_branch_sha,
 )
 from integrations.github.client import resolve_github_token
 from integrations.github.tools.ci_fix.context import CiFixContext
 from integrations.github.tools.ci_fix.errors import (
     ERR_NO_CHANGES,
     GitHubCiFixError,
+)
+from integrations.github.tools.ci_fix.storage.attempts import (
+    PreparedPush,
+    repair_key,
+    save_prepared_push,
 )
 
 _GIT_TIMEOUT_SEC = 60
@@ -45,7 +51,7 @@ class PushResult:
     changed_files: list[str]
 
 
-def checkout_target_branch(workspace: str, ctx: CiFixContext) -> None:
+def checkout_target_branch(workspace: str, ctx: CiFixContext, *, token: str | None = None) -> None:
     """Switch the workspace to the PR head branch the fix will edit and push.
 
     PR mode refuses protected/base branches. Branch-target repairs use a linked
@@ -56,7 +62,7 @@ def checkout_target_branch(workspace: str, ctx: CiFixContext) -> None:
         assert_not_protected(ctx.head_branch, protected_extra=ctx.base_branch)
         if current_branch(workspace) != ctx.head_branch:
             if not _local_branch_exists(workspace, ctx.head_branch):
-                _fetch_branch(workspace, ctx.head_branch)
+                fetch_local_branch(workspace, ctx.head_branch, token=token)
             checkout_branch(workspace, ctx.head_branch)
     except GitCommandError as exc:
         raise GitHubCiFixError(exc.kind, exc.message, branch_name=ctx.head_branch) from exc
@@ -69,8 +75,13 @@ def push_ci_fix(
     result: CodingResult,
     baseline: Mapping[str, str] | None = None,
     github_token: str | None = None,
+    already_committed: bool = False,
 ) -> PushResult:
-    """Commit files changed by the fix run and push the repair or PR branch."""
+    """Commit files changed by the fix run and push the repair or PR branch.
+
+    ``already_committed`` lets a run whose only change is a base-branch merge
+    commit push without new file changes.
+    """
     token = resolve_github_token(github_token)
     pushed_head_sha = ""
     try:
@@ -85,16 +96,31 @@ def push_ci_fix(
                     ),
                     branch_name=ctx.head_branch,
                 )
-            checkout_target_branch(workspace, ctx)
-        changed = _changed_since_baseline(workspace, baseline=baseline)
-        if not changed:
+            checkout_target_branch(workspace, ctx, token=token)
+        changed = changed_since_baseline(workspace, baseline=baseline)
+        if not changed and not already_committed:
             raise GitHubCiFixError(
                 ERR_NO_CHANGES,
                 f"CI fix for {ctx.target_label} produced no file changes; no push was made.",
                 branch_name=ctx.head_branch,
             )
-        commit_paths(workspace, changed, _commit_message(ctx, result.summary))
-        pushed_head_sha = _head_sha(workspace)
+        if changed:
+            commit_paths(workspace, changed, _commit_message(ctx, result.summary))
+        pushed_head_sha = head_sha(workspace)
+        source_branch = ctx.target_branch if ctx.is_branch_target else ctx.head_branch
+        if remote_branch_sha(workspace, source_branch, token=token) != ctx.head_sha:
+            raise GitHubCiFixError(
+                "checks_superseded",
+                "The remote source head changed during repair; no push was made.",
+            )
+        save_prepared_push(
+            repair_key(
+                ctx.owner,
+                ctx.repo,
+                str(ctx.number) if not ctx.is_branch_target else ctx.target_branch,
+            ),
+            PreparedPush(ctx.head_sha, pushed_head_sha, ctx.head_branch, changed),
+        )
         push_branch(
             workspace,
             ctx.head_branch,
@@ -109,17 +135,6 @@ def push_ci_fix(
         head_sha=pushed_head_sha,
         changed_files=changed,
     )
-
-
-def _changed_since_baseline(workspace: str, *, baseline: Mapping[str, str] | None) -> list[str]:
-    pre_existing = dict(baseline or {})
-    current = changed_paths(workspace)
-    current_fingerprints = file_fingerprints(workspace, current)
-    return [
-        path
-        for path in current
-        if path not in pre_existing or current_fingerprints.get(path, "") != pre_existing[path]
-    ]
 
 
 def _commit_message(ctx: CiFixContext, summary: str) -> str:
@@ -160,41 +175,6 @@ def _local_branch_exists(workspace: str, branch: str) -> bool:
         check=False,
     )
     return result.returncode == 0
-
-
-def _head_sha(workspace: str) -> str:
-    """Return the full identity of the commit about to be pushed."""
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        timeout=_GIT_TIMEOUT_SEC,
-        check=False,
-    )
-    sha = result.stdout.strip()
-    if result.returncode != 0 or not sha:
-        raise GitCommandError(
-            COMMIT_FAILED,
-            "Could not resolve the CI fix commit after committing the changed files.",
-        )
-    return sha
-
-
-def _fetch_branch(workspace: str, branch: str) -> None:
-    result = subprocess.run(
-        ["git", "fetch", "origin", f"{branch}:{branch}"],
-        cwd=workspace,
-        capture_output=True,
-        text=True,
-        timeout=_GIT_TIMEOUT_SEC,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise GitCommandError(
-            BRANCH_FAILED,
-            f"Could not fetch PR branch '{branch}': {result.stderr.strip()}",
-        )
 
 
 __all__ = ["PushResult", "checkout_target_branch", "push_ci_fix"]

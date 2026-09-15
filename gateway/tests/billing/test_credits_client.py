@@ -198,6 +198,57 @@ def test_metadata_cannot_override_billing_fields(monkeypatch: pytest.MonkeyPatch
     assert sent["json"]["reason"] == "slack_turn"
 
 
+@pytest.mark.usefixtures("metering_on")
+def test_a_replayed_delivery_repeats_one_org_scoped_idempotency_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange: the polling transports replay a delivery after a restart, so the
+    # same delivery id is consumed twice. Both attempts must carry the same key
+    # for the ledger to collapse them into one debit.
+    calls: list[dict[str, Any]] = []
+
+    def capture(_url: str, **kwargs: Any) -> httpx.Response:
+        calls.append(kwargs)
+        return httpx.Response(HTTPStatus.OK, json={"balance": 4})
+
+    monkeypatch.setattr("gateway.core.billing.credits_client.httpx.post", capture)
+
+    # Act: the crash-and-replay of one Telegram update.
+    for _ in range(2):
+        consume_credits(
+            organization_id="org_real",
+            reason="telegram_turn",
+            idempotency_key="telegram:44271",
+        )
+
+    # Assert: byte-identical key, and scoped to the org so the same update id
+    # under another tenant cannot be mistaken for this debit.
+    first, second = (call["headers"]["Idempotency-Key"] for call in calls)
+    assert first == second == "org_real:telegram:44271"
+
+
+@pytest.mark.usefixtures("metering_on")
+def test_no_idempotency_header_when_the_caller_names_no_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange: an unkeyed caller must not send an empty or forged key, which the
+    # webapp could otherwise treat as a repeat of a previous unkeyed charge.
+    calls: list[dict[str, Any]] = []
+
+    def capture(_url: str, **kwargs: Any) -> httpx.Response:
+        calls.append(kwargs)
+        return httpx.Response(HTTPStatus.OK, json={"balance": 4})
+
+    monkeypatch.setattr("gateway.core.billing.credits_client.httpx.post", capture)
+
+    # Act
+    consume_credits(organization_id="org_real", reason="smoke")
+
+    # Assert
+    (sent,) = calls
+    assert "Idempotency-Key" not in sent["headers"]
+
+
 @pytest.mark.parametrize("amount", [0, -1, 1.5, True])
 def test_rejects_non_positive_or_fractional_amounts(amount: Any) -> None:
     with pytest.raises(ValueError, match="positive integer"):

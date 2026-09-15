@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
+from collections.abc import Callable
 
 import click
 from rich.console import Console
@@ -17,11 +19,11 @@ from surfaces.interactive_shell.controller import InteractiveShellController
 from surfaces.interactive_shell.runtime.context import create_repl_runtime
 from surfaces.interactive_shell.runtime.startup.account_gate import (
     pass_sign_in_gate,
-    should_paint_launch_banner,
 )
+from surfaces.interactive_shell.runtime.startup.demo_picker import offer_demo
 from surfaces.interactive_shell.runtime.startup.initial_input import run_initial_input
-from surfaces.interactive_shell.runtime.startup.loop_suggestions import offer_loop_suggestions
 from surfaces.interactive_shell.ui.terminal_ui import render_terminal_ui
+from surfaces.shared.terminal.banner import animate_launch_wordmark
 from surfaces.shared.terminal.components.rendering import repl_clear_screen
 
 # Fallback when a caller does not supply one. Forces a terminal because the
@@ -37,11 +39,15 @@ async def run_repl_async(
     resume_session_id: str | None = None,
     console: Console | None = None,
     cli_command_group: click.Command | None = None,
+    finish_banner: Callable[[], None] | None = None,
+    after_banner: Callable[[], None] | None = None,
 ) -> int:
     """Run the shell on an existing event loop and return its exit code.
 
     ``cli_command_group`` is the ``opensre`` Click group the shell documents to
     the model; the process entrypoint passes it, embedders may leave it out.
+    ``after_banner`` is launch work the CLI held back until the banner is on
+    screen (error-reporting start); it runs once the runtime is booted.
     """
     # Keep MCP schema-cache warnings / httpx chatter off the transcript —
     # progress is soft status lines, not library WARNINGs.
@@ -62,6 +68,8 @@ async def run_repl_async(
     session.terminal.cli_command_group = cli_command_group
 
     if initial_input:
+        if after_banner is not None:
+            after_banner()
         session.warm_resolved_integrations()
         return run_initial_input(initial_input, session, out)
 
@@ -71,6 +79,14 @@ async def run_repl_async(
 
     # Open the session file now that we know this is an interactive REPL run.
     SessionManager.for_session(session).open_store(session)
+    # The runtime is booted; nothing has printed yet. Stop the launch spin and
+    # paint the static banner before anything below can write to the screen.
+    if finish_banner is not None:
+        finish_banner()
+    # The launch has nothing left to load: held-back work no longer competes
+    # with it for the interpreter.
+    if after_banner is not None:
+        after_banner()
 
     try:
         if resume_session_id:
@@ -87,9 +103,8 @@ async def run_repl_async(
             ):
                 return 1
         else:
-            # Fresh interactive start with no scheduled loops: offer the
-            # suggested-loops picker before the prompt loop takes stdin.
-            offer_loop_suggestions(session, out)
+            # Entering the master skill queues its menu; the first model turn is the answer.
+            offer_demo(session, out)
 
         await InteractiveShellController(
             runtime_context,
@@ -102,6 +117,31 @@ async def run_repl_async(
         SessionManager.for_session(session).close(session)
 
 
+def _start_launch_banner(console: Console) -> Callable[[], None]:
+    """Spin the wordmark on a thread while the runtime boots; return the finisher.
+
+    The finisher stops the spin (after its minimum frames), waits for it, and
+    prints the static banner — call it before anything else writes to the
+    screen. Off a TTY the spin is a no-op and only the static banner prints.
+    """
+    stop = threading.Event()
+    spinner = threading.Thread(
+        target=animate_launch_wordmark,
+        args=(console,),
+        kwargs={"stop": stop},
+        name="launch-banner-spin",
+        daemon=True,
+    )
+    spinner.start()
+
+    def finish() -> None:
+        stop.set()
+        spinner.join()
+        render_terminal_ui(console, animate=False)
+
+    return finish
+
+
 def run_repl(
     initial_input: str | None = None,
     config: ReplConfig | None = None,
@@ -109,6 +149,7 @@ def run_repl(
     resume_session_id: str | None = None,
     console: Console | None = None,
     cli_command_group: click.Command | None = None,
+    after_banner: Callable[[], None] | None = None,
 ) -> int:
     """Run the shell on a new event loop and return its exit code."""
     cfg = config or ReplConfig.load()
@@ -119,18 +160,15 @@ def run_repl(
     if not sys.stdin.isatty() and initial_input is None:
         return 0
 
+    finish_banner: Callable[[], None] | None = None
     try:
         if not initial_input:
-            # Unsigned TTY: the gate paints the banner as part of the sign-in
-            # screen. Signed-in / non-interactive starts still need the chrome.
-            paint_banner = should_paint_launch_banner()
             if not pass_sign_in_gate(out):
                 return 0
-            if paint_banner:
-                # Wipe the calling shell prompt so the REPL reads as its own
-                # screen (Droid/Claude Code), not a banner under ``uv run …``.
-                repl_clear_screen()
-                render_terminal_ui(out)
+            # Wipe the calling shell or completed sign-in screen so the REPL
+            # reads as its own screen, then boot it under the launch animation.
+            repl_clear_screen()
+            finish_banner = _start_launch_banner(out)
 
         return asyncio.run(
             run_repl_async(
@@ -139,6 +177,8 @@ def run_repl(
                 resume_session_id=resume_session_id,
                 console=out,
                 cli_command_group=cli_command_group,
+                finish_banner=finish_banner,
+                after_banner=after_banner,
             )
         )
     except (EOFError, KeyboardInterrupt):

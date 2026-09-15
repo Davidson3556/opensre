@@ -67,7 +67,7 @@ def test_heavy_test_suites_are_duration_balanced_with_measured_headroom() -> Non
         assert [entry["shard"] for entry in groups] == [
             f"{base}-{group}" for group in range(1, splits + 1)
         ]
-        assert all(f"--ci-splits={splits}" in entry["split_args"] for entry in groups)
+        assert all(f"--splits={splits}" in entry["shard_args"] for entry in groups)
 
     live_agent = next(entry for entry in entries if entry["shard"] == "cli-live-agent")
     assert live_agent["llm_provider"] == "openai"
@@ -97,8 +97,39 @@ def test_heavy_test_suites_are_duration_balanced_with_measured_headroom() -> Non
 
     run_step = next(step for step in test_job["steps"] if step.get("name") == "Run tests")
     assert "-p tests.ci_sharding" in run_step["run"]
+    assert "steps.shard.outputs.pytest_paths || matrix.pytest_paths" in run_step["run"]
+    assert "--ci-durations-output=" in run_step["run"]
     assert "--cov=config" not in run_step["run"]
     assert "github.event_name == 'push'" in run_step["env"]["PYTEST_COVERAGE_ARGS"]
+
+    prepartition = next(
+        step for step in test_job["steps"] if step.get("name") == "Pre-partition pytest files"
+    )
+    assert "tests.ci_sharding select" in prepartition["run"]
+    assert "matrix.shard_args" in prepartition["if"]
+    assert "matrix.pytest_paths" in prepartition["run"]
+
+
+def test_main_builds_a_reviewable_timing_snapshot_artifact() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    test_steps = jobs["test"]["steps"]
+    timing_upload = next(
+        step for step in test_steps if step.get("name") == "Upload shard timing data"
+    )
+    assert "github.event_name == 'push'" in timing_upload["if"]
+    assert timing_upload["with"]["name"] == "pytest-timings-${{ matrix.shard }}"
+
+    coverage_steps = jobs["coverage-report"]["steps"]
+    merge = next(
+        step for step in coverage_steps if step.get("name") == "Merge pytest timing snapshot"
+    )
+    assert "tests.ci_sharding merge" in merge["run"]
+    snapshot = next(
+        step
+        for step in coverage_steps
+        if step.get("name") == "Upload reviewable pytest timing snapshot"
+    )
+    assert snapshot["with"]["path"] == ".pytest-timings/pytest-file-durations.json"
 
 
 def test_quality_jobs_start_in_parallel_and_gate_aggregates_them() -> None:
@@ -111,13 +142,10 @@ def test_quality_jobs_start_in_parallel_and_gate_aggregates_them() -> None:
     assert "needs" not in jobs["quality-typecheck"]
     assert "needs" not in jobs["test"]
     assert "needs" not in jobs["session-store-locked"]
+    assert "needs" not in jobs["package-preflight"]
     assert "Restore mypy cache" in {step.get("name") for step in jobs["quality-typecheck"]["steps"]}
-    assert "Verify typed tool contracts" in {
-        step.get("name") for step in jobs["quality-typecheck"]["steps"]
-    }
-    assert "Verify tool registry index" in {
-        step.get("name") for step in jobs["quality-static"]["steps"]
-    }
+    assert "Shared type checks" in {step.get("name") for step in jobs["quality-typecheck"]["steps"]}
+    assert "Shared static checks" in {step.get("name") for step in jobs["quality-static"]["steps"]}
     tool_groups = [
         entry
         for entry in jobs["test"]["strategy"]["matrix"]["include"]
@@ -137,7 +165,55 @@ def test_quality_jobs_start_in_parallel_and_gate_aggregates_them() -> None:
         "test",
         "coverage-report",
         "session-store-locked",
+        "package-preflight",
     }
+
+
+def test_package_preflight_builds_and_smokes_changed_distribution_artifacts() -> None:
+    workflow = _workflow("ci.yml")
+    job = workflow["jobs"]["package-preflight"]
+
+    changes = next(step for step in job["steps"] if step.get("id") == "changes")
+    filters = yaml.safe_load(changes["with"]["filters"])
+    assert {
+        "README.md",
+        "LICENSE",
+        "MANIFEST.in",
+        "pyproject.toml",
+        "setup.cfg",
+        "setup.py",
+        "uv.lock",
+        "surfaces/**",
+        "tests/**",
+        "tools/**",
+    } <= set(filters["packaging"])
+
+    install_uv = next(step for step in job["steps"] if step.get("name") == "Install uv")
+    assert install_uv["if"] == "steps.changes.outputs.packaging == 'true'"
+    setup_python = next(step for step in job["steps"] if step.get("name") == "Set up Python")
+    assert setup_python["if"] == "steps.changes.outputs.packaging == 'true'"
+
+    build = next(
+        step for step in job["steps"] if step.get("name") == "Build and validate distributions"
+    )
+    assert build["if"] == "steps.changes.outputs.packaging == 'true'"
+    assert "python -m build --outdir dist" in build["run"]
+    assert "twine check dist/*" in build["run"]
+    assert "validate_wheel.py dist/*.whl" in build["run"]
+
+    smoke = next(step for step in job["steps"] if step.get("name") == "Smoke the installed wheel")
+    assert smoke["if"] == "steps.changes.outputs.packaging == 'true'"
+    assert "uv pip install --python" in smoke["run"]
+    assert '"$smoke_env/bin/opensre" --version' in smoke["run"]
+    assert '"$smoke_env/bin/opensre" _package-smoke' in smoke["run"]
+
+    gate_run = next(
+        step["run"]
+        for step in workflow["jobs"]["ci-gate"]["steps"]
+        if step.get("name") == "Require green upstream jobs"
+    )
+    assert "package_preflight='${{ needs.package-preflight.result }}'" in gate_run
+    assert '[ "$package_preflight" = success ]' in gate_run
 
 
 def test_source_filter_defaults_to_running_ci_for_new_file_types() -> None:

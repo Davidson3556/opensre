@@ -106,6 +106,18 @@ class TestDispatchSlash:
         assert "timed out" in buf.getvalue()
         assert session.history[-1]["ok"] is False
 
+    def test_account_logout_closes_shell_before_another_model_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surfaces.interactive_shell.command_registry import cli_parity as m
+
+        monkeypatch.setattr(m, "run_cli_command", lambda *_args, **_kwargs: True)
+        monkeypatch.setattr("config.account.account_llm_route", lambda: None)
+        console, output = _capture()
+
+        assert dispatch_slash("/account logout", Session(), console) is False
+        assert "Closing the interactive shell" in output.getvalue()
+
     def test_help_lists_all_commands(self) -> None:
         session = Session()
         console, buf = _capture()
@@ -372,10 +384,23 @@ class TestSpecificListCommands:
         console, buf = _capture()
         dispatch_slash("/model show", Session(), console)
         output = buf.getvalue()
+        assert "local configuration" in output
         assert "provider" in output
         assert "reasoning model" in output
         assert "toolcall model" in output
         assert "anthropic" in output
+
+    def test_model_show_identifies_the_opensre_webapp_source(self, monkeypatch: object) -> None:
+        self._patch_llm(monkeypatch)
+        monkeypatch.setattr(
+            "config.account.account_llm_route",
+            lambda: object(),
+        )
+        console, buf = _capture()
+
+        dispatch_slash("/model show", Session(), console)
+
+        assert "OpenSRE webapp" in buf.getvalue()
 
     def test_model_show_displays_ollama_model(self, monkeypatch: object) -> None:
         class _FakeLLM:
@@ -1454,7 +1479,7 @@ class TestResumeCommand:
 
         output = buf.getvalue()
         assert "❯" in output
-        assert "Ω" in output
+        assert "●" in output
         assert "$ /status" in output
         assert "you  " not in output
         assert "sre  " not in output
@@ -1488,7 +1513,7 @@ class TestResumeCommand:
 
         output = buf.getvalue()
         assert output.count("❯ repeat") == 2
-        assert output.count("Ω") == 2
+        assert output.count("●") == 2
         assert "first answer" in output
         assert "second answer" in output
 
@@ -2061,6 +2086,7 @@ class TestCliDelegatedCommands:
         "command,expected_args",
         [
             ("/config show", ["config", "show"]),
+            ("/runbooks list", ["runbooks", "list"]),
             ("/remote health", ["remote", "health"]),
             ("/guardrails audit", ["guardrails", "audit"]),
             ("/update", ["update"]),
@@ -2202,6 +2228,18 @@ class TestCliDelegatedCommands:
         dispatch_slash("/onboard local_llm", session, console)
 
         assert captured == [["onboard", "local_llm"]]
+
+    def test_headless_setup_keeps_dev_flag_in_fallback_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from surfaces.interactive_shell.command_registry import cli_parity as m
+
+        monkeypatch.setattr(m, "session_terminal", lambda _session: None)
+        console, buf = _capture()
+        session = Session()
+
+        assert m._cmd_setup(session, console, ["--dev"]) is True
+        assert "uv run opensre setup --dev" in buf.getvalue()
 
 
 def test_alerts_inactive_prints_enable_instructions(monkeypatch: pytest.MonkeyPatch) -> None:

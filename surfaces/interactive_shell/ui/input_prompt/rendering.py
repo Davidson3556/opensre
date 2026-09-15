@@ -7,6 +7,7 @@ from rich.console import Console
 from rich.text import Text
 
 from core.agent_harness.spi.handoff import parse_ask_user_answers
+from core.agent_harness.spi.session_goal import session_goal_is_active
 from infrastructure.terminal import theme as ui_theme
 from surfaces.interactive_shell.runtime import Session
 from surfaces.interactive_shell.ui.handoff_questions import (
@@ -95,12 +96,16 @@ def render_submitted_prompt(console: Console, session: Session, text: str) -> No
     if is_handoff_answer and autosubmitted:
         # A fixed picker choice already has a compact persistent result. Do not
         # manufacture a second user turn in scrollback; only mark the synthetic
-        # answer so a no-op model acknowledgement can be omitted as well.
-        session.terminal.pending_choice_response = stripped
+        # answer (the label alone, not the question it travels with) so a no-op
+        # model acknowledgement can be omitted as well.
+        session.terminal.pending_choice_response = (
+            ask_user_pairs[0][1] if len(ask_user_pairs) == 1 else stripped
+        )
         return
-    if autosubmitted:
+    if autosubmitted and session_goal_is_active(session):
         # Keep this shorter than the condition — the ``[N] ❯`` line carries the
         # full text; this only answers "is this still /goal set or real work?".
+        # Other autosubmits (a queued picker, a demo prompt) get the plain row.
         console.print()
         console.print(
             Text(

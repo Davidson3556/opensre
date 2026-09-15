@@ -151,6 +151,7 @@ def test_gateway_start_returns_running_gateway_handle(monkeypatch) -> None:
     with bound_turn_metering(
         organization_id="org_lifecycle",
         reason="telegram_turn",
+        idempotency_key="telegram:1",
         on_denied=MagicMock(),
     ):
         callback("hello", session, sink, logger)

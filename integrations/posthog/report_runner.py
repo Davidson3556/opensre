@@ -1,7 +1,7 @@
-"""Headless PostHog per-metric report via the posthog-summary skill.
+"""Headless PostHog per-metric report via the summarizing-posthog-analytics skill.
 
 Mirrors :mod:`integrations.sentry.morning_digest_runner`: run one headless
-agent turn driven by the ``posthog-summary`` skill and return the assistant
+agent turn driven by the ``summarizing-posthog-analytics`` skill and return the assistant
 report text. Used by the ``opensre posthog report`` command and the scheduled
 delivery path (issue #3824).
 """
@@ -12,18 +12,20 @@ import logging
 
 from core.agent_harness import AgentSession, TurnResult
 from infrastructure.scheduling.scheduler.agent_runner import AgentPayload
+from infrastructure.scheduling.scheduler.types import TaskReport
 from integrations.posthog.report_prerequisites import (
     DEFAULT_POSTHOG_PERIOD,
     posthog_not_configured_hint,
     posthog_report_available,
 )
+from integrations.scheduled_outcomes import ScheduledOutcomes
 
 logger = logging.getLogger(__name__)
 
 _REPORT_BASE_PROMPT = (
     "PostHog analytics report: produce a per-metric product-analytics pulse "
     "for the team — what moved and why it matters. "
-    "Follow the posthog-summary skill workflow."
+    "Follow the summarizing-posthog-analytics skill workflow."
 )
 
 
@@ -60,8 +62,8 @@ def _dispatch_headless_turn(message: str) -> TurnResult:
     )
 
 
-def run_posthog_report(payload: AgentPayload) -> str:
-    """Run one headless posthog-summary turn and return the assistant report."""
+def run_posthog_report(payload: AgentPayload) -> TaskReport:
+    """Run one headless summarizing-posthog-analytics turn and return the assistant report."""
     message = build_report_prompt(payload)
     result = _dispatch_headless_turn(message)
     report = result.primary_response_text
@@ -78,7 +80,7 @@ def run_posthog_report(payload: AgentPayload) -> str:
         raise RuntimeError(
             "PostHog report failed: the reasoning client did not produce a response."
         )
-    return report
+    return ScheduledOutcomes().report(result, agent_mode=False)
 
 
 __all__ = ["build_report_prompt", "run_posthog_report"]

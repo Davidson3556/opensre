@@ -3,6 +3,7 @@
 Contract:
   POST {OPENSRE_WEBAPP_URL}/api/credits/consume
   Authorization: Bearer <shared AGENT_USAGE_SECRET>
+  Idempotency-Key: <org>:<caller key>   (optional; see ``idempotency_key``)
   body: {"amount": <number>, "organizationId": <org>, "reason": <str>}
   Success (2xx): {"balance", "consumed", "reason"}.
   Shortfall: HTTP 402 with {"error": "insufficient_credits", "balance", "required"}.
@@ -26,6 +27,7 @@ import httpx
 
 from config.constants.billing import (
     CREDITS_HTTP_TIMEOUT_SECONDS,
+    CREDITS_IDEMPOTENCY_HEADER,
     WEBAPP_URL_ENV,
 )
 from config.constants.organization import organization_id
@@ -70,6 +72,7 @@ def consume_credits(
     *,
     amount: int = 1,
     reason: str,
+    idempotency_key: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> CreditsOutcome:
     """POST one credit consumption to the webapp ledger and classify the result.
@@ -79,6 +82,11 @@ def consume_credits(
             ``ORGANIZATION_ID`` env value.
         amount: Whole credits to consume (webapp requires a positive integer).
         reason: Short machine-readable cause, e.g. ``"slack_turn"``.
+        idempotency_key: Stable per-delivery identifier, e.g.
+            ``"telegram:44271"``. Sent as ``Idempotency-Key``, prefixed here
+            with the resolved org so a transport id that is only unique per
+            transport cannot collide across tenants. Whether a repeat is
+            actually safe is the webapp's to guarantee, not this client's.
         metadata: Optional extra JSON fields merged into the request body.
 
     Returns:
@@ -112,11 +120,15 @@ def consume_credits(
         "reason": reason,
     }
 
+    headers = {"Authorization": f"Bearer {token}"}
+    if idempotency_key:
+        headers[CREDITS_IDEMPOTENCY_HEADER] = f"{org}:{idempotency_key}"
+
     try:
         response = httpx.post(
             f"{base_url}{_CONSUME_PATH}",
             json=payload,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=headers,
             timeout=CREDITS_HTTP_TIMEOUT_SECONDS,
         )
     except Exception as exc:

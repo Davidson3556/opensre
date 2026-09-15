@@ -108,6 +108,8 @@ def test_idle_prompt_region_shows_plan_without_thinking_or_ready_hint() -> None:
     assert "Ready" not in rendered  # no recurring idle hint line
     assert rendered.index("Plan · 2/3") < rendered.index("Auto (High)")
     assert "  ○ Confirm checkout returns 2xx\n\nAuto (High) · Allow all" in rendered
+    # Blank row above the plan separates it from scrollback notes (Droid blocks).
+    assert rendered.lstrip().startswith("Plan · 2/3") or "\nPlan · 2/3" in rendered
 
 
 def test_clearing_the_plan_resets_expanded_state() -> None:
@@ -243,7 +245,10 @@ def test_plan_breakdown_dims_work_notes_and_accents_checked_steps() -> None:
 
     ui_theme.set_active_theme("amber")
     # A 16-color render of theme DIM must not pin work notes to bright-black.
-    Style.parse(str(ui_theme.DIM))._make_ansi_codes(ColorSystem.STANDARD)
+    # Rich stores the first color_system on the cached Style; reset it so this
+    # poison does not leak to later tests in the same process.
+    dim_style = Style.parse(str(ui_theme.DIM))
+    dim_style._make_ansi_codes(ColorSystem.STANDARD)
     breakdown = (
         "Plan complete · 2/2\n"
         "  ✓ Confirm repository\n"
@@ -260,8 +265,12 @@ def test_plan_breakdown_dims_work_notes_and_accents_checked_steps() -> None:
         no_color=False,
         width=80,
     )
-    render_plan_breakdown(console, breakdown)
-    out = buf.getvalue()
+    try:
+        render_plan_breakdown(console, breakdown)
+        out = buf.getvalue()
+    finally:
+        dim_style._ansi = None
+        Style.parse.cache_clear()
     plain = _strip_ansi(out)
     assert "Plan complete · 2/2" in plain
     assert "✓ Confirm repository" in plain
@@ -273,3 +282,61 @@ def test_plan_breakdown_dims_work_notes_and_accents_checked_steps() -> None:
     assert ui_theme.TEXT_ANSI in out
     # Caption is secondary, distinct from step body and work notes.
     assert ui_theme.SECONDARY_ANSI in out
+
+
+def _completed_plan():
+    from core.agent_harness.task_plan.plan import PlanStep, PlanStepStatus, TaskPlan
+
+    return TaskPlan(
+        steps=tuple(
+            PlanStep(step=text, status=PlanStepStatus.COMPLETED)
+            for text in ("Confirm repository context", "Run the analysis")
+        )
+    )
+
+
+def test_a_finished_plan_leaves_the_prompt_once_its_breakdown_is_in_scrollback() -> None:
+    # Arrange: the turn ended, the one-shot "Plan complete" breakdown was printed.
+    session = Session()
+    session.task_plan = _completed_plan()
+    session.task_plan_breakdown_emitted = True
+
+    # Act
+    rendered = _strip_ansi(render_prompt_region(session, ReplState(), SpinnerState()).value)
+
+    # Assert: no second copy pinned above the prompt.
+    assert "Plan" not in rendered
+
+
+def test_a_finished_plan_stays_pinned_until_its_breakdown_is_printed() -> None:
+    # Arrange: steps are all completed but the breakdown has not been emitted yet.
+    session = Session()
+    session.task_plan = _completed_plan()
+    session.task_plan_breakdown_emitted = False
+
+    # Act
+    rendered = _strip_ansi(render_prompt_region(session, ReplState(), SpinnerState()).value)
+
+    # Assert
+    assert "Plan complete · 2/2" in rendered or "Plan · 2/2" in rendered
+
+
+def test_overlay_labels_only_the_declared_verification_step() -> None:
+    # Arrange
+    plan, error = parse_task_plan(
+        {
+            "plan": [
+                {"step": "Capture 502 samples from checkout", "status": "completed"},
+                {"step": "Confirm checkout returns 2xx", "status": "in_progress", "verifies": True},
+                {"step": "Write up the finding", "status": "pending"},
+            ]
+        }
+    )
+    assert error is None and plan is not None
+
+    # Act
+    rows = _strip_ansi(task_plan_overlay_ansi(plan)).splitlines()
+
+    # Assert
+    assert any(row.strip() == "● Confirm checkout returns 2xx (verify)" for row in rows)
+    assert not any("Write up the finding (verify)" in row for row in rows)

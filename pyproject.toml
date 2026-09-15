@@ -18,10 +18,7 @@ dependencies = [
     "anthropic>=0.77.1",
     "mcp>=1.28.1",
     "openai>=2.0.0",
-    # Held below 1.96: LiteLLM 1.97 updates GPT-5.6 prices while family
-    # suffixes still use OpenSRE's local launch-rate fallback, producing
-    # inconsistent cost estimates. Lift after canonical fallback is reconciled.
-    "litellm>=1.90.0,<1.96.0",
+    "litellm>=1.90.0,<1.100.0",
     # Data validation
     "pydantic>=2.12.5,<3",
     "pydantic-settings>=2.12.0,<3",
@@ -52,7 +49,6 @@ dependencies = [
     "questionary>=2.1.1",
     "prompt_toolkit>=3.0.0",
     "PyYAML>=6.0",
-    "numpy>=1.26.0",
     "tzdata>=2026.1",
     # OpenTelemetry
     "opentelemetry-api>=1.41.0",
@@ -113,6 +109,15 @@ dev = [
     "boto3-stubs[essential]",
     "huggingface_hub>=0.26.0",
     "datasets>=3.0.0",
+    # Exercises the Langfuse trace adapter in CI; production installs opt in
+    # via the ``langfuse`` extra.
+    "langfuse>=4.15.2,<5",
+]
+# Optional LLM tracing backend. Activated only when LANGFUSE_PUBLIC_KEY and
+# LANGFUSE_SECRET_KEY are set; without the extra installed the runtime keeps
+# running with the noop observation sink.
+langfuse = [
+    "langfuse>=4.15.2,<5",
 ]
 release-dist = [
     "build>=1.2.0",
@@ -165,7 +170,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-"core.agent_harness.prompts" = ["opensre_system_prompt.md", "skills/**/*.md"]
+"core.agent_harness.prompts" = ["opensre_system_prompt.md", "skills/**/*.md", "skills/**/scripts/*.py"]
 "integrations" = ["**/SKILL.md", "yandex_cloud/api_index.json"]
 "tools" = ["**/SKILL.md"]
 

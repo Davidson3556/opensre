@@ -13,8 +13,12 @@ from core.agent_harness.session.pending_choice import (
     PendingUserChoice,
     format_ask_user_answers,
 )
+from core.agent_harness.task_plan import PlanStep, PlanStepStatus, TaskPlan
+from surfaces.interactive_shell.runtime.core.state import ReplState, SpinnerState
 from surfaces.interactive_shell.session import Session
 from surfaces.interactive_shell.ui.ask_user import CUSTOM_OPTION
+from surfaces.interactive_shell.ui.input_prompt.rendering import resolve_prompt_placeholder
+from surfaces.interactive_shell.ui.terminal_ui import render_prompt_region
 
 _CHOICE = PendingUserChoice(
     title="How should I handle the uncommitted changes?",
@@ -51,10 +55,18 @@ def test_selection_is_auto_submitted_as_next_user_message(
 
     assert _handler(session, console) is True
     assert session.pending_user_choice is None
-    assert session.terminal.pending_prompt_default == "Commit the changes"
+    # The question travels with the answer so the next turn cannot be re-routed.
+    assert session.terminal.pending_prompt_default == format_ask_user_answers(
+        _CHOICE.items(), ("Commit the changes",)
+    )
     assert session.terminal.pending_prompt_autosubmit is True
     output = buf.getvalue()
-    assert "✓" in output
+    # Single-pick recap is the one-question Ask User card — not a ``↳`` line and
+    # not a plan-step ``✓`` (that glued picks into Plan complete).
+    assert "Ask User" in output
+    assert "↳" not in output
+    assert "offered:" not in output
+    assert "✓" not in output
     assert _CHOICE.title in output
     assert "Commit the changes" in output
 
@@ -72,6 +84,64 @@ def test_cancelled_menu_leaves_prompt_free(monkeypatch: pytest.MonkeyPatch) -> N
     assert session.terminal.pending_prompt_default is None
     assert session.terminal.pending_prompt_autosubmit is False
     assert "cancelled" in buf.getvalue().lower()
+
+
+@pytest.mark.parametrize("plan_only", [False, True])
+def test_cancelling_a_skill_menu_drops_the_skill_plan(
+    monkeypatch: pytest.MonkeyPatch, plan_only: bool
+) -> None:
+    session = Session()
+    plain_placeholder = resolve_prompt_placeholder(session)
+    session.pending_user_choice = _CHOICE
+    session.active_skill = "scheduling-github-ci-repairs"
+    session.skills_already_prompted.add(session.active_skill)
+    session.task_plan = TaskPlan(
+        steps=(
+            PlanStep(
+                "Inspect CI failures",
+                PlanStepStatus.PENDING if plan_only else PlanStepStatus.IN_PROGRESS,
+            ),
+            PlanStep("Schedule CI fixes", PlanStepStatus.PENDING),
+        )
+    )
+    session.plan_only_until_authorized = plan_only
+    state, spinner = ReplState(), SpinnerState()
+    assert "Plan" in render_prompt_region(session, state, spinner).value
+    assert resolve_prompt_placeholder(session) != plain_placeholder
+    console, _buf = _console()
+    monkeypatch.setattr(choice_prompt, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(choice_prompt, "repl_choose_one", lambda **_kw: None)
+
+    assert _handler(session, console) is True
+
+    assert session.active_skill is None
+    assert "scheduling-github-ci-repairs" not in session.skills_already_prompted
+    assert session.task_plan is None
+    assert session.plan_only_until_authorized is False
+    assert "Plan" not in render_prompt_region(session, state, spinner).value
+    assert resolve_prompt_placeholder(session) == plain_placeholder
+
+
+def test_cancelling_a_menu_without_a_skill_keeps_the_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = Session()
+    session.pending_user_choice = _CHOICE
+    plan = TaskPlan(
+        steps=(
+            PlanStep("Inspect CI failures", PlanStepStatus.IN_PROGRESS),
+            PlanStep("Schedule CI fixes", PlanStepStatus.PENDING),
+        )
+    )
+    session.task_plan = plan
+    session.plan_only_until_authorized = True
+    console, _buf = _console()
+    monkeypatch.setattr(choice_prompt, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(choice_prompt, "repl_choose_one", lambda **_kw: None)
+
+    assert _handler(session, console) is True
+
+    assert session.active_skill is None
+    assert session.task_plan is plan
+    assert session.plan_only_until_authorized is True
 
 
 def test_no_pending_choice_prints_notice() -> None:
@@ -179,6 +249,45 @@ def test_batch_custom_option_is_captured_inline_and_auto_submitted(
     )
 
 
+def test_slash_command_typed_into_the_menu_runs_as_a_command_not_an_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Arrange: the user types a slash command into the custom row.
+    session = Session()
+    session.pending_user_choice = _CHOICE
+    console, buf = _console()
+    monkeypatch.setattr(choice_prompt, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(choice_prompt, "repl_choose_one", lambda **_kw: "/loops messages")
+
+    # Act
+    assert _handler(session, console) is True
+
+    # Assert: the menu closes, the command runs, nothing is handed to the model as an answer.
+    assert session.terminal.pending_prompt_default == "/loops messages"
+    assert session.terminal.awaiting_handoff_answer is False
+    assert "Running /loops messages" in buf.getvalue()
+
+
+def test_option_mapped_to_a_command_runs_that_command(monkeypatch: pytest.MonkeyPatch) -> None:
+    from core.agent_harness.session.pending_choice import PendingUserChoice
+
+    session = Session()
+    session.pending_user_choice = PendingUserChoice(
+        title="How should I continue?",
+        options=("Keep going", "Stop here"),
+        commands={"Stop here": "/goal clear"},
+    )
+    console, buf = _console()
+    monkeypatch.setattr(choice_prompt, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(choice_prompt, "repl_choose_one", lambda **_kw: "Stop here")
+
+    assert _handler(session, console) is True
+
+    assert session.terminal.pending_prompt_default == "/goal clear"
+    assert session.terminal.awaiting_handoff_answer is False
+    assert "Running /goal clear" in buf.getvalue()
+
+
 def test_single_choice_types_custom_in_place(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -200,8 +309,35 @@ def test_single_choice_types_custom_in_place(
     choices = seen["choices"]
     assert isinstance(choices, list)
     assert (CUSTOM_OPTION, CUSTOM_OPTION) in choices
-    assert session.terminal.pending_prompt_default == "typed by hand"
+    assert session.terminal.pending_prompt_default == format_ask_user_answers(
+        _CHOICE.items(), ("typed by hand",)
+    )
     assert session.terminal.pending_prompt_autosubmit is True
+
+
+def test_single_choice_paints_the_pending_note_inside_the_menu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The explainer rides the menu paint (cleared on close), not the transcript."""
+    session = Session()
+    session.pending_user_choice = PendingUserChoice(
+        title=_CHOICE.title,
+        options=_CHOICE.options,
+        note="Why I am asking, in one line.",
+    )
+    console, buf = _console()
+    seen: dict[str, object] = {}
+
+    def _pick(**kwargs: object) -> str:
+        seen["note"] = kwargs.get("note")
+        return _CHOICE.options[0]
+
+    monkeypatch.setattr(choice_prompt, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(choice_prompt, "repl_choose_one", _pick)
+
+    assert _handler(session, console) is True
+    assert seen["note"] == "Why I am asking, in one line."
+    assert "Why I am asking" not in buf.getvalue()
 
 
 def test_non_tty_batch_prints_every_question(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -217,3 +353,31 @@ def test_non_tty_batch_prints_every_question(monkeypatch: pytest.MonkeyPatch) ->
         assert question.title in output
         for option in question.options:
             assert option in output
+
+
+def test_single_choice_without_custom_row_when_the_menu_disallows_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The startup demo menu declares allow_custom false: options only."""
+    # Arrange
+    session = Session()
+    session.pending_user_choice = PendingUserChoice(
+        title="Which demo?", options=("A", "B"), custom_answer=False
+    )
+    console, _buf = _console()
+    seen: dict[str, object] = {}
+
+    def _pick(**kwargs: object) -> str:
+        seen["custom_label"] = kwargs.get("custom_label")
+        seen["choices"] = kwargs["choices"]
+        return "A"
+
+    monkeypatch.setattr(choice_prompt, "repl_tty_interactive", lambda: True)
+    monkeypatch.setattr(choice_prompt, "repl_choose_one", _pick)
+
+    # Act
+    assert _handler(session, console) is True
+
+    # Assert
+    assert seen["custom_label"] is None
+    assert (CUSTOM_OPTION, CUSTOM_OPTION) not in seen["choices"]  # type: ignore[operator]

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from infrastructure.scheduling.scheduler.types import (
     Provider,
     ScheduledTask,
@@ -46,6 +49,14 @@ class TestScheduledTask:
         assert task.last_run is None
         assert task.next_run is None
 
+    def test_work_item_reminder_requires_work_item_id(self) -> None:
+        with pytest.raises(ValidationError, match="params.work_item_id"):
+            ScheduledTask(
+                kind=TaskKind.WORK_ITEM_REMINDER,
+                cron="0 9 * * *",
+                provider=Provider.INTERACTIVE_SHELL,
+            )
+
     def test_all_task_kinds(self) -> None:
         assert TaskKind.MANUAL_LOOP == "manual_loop"
         assert TaskKind.SENTRY_MORNING_DIGEST == "sentry_morning_digest"
@@ -54,7 +65,8 @@ class TestScheduledTask:
         assert TaskKind.POSTHOG_METRIC_REPORT == "posthog_metric_report"
         assert TaskKind.WORK_ITEM_REMINDER == "work_item_reminder"
         assert TaskKind.WORK_ITEM_CHECKIN == "work_item_checkin"
-        assert len(TaskKind) == 7
+        assert TaskKind.RECURRING_SKILL == "recurring_skill"
+        assert len(TaskKind) == 8
 
     def test_all_providers(self) -> None:
         assert Provider.TELEGRAM == "telegram"
@@ -79,3 +91,4 @@ class TestTaskRun:
         assert TaskStatus.SUCCESS == "success"
         assert TaskStatus.FAILED == "failed"
         assert TaskStatus.SKIPPED == "skipped"
+        assert TaskStatus.ABANDONED == "abandoned"

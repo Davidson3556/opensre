@@ -56,31 +56,16 @@ jobs:
         if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
         run: uv sync --frozen --extra dev
 
-      - name: Lint
+      - name: Report pytest timing snapshot health
         if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run python -m ruff check $PYTHON_SOURCE_PATHS tests/
+        run: |
+          uv run python -m tests.ci_sharding report --label=tools-runtime tests/tools tests/core core/agent_harness/prompts/skills tests/infrastructure tests/filestorage tests/utils tests/masking --ignore=tests/core/agent --ignore=tests/core/tool/test_contracts.py --ignore=tests/tools/test_registry_index.py --ignore=tests/tools/selection
+          uv run python -m tests.ci_sharding report --label=cli-runtime tests/cli tests/interactive_shell tests/surfaces tests/core/agent tests/fleet_monitoring tests/analytics tests/sandbox --ignore=tests/cli/test_smoke.py
+          uv run python -m tests.ci_sharding report --label=integrations-and-misc tests/integrations tests/bootstrap tests/benchmarks tests/shared tests/config tests/github_ci tests/quality tests/packaging tests/scheduler gateway/tests
 
-      - name: Format check
+      - name: Shared static checks
         if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run python -m ruff format --check $PYTHON_SOURCE_PATHS tests/
-
-      - name: Verify integration registry (smoke)
-        if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: make verify-integrations-smoke
-
-      - name: Verify tool registry index
-        if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run pytest -q tests/tools/test_registry_index.py
-
-      - name: Import graph
-        if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run python .github/ci/check_imports.py --strict
-
-      # Full layered contracts (.importlinter.strict), not the minimal default
-      # .importlinter config used by ``make check-imports``.
-      - name: Import boundaries
-        if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run lint-imports --config .importlinter.strict
+        run: uv run python .github/ci/run_checks.py --group static
 
   quality-typecheck:
     name: quality-typecheck
@@ -125,13 +110,9 @@ jobs:
         if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
         run: uv sync --frozen --extra dev
 
-      - name: Typecheck
+      - name: Shared type checks
         if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run python -m mypy $PYTHON_SOURCE_PATHS
-
-      - name: Verify typed tool contracts
-        if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
-        run: uv run pytest -q tests/core/tool/test_contracts.py
+        run: uv run python .github/ci/run_checks.py --group types
 
   test:
     name: test (${{ matrix.shard }})
@@ -149,12 +130,12 @@ jobs:
               --ignore=tests/core/tool/test_contracts.py
               --ignore=tests/tools/test_registry_index.py
               --ignore=tests/tools/selection
-            split_args: >-
-              --ci-splits=6 --ci-group=1
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=1
             pytest_paths: >-
               tests/tools
               tests/core
+              core/agent_harness/prompts/skills
               tests/infrastructure
               tests/filestorage
               tests/utils
@@ -166,12 +147,12 @@ jobs:
               --ignore=tests/core/tool/test_contracts.py
               --ignore=tests/tools/test_registry_index.py
               --ignore=tests/tools/selection
-            split_args: >-
-              --ci-splits=6 --ci-group=2
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=2
             pytest_paths: >-
               tests/tools
               tests/core
+              core/agent_harness/prompts/skills
               tests/infrastructure
               tests/filestorage
               tests/utils
@@ -183,12 +164,12 @@ jobs:
               --ignore=tests/core/tool/test_contracts.py
               --ignore=tests/tools/test_registry_index.py
               --ignore=tests/tools/selection
-            split_args: >-
-              --ci-splits=6 --ci-group=3
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=3
             pytest_paths: >-
               tests/tools
               tests/core
+              core/agent_harness/prompts/skills
               tests/infrastructure
               tests/filestorage
               tests/utils
@@ -200,12 +181,12 @@ jobs:
               --ignore=tests/core/tool/test_contracts.py
               --ignore=tests/tools/test_registry_index.py
               --ignore=tests/tools/selection
-            split_args: >-
-              --ci-splits=6 --ci-group=4
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=4
             pytest_paths: >-
               tests/tools
               tests/core
+              core/agent_harness/prompts/skills
               tests/infrastructure
               tests/filestorage
               tests/utils
@@ -217,12 +198,12 @@ jobs:
               --ignore=tests/core/tool/test_contracts.py
               --ignore=tests/tools/test_registry_index.py
               --ignore=tests/tools/selection
-            split_args: >-
-              --ci-splits=6 --ci-group=5
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=5
             pytest_paths: >-
               tests/tools
               tests/core
+              core/agent_harness/prompts/skills
               tests/infrastructure
               tests/filestorage
               tests/utils
@@ -234,20 +215,19 @@ jobs:
               --ignore=tests/core/tool/test_contracts.py
               --ignore=tests/tools/test_registry_index.py
               --ignore=tests/tools/selection
-            split_args: >-
-              --ci-splits=6 --ci-group=6
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=6
             pytest_paths: >-
               tests/tools
               tests/core
+              core/agent_harness/prompts/skills
               tests/infrastructure
               tests/filestorage
               tests/utils
               tests/masking
           - os: ubuntu-latest
             shard: cli-runtime-1
-            # Live shell action-agent contracts are validated on openai,
-            # matching interactive-shell-live.yml. The
+            # Live shell action-agent contracts are validated on openai. The
             # default anthropic tool-call model (haiku) cannot reliably perform
             # compound action planning, so pin this shard to openai.
             # ``tests/core/agent`` runs here because it contains the live
@@ -258,9 +238,8 @@ jobs:
             llm_provider: openai
             extra_pytest_args: >-
               --ignore=tests/cli/test_smoke.py
-            split_args: >-
-              --ci-splits=6 --ci-group=1
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=1
             pytest_paths: >-
               tests/cli
               tests/interactive_shell
@@ -274,9 +253,8 @@ jobs:
             llm_provider: openai
             extra_pytest_args: >-
               --ignore=tests/cli/test_smoke.py
-            split_args: >-
-              --ci-splits=6 --ci-group=2
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=2
             pytest_paths: >-
               tests/cli
               tests/interactive_shell
@@ -290,9 +268,8 @@ jobs:
             llm_provider: openai
             extra_pytest_args: >-
               --ignore=tests/cli/test_smoke.py
-            split_args: >-
-              --ci-splits=6 --ci-group=3
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=3
             pytest_paths: >-
               tests/cli
               tests/interactive_shell
@@ -306,9 +283,8 @@ jobs:
             llm_provider: openai
             extra_pytest_args: >-
               --ignore=tests/cli/test_smoke.py
-            split_args: >-
-              --ci-splits=6 --ci-group=4
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=4
             pytest_paths: >-
               tests/cli
               tests/interactive_shell
@@ -322,9 +298,8 @@ jobs:
             llm_provider: openai
             extra_pytest_args: >-
               --ignore=tests/cli/test_smoke.py
-            split_args: >-
-              --ci-splits=6 --ci-group=5
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=5
             pytest_paths: >-
               tests/cli
               tests/interactive_shell
@@ -338,9 +313,8 @@ jobs:
             llm_provider: openai
             extra_pytest_args: >-
               --ignore=tests/cli/test_smoke.py
-            split_args: >-
-              --ci-splits=6 --ci-group=6
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=6
             pytest_paths: >-
               tests/cli
               tests/interactive_shell
@@ -383,9 +357,8 @@ jobs:
               test_onboard_interactive_smoke_cli_provider))'
           - os: ubuntu-latest
             shard: integrations-and-misc-1
-            split_args: >-
-              --ci-splits=6 --ci-group=1
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=1
             pytest_paths: >-
               tests/integrations
               tests/bootstrap
@@ -399,9 +372,8 @@ jobs:
               gateway/tests
           - os: ubuntu-latest
             shard: integrations-and-misc-2
-            split_args: >-
-              --ci-splits=6 --ci-group=2
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=2
             pytest_paths: >-
               tests/integrations
               tests/bootstrap
@@ -415,9 +387,8 @@ jobs:
               gateway/tests
           - os: ubuntu-latest
             shard: integrations-and-misc-3
-            split_args: >-
-              --ci-splits=6 --ci-group=3
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=3
             pytest_paths: >-
               tests/integrations
               tests/bootstrap
@@ -431,9 +402,8 @@ jobs:
               gateway/tests
           - os: ubuntu-latest
             shard: integrations-and-misc-4
-            split_args: >-
-              --ci-splits=6 --ci-group=4
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=4
             pytest_paths: >-
               tests/integrations
               tests/bootstrap
@@ -447,9 +417,8 @@ jobs:
               gateway/tests
           - os: ubuntu-latest
             shard: integrations-and-misc-5
-            split_args: >-
-              --ci-splits=6 --ci-group=5
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=5
             pytest_paths: >-
               tests/integrations
               tests/bootstrap
@@ -463,9 +432,8 @@ jobs:
               gateway/tests
           - os: ubuntu-latest
             shard: integrations-and-misc-6
-            split_args: >-
-              --ci-splits=6 --ci-group=6
-              --ci-durations-path=.github/ci/pytest-file-durations.json
+            shard_args: >-
+              --splits=6 --group=6
             pytest_paths: >-
               tests/integrations
               tests/bootstrap
@@ -535,8 +503,8 @@ jobs:
       - name: Validate pytest marker
         if: steps.changes.outputs.source == 'true' || github.event_name == 'push'
         env:
-          # Fork PRs do not receive repository secrets; skip live_llm contracts
-          # (see interactive-shell-live.yml). Index a JSON string array so the
+          # Fork PRs do not receive repository secrets; skip live_llm contracts.
+          # Index a JSON string array so the
           # value is always a marker string — never a bare boolean from
           # ``a && 'x' || 'y'`` (boolean false → ``-m false`` → xdist
           # ``N workers [0 items]``, which can still exit 0). An empty
@@ -551,6 +519,19 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Pre-partition pytest files
+        id: shard
+        if: >-
+          (steps.changes.outputs.source == 'true' || github.event_name == 'push') &&
+          matrix.shard_args
+        run: >
+          uv run python -m tests.ci_sharding select
+          --output=.pytest-shard-files
+          ${{ matrix.shard_args }}
+          ${{ matrix.pytest_paths }}
+          ${{ matrix.extra_pytest_args }}
+          && echo "pytest_paths=$(tr '\n' ' ' < .pytest-shard-files)" >> "$GITHUB_OUTPUT"
 
       - name: Run tests
         if: >-
@@ -573,10 +554,10 @@ jobs:
         # ``N workers [0 items]`` even when the marker is correct.
         run: >
           uv run python -m pytest -p tests.ci_sharding -n auto -v
-          ${{ matrix.pytest_paths }}
+          ${{ steps.shard.outputs.pytest_paths || matrix.pytest_paths }}
           ${PYTEST_COVERAGE_ARGS}
           ${{ matrix.extra_pytest_args }}
-          ${{ matrix.split_args }}
+          --ci-durations-output=.pytest-file-durations-${{ matrix.shard }}.json
           -m "${PYTEST_MARKER_EXPR}"
 
       - name: Upload shard coverage data
@@ -589,6 +570,19 @@ jobs:
           name: coverage-data-${{ matrix.shard }}
           path: .coverage.${{ matrix.shard }}*
           if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 7
+
+      - name: Upload shard timing data
+        if: >-
+          always() &&
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-timings-${{ matrix.shard }}
+          path: .pytest-file-durations-${{ matrix.shard }}.json
+          if-no-files-found: warn
           include-hidden-files: true
           retention-days: 7
 
@@ -632,10 +626,23 @@ jobs:
           path: ./
           merge-multiple: true
 
+      - name: Download shard timing artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: pytest-timings-*
+          path: .pytest-timings
+          merge-multiple: true
+
       - name: Combine coverage and build report
         run: |
           uv run python -m coverage combine .
           uv run python -m coverage html
+
+      - name: Merge pytest timing snapshot
+        run: >-
+          uv run python -m tests.ci_sharding merge
+          --output=.pytest-timings/pytest-file-durations.json
+          .pytest-timings/.pytest-file-durations-*.json
 
       - name: Upload combined coverage
         uses: actions/upload-artifact@v4
@@ -644,6 +651,13 @@ jobs:
           path: |
             htmlcov/
             .coverage
+          retention-days: 7
+
+      - name: Upload reviewable pytest timing snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-file-durations-snapshot
+          path: .pytest-timings/pytest-file-durations.json
           retention-days: 7
 
   session-store-locked:
@@ -704,9 +718,80 @@ jobs:
           -v
           --timeout=120
 
+  package-preflight:
+    name: package-preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Detect packaging changes
+        id: changes
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        with:
+          filters: |
+            packaging:
+              - "README.md"
+              - "LICENSE"
+              - "MANIFEST.in"
+              - "pyproject.toml"
+              - "setup.cfg"
+              - "setup.py"
+              - "uv.lock"
+              - "bootstrap/**"
+              - "config/**"
+              - "core/**"
+              - "gateway/**"
+              - "infrastructure/**"
+              - "integrations/**"
+              - "surfaces/**"
+              - "tests/**"
+              - "tools/**"
+              - ".github/workflows/ci.yml"
+              - ".github/workflows/release.yml"
+              - "infrastructure/deployment/packaging/**"
+
+      - name: Install uv
+        if: steps.changes.outputs.packaging == 'true'
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "latest-known"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python
+        if: steps.changes.outputs.packaging == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Build and validate distributions
+        if: steps.changes.outputs.packaging == 'true'
+        run: |
+          uv sync --frozen --extra release-dist
+          uv run python -m build --outdir dist
+          uv run twine check dist/*
+          uv run python infrastructure/deployment/packaging/validate_wheel.py dist/*.whl
+
+      - name: Smoke the installed wheel
+        if: steps.changes.outputs.packaging == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_env="$(mktemp -d)"
+          uv venv --python 3.13 "$smoke_env"
+          uv pip install --python "$smoke_env/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"
+          "$smoke_env/bin/opensre" --version
+          "$smoke_env/bin/opensre" _package-smoke
+
   ci-gate:
     name: CI Gate
-    needs: [quality-static, quality-typecheck, test, coverage-report, session-store-locked]
+    needs:
+      [quality-static, quality-typecheck, test, coverage-report, session-store-locked, package-preflight]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -722,8 +807,9 @@ jobs:
           test_result='${{ needs.test.result }}'
           coverage='${{ needs.coverage-report.result }}'
           session_locked='${{ needs.session-store-locked.result }}'
+          package_preflight='${{ needs.package-preflight.result }}'
           session_persistence_changed='${{ needs.session-store-locked.outputs.session_persistence }}'
-          echo "static=$static typecheck=$typecheck test=$test_result coverage-report=$coverage session-store-locked=$session_locked session_persistence=$session_persistence_changed"
+          echo "static=$static typecheck=$typecheck test=$test_result coverage-report=$coverage session-store-locked=$session_locked package-preflight=$package_preflight session_persistence=$session_persistence_changed"
 
           # Source jobs always start. On docs-only PRs their setup and test
           # steps skip after the per-job classifier, leaving a successful job.
@@ -740,6 +826,11 @@ jobs:
             success|skipped) ;;
             *) echo "::error::coverage-report is $coverage"; exit 1 ;;
           esac
+
+          [ "$package_preflight" = success ] || {
+            echo "::error::package-preflight is $package_preflight"
+            exit 1
+          }
 
           # session-store-locked is required for session/persistence/ changes,
           # and non-blocking elsewhere.

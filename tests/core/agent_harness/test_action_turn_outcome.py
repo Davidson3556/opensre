@@ -110,3 +110,285 @@ def test_iteration_cap_is_preserved_on_turn_result() -> None:
     assert "repeated tool calls produced no new result" in result.response_text
     assert _console_text(harness).count("repeated tool calls produced no new result") == 1
     assert harness.llm.invocations == 5
+
+
+def test_a_menu_answered_this_turn_is_not_asked_again_through_the_real_turn() -> None:
+    """The scope must carry the turn's message, or the answered-menu guard is blind.
+
+    The guard lives in ``ask_user_choice`` but reads ``turn_user_message`` off
+    the tool scope. The driver built that scope without the message, so the
+    guard never fired in the shell while its own unit tests passed.
+    """
+    # Arrange: this turn's message is the answer; the model asks the same thing.
+    title = "When should it run?"
+    answer_turn = f"1. {title}\nWeekdays at 08:00 (recommended)"
+    harness = ActionExecutionHarness(
+        llm=FakeActionLLM(
+            [
+                tool_response(
+                    "ask_user_choice",
+                    {"title": title, "options": ["Weekdays at 08:00 (recommended)", "Every day"]},
+                ),
+                no_tool_response("Scheduling it for weekdays."),
+            ]
+        )
+    )
+    session = Session()
+
+    # Act: a TTY turn, so a menu would really queue if the guard did not refuse.
+    result = run_action_tool_turn(
+        answer_turn, session, harness.console, llm_factory=harness.llm_factory, is_tty=True
+    )
+
+    # Assert: the call ran and was refused, so no menu was queued for a
+    # question this turn's message already answered.
+    assert (result.executed_count, result.executed_success_count) == (1, 0)
+    assert session.pending_user_choice is None
+
+
+def test_a_painted_tool_result_is_not_restated_in_the_closing() -> None:
+    """A report painted during execution must not be printed a second time."""
+    # Arrange: a tool result that says the console already shows it.
+    from core.agent_harness.turns.display_text import format_generic_tool_payload
+    from core.llm.types import ToolCall
+
+    class _Result:
+        details = {
+            "rendered_in_shell": True,
+            "summary": "acme/app: 8151 runs in 30 days, 1174 of 5727 PR runs failed.",
+            "response_text": "acme/app: 8151 runs in 30 days.",
+        }
+        content = ""
+        is_error = False
+
+    call = ToolCall(id="1", name="analyze_github_ci_reliability", input={})
+
+    # Act
+    shown = format_generic_tool_payload(call, _Result())
+
+    # Assert
+    assert shown == ""
+
+
+def _painted_result(*, final_text: str) -> Any:
+    """A turn whose only tool painted its report straight to the console."""
+    from core.llm.types import ToolCall
+
+    class _ToolResult:
+        details = {
+            "rendered_in_shell": True,
+            "summary": "acme/app: 8151 runs in 30 days.",
+            "key_results": [
+                {"label": "main branch red", "value": "36.4h of 30 days (5.1%)"},
+                {"label": "CI-caused failures", "value": "333 of 1174 failed PR runs"},
+                {"label": "Mean time back to green", "value": "1.0h"},
+            ],
+        }
+        content = "{}"
+        is_error = False
+
+    call = ToolCall(id="1", name="analyze_github_ci_reliability", input={})
+
+    class _Result:
+        tool_results = [(call, _ToolResult())]
+        executed = tool_results
+        planned = [call]
+
+    result = _Result()
+    result.final_text = final_text  # type: ignore[attr-defined]
+    return result
+
+
+def test_a_closing_written_over_a_painted_report_is_dropped() -> None:
+    """The model restates the figures, or contradicts them, without having seen them."""
+    # Arrange
+    from core.agent_harness.turns.action_driver import _compose_response, _TurnCounts
+
+    session = Session()
+    counts = _TurnCounts(
+        executed_entries=[],
+        executed_count=1,
+        executed_success_count=1,
+        generic_success_count=1,
+        planned_count=1,
+        handled=True,
+    )
+
+    # Act
+    restatement = "36.4h red over 30 days, 333 of 1174 PR runs CI-caused, 1.0h back to green."
+    _text, chunks, _use_final = _compose_response(
+        _painted_result(final_text=restatement), session, counts
+    )
+
+    # Assert: the console already shows the report; nothing is added over it.
+    assert chunks == []
+
+
+def _painted_result_with_reply_text(*, failed: bool) -> Any:
+    """A painting tool that also ships a one-line ``response_text`` recap."""
+    from core.llm.types import ToolCall
+
+    class _ToolResult:
+        details = {
+            "rendered_in_shell": True,
+            "response_text": "Found 43 git repositories: 6031 commits in the last 30 days.",
+        }
+        content = "{}"
+        is_error = failed
+
+    call = ToolCall(id="1", name="scan_local_git_workspace", input={})
+
+    class _Result:
+        tool_results = [(call, _ToolResult())]
+        executed = tool_results
+        planned = [call]
+        final_text = ""
+
+    return _Result()
+
+
+def _one_generic_success() -> Any:
+    from core.agent_harness.turns.action_driver import _TurnCounts
+
+    return _TurnCounts(
+        executed_entries=[],
+        executed_count=1,
+        executed_success_count=1,
+        generic_success_count=1,
+        planned_count=1,
+        handled=True,
+    )
+
+
+def test_a_silent_model_does_not_resurface_a_painted_recap() -> None:
+    """The demo ends its scan turn on a menu call, so the model writes no closing.
+
+    The fallback that then borrows the tool's reply text must respect the same
+    painted rule as a written closing, or the scan summary lands as a ``●`` reply
+    under the table it summarizes.
+    """
+    # Arrange
+    from core.agent_harness.turns.action_driver import _compose_response
+
+    # Act
+    _text, chunks, _use_final = _compose_response(
+        _painted_result_with_reply_text(failed=False), Session(), _one_generic_success()
+    )
+
+    # Assert
+    assert chunks == []
+
+
+def test_a_failed_painter_still_surfaces_its_reply_text() -> None:
+    """A painter that errored drew nothing, so its text is the only thing to show."""
+    # Arrange
+    from core.agent_harness.turns.action_driver import _compose_response
+
+    # Act
+    _text, chunks, _use_final = _compose_response(
+        _painted_result_with_reply_text(failed=True), Session(), _one_generic_success()
+    )
+
+    # Assert
+    assert chunks == ["Found 43 git repositories: 6031 commits in the last 30 days."]
+
+
+def test_a_closing_question_survives_a_painted_report() -> None:
+    """A question seeks direction; dropping it would leave the user with dead air."""
+    # Arrange
+    from core.agent_harness.turns.action_driver import _compose_response, _TurnCounts
+
+    session = Session()
+    counts = _TurnCounts(
+        executed_entries=[],
+        executed_count=1,
+        executed_success_count=1,
+        generic_success_count=1,
+        planned_count=1,
+        handled=True,
+    )
+
+    # Act
+    _text, chunks, _use_final = _compose_response(
+        _painted_result(final_text="Want me to break this down by workflow?"), session, counts
+    )
+
+    # Assert
+    assert chunks == ["Want me to break this down by workflow?"]
+
+
+def test_an_interpretation_of_a_painted_report_is_kept() -> None:
+    """Only the duplicate goes: a judgement the table does not carry survives."""
+    # Arrange
+    from core.agent_harness.turns.action_driver import _compose_response, _TurnCounts
+
+    session = Session()
+    counts = _TurnCounts(
+        executed_entries=[],
+        executed_count=1,
+        executed_success_count=1,
+        generic_success_count=1,
+        planned_count=1,
+        handled=True,
+    )
+    judgement = "The Windows label job is your worst offender; I would quarantine it first."
+
+    # Act
+    _text, chunks, _use_final = _compose_response(
+        _painted_result(final_text=judgement), session, counts
+    )
+
+    # Assert
+    assert chunks == [judgement]
+
+
+def test_a_plan_update_does_not_rescue_a_restated_closing() -> None:
+    """The real demo turn updates its plan and paints the report in one go.
+
+    Requiring every result to be painted let that turn keep a closing that
+    repeated the figures, because ``update_plan`` is not a painted result.
+    """
+    # Arrange
+    from core.agent_harness.turns.action_driver import _compose_response, _TurnCounts
+    from core.llm.types import ToolCall
+
+    class _Painted:
+        details = {
+            "rendered_in_shell": True,
+            "key_results": [
+                {"label": "main branch red", "value": "36.4h of 30 days (5.1%)"},
+                {"label": "CI-caused failures", "value": "333 of 1174 failed PR runs"},
+                {"label": "Mean time back to green", "value": "1.0h"},
+            ],
+        }
+        content = "{}"
+        is_error = False
+
+    class _Plan:
+        details = {"ok": True, "steps": []}
+        content = "{}"
+        is_error = False
+
+    plan_call = ToolCall(id="1", name="update_plan", input={})
+    report_call = ToolCall(id="2", name="analyze_github_ci_reliability", input={})
+
+    class _Result:
+        tool_results = [(plan_call, _Plan()), (report_call, _Painted())]
+        executed = tool_results
+        planned = [plan_call, report_call]
+        final_text = "Main was red 36.4h (5.1%), with 333 of 1174 PR runs CI-caused; 1.0h to green."
+
+    counts = _TurnCounts(
+        executed_entries=[],
+        executed_count=2,
+        executed_success_count=2,
+        generic_success_count=1,
+        planned_count=2,
+        handled=True,
+    )
+
+    # Act
+    _text, chunks, _use_final = _compose_response(_Result(), Session(), counts)
+
+    # Assert
+    assert chunks == []

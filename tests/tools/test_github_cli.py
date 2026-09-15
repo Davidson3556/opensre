@@ -47,11 +47,32 @@ def test_build_gh_argv_skips_repo_flag_for_api() -> None:
     ) == ["gh", "api", "repos/acme/widgets/pulls/1/comments"]
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["repo", "create", "acme/demo-repo", "--private"],
+        ["repo", "list", "--limit", "1", "--json", "nameWithOwner"],
+        ["repo", "delete", "acme/demo-repo", "--yes"],
+        ["org", "list"],
+        ["gist", "list"],
+    ],
+)
+def test_build_gh_argv_skips_repo_flag_for_commands_without_it(args: list[str]) -> None:
+    """``gh repo``/``org``/``gist`` reject ``-R``; the default repo must not be injected."""
+    assert build_gh_argv(args=args, repo="acme/widgets") == ["gh", *args]
+
+
 def test_build_gh_argv_skips_repo_flag_for_api_after_global_flags() -> None:
     assert build_gh_argv(
         args=["--hostname", "github.com", "api", "user"],
         repo="acme/widgets",
     ) == ["gh", "--hostname", "github.com", "api", "user"]
+
+
+@pytest.mark.parametrize("subcommand", ["deploy-key", "autolink"])
+def test_repository_scoped_repo_subcommands_keep_explicit_target(subcommand: str) -> None:
+    args = ["repo", subcommand, "delete", "123"]
+    assert build_gh_argv(args=args, repo="acme/target") == ["gh", "-R", "acme/target", *args]
 
 
 def test_run_gh_blocks_auth_token_before_spawn() -> None:
@@ -88,10 +109,42 @@ def test_help_flag_does_not_mask_blocked_command() -> None:
     run_mock.assert_not_called()
 
 
+def test_run_gh_allows_run_and_workflow_reads() -> None:
+    assert denied_gh_command(["run", "list"]) is None
+    assert denied_gh_command(["run", "view", "123"]) is None
+    assert denied_gh_command(["workflow", "list"]) is None
+    assert denied_gh_command(["workflow", "view", "ci.yml"]) is None
+
+
+def test_a_flag_between_the_command_and_a_denied_subcommand_does_not_bypass_the_policy() -> None:
+    # Arrange: gh accepts global flags after the command word.
+    cases = (
+        ["run", "-R", "org/repo", "rerun", "123"],
+        ["run", "--repo=org/repo", "cancel", "123"],
+        ["workflow", "--hostname", "github.com", "run", "deploy.yml"],
+        ["-R", "org/repo", "run", "--jq", ".id", "delete", "123"],
+    )
+
+    # Act / Assert: every spelling is refused before any process is spawned.
+    for args in cases:
+        with patch("integrations.github.tools.github_cli.runner.subprocess.run") as run_mock:
+            result = run_gh(args=args)
+        assert result["ok"] is False, args
+        assert result["error_type"] == "policy_error", args
+        run_mock.assert_not_called()
+    # A flag value that looks like a subcommand is not one.
+    assert denied_gh_command(["run", "list", "--workflow", "rerun"]) is None
+
+
 def test_run_gh_blocks_ci_and_secret_mutation_commands() -> None:
     cases = (
         (["workflow", "run", "deploy.yml"], "workflow"),
+        (["workflow", "enable", "ci.yml"], "workflow"),
         (["run", "rerun", "123"], "run"),
+        (["run", "cancel", "123"], "run"),
+        (["run", "delete", "123"], "run"),
+        (["run", "watch", "123"], "run"),
+        (["run", "download", "123"], "run"),
         (["secret", "set", "TOKEN"], "secret"),
     )
     for args, blocked in cases:
@@ -119,6 +172,32 @@ def test_run_gh_redacts_token_echo_in_stdout() -> None:
     assert result["ok"] is True
     assert "secret-token" not in result["stdout"]
     assert "***" in result["stdout"]
+
+
+def test_run_gh_refuses_a_json_result_the_output_cap_cut_short() -> None:
+    """A truncated JSON list is no answer: it must fail so the caller narrows the query."""
+    # Arrange: a listing far larger than the output cap.
+    huge = "[" + ",".join(f'{{"number": {n}, "state": "OPEN"}}' for n in range(2000)) + "]"
+    completed = MagicMock(returncode=0, stdout=huge, stderr="")
+
+    # Act
+    with (
+        patch(
+            "integrations.github.tools.github_cli.runner.resolve_github_token",
+            return_value="secret-token",
+        ),
+        patch(
+            "integrations.github.tools.github_cli.runner.shutil.which", return_value="/usr/bin/gh"
+        ),
+        patch("integrations.github.tools.github_cli.runner.subprocess.run", return_value=completed),
+    ):
+        result = run_gh(args=["pr", "list", "--json", "number,state"])
+
+    # Assert
+    assert result["ok"] is False
+    assert result["error_type"] == "output_truncated"
+    assert "--jq" in result["error"] and "incomplete" in result["error"]
+    assert result["truncated"] is True
 
 
 def test_run_gh_missing_token() -> None:

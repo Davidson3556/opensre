@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from config.constants.skills import ONBOARDING_SKILL_NAME
 from core.agent_harness.prompts import (
     build_action_system_prompt,
     connected_integrations_block,
@@ -14,18 +15,20 @@ from core.agent_harness.prompts import (
     repository_context_block,
 )
 from core.agent_harness.prompts.memory.conversation import NO_HISTORY_PLACEHOLDER
-from core.agent_harness.prompts.skills.loader import (
+from core.agent_harness.prompts.skills import (
     SKILLS_HEADER,
+    clear_skills_caches,
     list_action_skills,
     load_skill_body,
-    load_skills_block,
     load_skills_index,
     skills_dir,
 )
-from core.agent_harness.prompts.skills.loader import (
-    load_skills_block as cached_load_skills_block,
-)
 from core.agent_harness.turns.turn_snapshot import TurnSnapshot
+from tests.utils.skill_cards import skill_card
+
+
+def _skill_instruction_text(name: str) -> str:
+    return " ".join(load_skill_body(name).replace("`", "").lower().split())
 
 
 def _ctx(
@@ -138,12 +141,11 @@ def test_system_prompt_slack_fragment_documents_invented_command_example() -> No
 
 def test_morning_report_skill_closes_with_schedule_offer() -> None:
     """A run-once morning report without an offer cannot drive repeat usage."""
-    load_skills_block.cache_clear()
-    body = " ".join(
-        (skills_dir() / "morning_report" / "SKILL.md").read_text(encoding="utf-8").lower().split()
-    )
+    clear_skills_caches()
+    body = _skill_instruction_text("delivering-morning-briefings")
     assert "propose_scheduled_delivery" in body
-    assert "daily_summary" in body
+    assert "recurring_skill" in body
+    assert "delivering-morning-briefings" in body
     assert 'cron="0 8 * * 1-5"' in body or "cron='0 8 * * 1-5'" in body
     assert "do not call /cron yet" in body
     assert "do not start an investigation" in body
@@ -187,48 +189,45 @@ def test_repository_context_renders_one_active_and_multiple_remembered_repos() -
     assert repository_context_block(_ctx()) == ""
 
 
-def test_skills_loader_bundles_architecture_audit_skill() -> None:
-    cached_load_skills_block.cache_clear()
-    skill_dir = skills_dir() / "architecture_audit"
-    skill = skill_dir / "SKILL.md"
-    template = skill_dir / "architecture_audit_report.md"
-    assert skill.is_file()
-    assert template.is_file()
-
-    index = load_skills_index()
-    assert "architecture-audit" in index
-    assert "SKILLS INDEX" in index
-    # Fat body stays out of the thin harness index.
-    assert "architecture_clone_repo" not in index
-
-    body = load_skill_body("architecture-audit")
-    assert "ARCHITECTURE AUDIT SKILL" in body
-    assert "WHEN TO USE" in body
-    assert "summarize this repo's architecture" in body
-    assert "architecture_clone_repo" in body
-    assert "scan_architecture_imports" not in body
-    assert "scan_module_placement" not in body
-    assert "architecture_cleanup_repo" in body
-    assert "architecture_save_observations" in body
-    assert "shell_run" in body
-    assert "Never end the turn with shell_run" in body
-    report_path = (
-        "core/agent_harness/prompts/skills/architecture_audit/architecture_audit_report.md"
+def test_skill_body_appends_sibling_report_template_but_index_stays_thin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    skill_dir = tmp_path / "auditing"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        skill_card("auditing", "Call audit_clone_repo first.", description="audit recipe"),
+        encoding="utf-8",
     )
-    assert f"REPORT TEMPLATE from `{report_path}`" in body
-    assert "### Findings by severity" in body
+    (skill_dir / "auditing_report.md").write_text("### Findings by severity\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "core.agent_harness.prompts.skills.content.files.skills_dir", lambda: tmp_path
+    )
+    clear_skills_caches()
+    try:
+        index = load_skills_index()
+        assert "auditing" in index
+        # Fat body and template stay out of the thin harness index.
+        assert "audit_clone_repo" not in index
+        assert "Findings by severity" not in index
+
+        body = load_skill_body("auditing")
+        assert "Call audit_clone_repo first." in body
+        report_path = "core/agent_harness/prompts/skills/auditing/auditing_report.md"
+        assert f"REPORT TEMPLATE from `{report_path}`" in body
+        assert body.endswith("### Findings by severity")
+    finally:
+        clear_skills_caches()
 
 
 def test_skills_loader_bundles_github_security_fix_skill() -> None:
-    cached_load_skills_block.cache_clear()
-    skill = skills_dir() / "github_security_fix" / "SKILL.md"
+    clear_skills_caches()
+    skill = skills_dir() / "fixing-github-security-alerts" / "SKILL.md"
     assert skill.is_file()
 
     # Index carries the one-line catalog; the skill body loads on demand, so the
     # detailed assertions from #4727 belong against the body, not the block.
-    assert "github-security-fix" in load_skills_index()
-    body = load_skill_body("github-security-fix")
-    assert "GITHUB SECURITY AND QUALITY FIX SKILL" in body
+    assert "fixing-github-security-alerts" in load_skills_index()
+    body = load_skill_body("fixing-github-security-alerts")
     assert "fix_github_security_alert" in body
     assert "security and quality issues" in body
     assert "/security/code-scanning" in body
@@ -241,40 +240,39 @@ def test_skills_loader_bundles_github_security_fix_skill() -> None:
     assert "output exactly that text and stop" in body
     assert "reply in one short line" in body
     assert 'Do not say "next steps"' in body
-    cached_load_skills_block.cache_clear()
+    clear_skills_caches()
 
 
 def test_skills_loader_bundles_github_ci_fix_skill() -> None:
-    cached_load_skills_block.cache_clear()
-    skill = skills_dir() / "github_ci_fix" / "SKILL.md"
+    clear_skills_caches()
+    skill = skills_dir() / "repair-github-ci" / "SKILL.md"
     assert skill.is_file()
 
-    assert "github-ci-fix" in load_skills_index()
-    body = load_skill_body("github-ci-fix")
-    assert "GITHUB CI FIX SKILL" in body
+    assert "repair-github-ci" in load_skills_index()
+    body = load_skill_body("repair-github-ci")
     assert "fix_github_pr_ci" in body
     assert "output exactly that text and stop" in body
     assert '"next steps"' in body
     assert "separate linked git" in body
     assert "worktree, commits on a fresh" in body
     assert 'branch="main"' in body
-    cached_load_skills_block.cache_clear()
+    clear_skills_caches()
 
 
 def test_skill_matches_take_priority_over_generic_docs_answer() -> None:
-    cached_load_skills_block.cache_clear()
+    clear_skills_caches()
 
     index = load_skills_index()
-    body = load_skill_body("github-ci-fix-onboarding")
+    body = load_skill_body(ONBOARDING_SKILL_NAME)
     prompt = build_action_system_prompt(_ctx())
 
     assert "Skill matches outrank a generic docs/how-to answer" in index
     assert '"onboard me"' in index
-    assert "Can you onboard me on the CI/CD flow?" in body
+    assert "owns the onboarding question" in body
     # Skills index still rides the assembled prompt after the markdown base.
     assert SKILLS_HEADER in prompt
-    assert "github-ci-fix-onboarding" in prompt
-    cached_load_skills_block.cache_clear()
+    assert ONBOARDING_SKILL_NAME in prompt
+    clear_skills_caches()
 
 
 def test_action_system_prompt_includes_context_blocks() -> None:
@@ -287,24 +285,25 @@ def test_action_system_prompt_includes_context_blocks() -> None:
     )
     assert "CONNECTED INTEGRATIONS (this install, right now): github" in prompt
     assert "RECENT CONVERSATION" in prompt
-    assert "architecture-audit" in prompt
+    assert "repair-github-ci" in prompt
     assert "skill_view" in prompt
-    assert "ARCHITECTURE AUDIT SKILL" not in prompt
+    assert load_skill_body("repair-github-ci") not in prompt
 
 
 def test_skills_index_is_thin_relative_to_full_bodies() -> None:
-    cached_load_skills_block.cache_clear()
+    clear_skills_caches()
     index = load_skills_index()
     bodies = "".join(load_skill_body(skill.name) for skill in list_action_skills())
     assert index.startswith(SKILLS_HEADER)
     assert "skill_view" in index.lower()
-    assert len(bodies) > 10 * len(index)
+    # The always-on index must stay far lighter than the on-demand bodies; the
+    # exact ratio moves with the skill collection, so pin a generous floor.
+    assert len(bodies) > 5 * len(index)
     names = {skill.name for skill in list_action_skills()}
     assert names >= {
-        "morning-report",
-        "architecture-audit",
-        "github-security-fix",
-        "github-ci-fix",
+        "delivering-morning-briefings",
+        "fixing-github-security-alerts",
+        "repair-github-ci",
     }
     for skill in list_action_skills():
         assert skill.name in index
@@ -314,8 +313,8 @@ def test_skills_index_is_thin_relative_to_full_bodies() -> None:
 def test_action_system_prompt_includes_skills_block() -> None:
     prompt = build_action_system_prompt(_ctx())
     assert SKILLS_HEADER in prompt
-    assert "morning-report" in prompt
-    assert "MORNING REPORT SKILL" not in prompt
+    assert "delivering-morning-briefings" in prompt
+    assert load_skill_body("delivering-morning-briefings") not in prompt
     # Skills sit after the markdown base so the action-planner identity is set first.
     assert prompt.index("You plan actions for the OpenSRE interactive shell.") < prompt.index(
         SKILLS_HEADER
@@ -350,8 +349,8 @@ def test_scheduling_guidance_survives_prompt_assembly() -> None:
     """Stable half carries /cron + index; fat closer lives in the skill body.
 
     Thin harness: the weekday-8am closer is not inlined into every turn — it
-    loads via skill_view when morning-report matches. The cacheable half must
-    still name /cron and list morning-report as recurring so the agent knows
+    loads via skill_view when delivering-morning-briefings matches. The cacheable half must
+    still name /cron and list delivering-morning-briefings as recurring so the agent knows
     to load and offer.
     """
     # Arrange
@@ -362,12 +361,12 @@ def test_scheduling_guidance_survives_prompt_assembly() -> None:
     # Act
     cached, _ephemeral = build_action_system_prompt_envelope(snapshot).render_split()
     assembled = " ".join(cached.lower().split())
-    body = " ".join(load_skill_body("morning-report").lower().split())
+    body = " ".join(load_skill_body("delivering-morning-briefings").lower().split())
 
     # Assert — recurring skill + thin index survive assembly; cron details live
     # in the skill body, not the markdown base.
-    assert "morning-report" in assembled
-    assert "recurring: weekdays 08:00" in assembled
+    assert "delivering-morning-briefings" in assembled
+    assert "[recurring]" in assembled
     assert "skill_view" in assembled
     assert "propose_scheduled_delivery" in body
     assert "you plan actions for the opensre interactive shell" in assembled
@@ -407,10 +406,8 @@ def test_scheduling_is_never_offered_without_asking_first() -> None:
     longer inlines cron routing).
     """
     # Arrange
-    load_skills_block.cache_clear()
-    skill = " ".join(
-        (skills_dir() / "morning_report" / "SKILL.md").read_text(encoding="utf-8").lower().split()
-    )
+    clear_skills_caches()
+    skill = _skill_instruction_text("delivering-morning-briefings")
 
     # Assert — structured propose tool; creation waits on confirm / yes
     assert "do not call /cron yet" in skill
@@ -444,11 +441,7 @@ def test_the_active_instruction_survives_context_truncation() -> None:
 def test_the_cron_guidance_teaches_structured_schedule_offers() -> None:
     """Morning report must propose via tool, not scrape Want-me-to into /cron."""
     # Arrange
-    from core.agent_harness.prompts.skills.loader import skills_dir
-
-    skill = " ".join(
-        (skills_dir() / "morning_report" / "SKILL.md").read_text(encoding="utf-8").lower().split()
-    )
+    skill = _skill_instruction_text("delivering-morning-briefings")
 
     assert "propose_scheduled_delivery" in skill
     assert "omit chat_id" in skill

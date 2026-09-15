@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import contextmanager
 from email.message import Message
+from http import HTTPStatus
 from typing import Any
 from urllib import error, request
 
@@ -113,6 +116,29 @@ def test_paginate_follows_link_header(monkeypatch: pytest.MonkeyPatch) -> None:
     assert len(calls) == 2
 
 
+def test_paginate_supports_wrapped_collections(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    def fake_urlopen(req: request.Request, timeout: int = 0) -> _Response:  # noqa: ARG001
+        calls.append(req.full_url)
+        if "page=2" in req.full_url:
+            return _Response({"check_runs": [{"id": 2}]}, headers={})
+        return _Response(
+            {"total_count": 2, "check_runs": [{"id": 1}]},
+            headers={
+                "Link": '<https://api.github.com/repos/o/r/commits/s/check-runs?page=2>; rel="next"'
+            },
+        )
+
+    monkeypatch.setattr("integrations.github.client.request.urlopen", fake_urlopen)
+    client = GitHubRestClient(github_token="tok")
+
+    items = client.paginate("/repos/o/r/commits/s/check-runs", collection_key="check_runs")
+
+    assert items == [{"id": 1}, {"id": 2}]
+    assert len(calls) == 2
+
+
 def test_paginate_stops_at_max_pages(monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: paginate() followed every Link-header page with no cap, so
     an endpoint that returns the whole repository's history (e.g.
@@ -163,6 +189,48 @@ def test_http_error_preserves_status_and_rate_limit_headers(
     assert exc.value.status_code == 403
     assert exc.value.rate_limit_remaining == "0"
     assert exc.value.rate_limit_reset == "123"
+
+
+def test_api_error_keeps_its_identity_and_details_across_context_manager_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = Message()
+    headers["X-RateLimit-Remaining"] = "0"
+    headers["X-RateLimit-Reset"] = "123"
+    http_error = error.HTTPError(
+        url="https://api.github.com/repos/o/r/actions/runs",
+        code=HTTPStatus.FORBIDDEN,
+        msg="rate limited",
+        hdrs=headers,
+        fp=None,
+    )
+    propagated: list[GitHubApiError] = []
+
+    def fail_request(_req: request.Request, timeout: int = 0) -> _Response:
+        del timeout
+        raise http_error
+
+    @contextmanager
+    def request_scope() -> Iterator[None]:
+        try:
+            yield
+        except GitHubApiError as exc:
+            propagated.append(exc)
+            raise
+
+    monkeypatch.setattr("integrations.github.client.request.urlopen", fail_request)
+    client = GitHubRestClient(github_token="tok")
+    with pytest.raises(GitHubApiError) as caught, request_scope():
+        client.request("GET", "/repos/o/r/actions/runs")
+
+    assert caught.value is propagated[0]
+    assert caught.value.__cause__ is http_error
+    assert caught.value.__traceback__ is not None
+    assert caught.value.status_code == HTTPStatus.FORBIDDEN
+    assert caught.value.path == "/repos/o/r/actions/runs"
+    assert caught.value.rate_limit_remaining == "0"
+    assert caught.value.rate_limit_reset == "123"
+    assert str(caught.value) == "GitHub API error 403: rate limited"
 
 
 def test_request_accept_header_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:

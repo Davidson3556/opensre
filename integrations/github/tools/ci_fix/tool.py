@@ -14,6 +14,8 @@ from integrations.github.helpers import (
     github_creds,
     github_source_available,
 )
+from integrations.github.repair_outcomes import attach_repair_outcome
+from integrations.github.tools.ci_fix.ledger import record_ci_fix_outcome
 from integrations.github.tools.ci_fix.runner import run_ci_fix
 
 _INPUT_SCHEMA: dict[str, Any] = {
@@ -47,7 +49,7 @@ _INPUT_SCHEMA: dict[str, Any] = {
         },
         "workspace": {
             "type": "string",
-            "description": "Absolute path to the local checkout to edit. Defaults to CODING_WORKSPACE or cwd.",
+            "description": "Explicit checkout to edit; its origin must match. Omit for an isolated checkout of the target repository.",
         },
         "model": {
             "type": "string",
@@ -86,13 +88,20 @@ def _github_ci_fix_extract_params(sources: dict[str, dict]) -> dict[str, Any]:
 
 
 def _confirm_fn(context: Any) -> Any:
+    return getattr(_action_scope(context), "confirm_fn", None)
+
+
+def _console(context: Any) -> Any:
+    return getattr(_action_scope(context), "console", None)
+
+
+def _action_scope(context: Any) -> Any:
     if context is None:
         return None
     try:
-        action_context = action_context_from_agent_context(context)
+        return action_context_from_agent_context(context)
     except RuntimeError:
         return None
-    return action_context.confirm_fn
 
 
 @tool(
@@ -125,7 +134,6 @@ def _confirm_fn(context: Any) -> Any:
         "Checks out the PR branch or creates a branch-fix worktree, edits files, "
         "commits, pushes the repair branch, and waits for the resulting checks."
     ),
-    parallel_safe=False,
     accepts_runtime_context=True,
     input_schema=_INPUT_SCHEMA,
     is_available=_github_ci_fix_available,
@@ -145,7 +153,7 @@ def fix_github_pr_ci(
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """Run the GitHub CI remediation flow for a PR or an explicit branch target."""
-    return run_ci_fix(
+    output = run_ci_fix(
         owner=owner,
         repo=repo,
         pr_number=pr_number,
@@ -155,6 +163,11 @@ def fix_github_pr_ci(
         model=model,
         github_token=github_token,
         confirm_fn=_confirm_fn(context),
+        console=_console(context),
+    )
+    record_ci_fix_outcome(output)
+    return attach_repair_outcome(
+        output, operation=f"ci:{owner}/{repo}:{pr_url or pr_number or branch}"
     )
 
 

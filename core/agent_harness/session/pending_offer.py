@@ -13,13 +13,13 @@ Integration-setup offers follow the same pattern via
 from __future__ import annotations
 
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from config.constants.slash_commands import INTEGRATIONS_SETUP_PREFIX
 from core.agent_harness.session.want_me_to import offer_from_assistant_content
 
-# Common morning-report defaults → human cadence labels (exact cron match only).
+# Common delivering-morning-briefings defaults → human cadence labels (exact cron match only).
 _CADENCE_LABELS: dict[str, str] = {
     "0 8 * * 1-5": "every weekday at 8am",
     "0 9 * * 1-5": "every weekday at 9am",
@@ -61,6 +61,9 @@ class PendingScheduleOffer:
     timezone: str
     provider: str
     chat_id: str = ""
+    prompt: str = ""
+    skill_name: str = ""
+    skill_inputs: dict[str, str] = field(default_factory=dict)
 
     def to_slash_command(self) -> str:
         """Literal slash the action driver dispatches without an LLM round-trip."""
@@ -75,6 +78,28 @@ class PendingScheduleOffer:
             "--provider",
             self.provider,
         ]
+        if self.kind == "manual_loop":
+            prompt = self.prompt.strip()
+            if prompt:
+                args.extend(["--prompt", prompt])
+        if self.kind == "recurring_skill":
+            skill = self.skill_name.strip()
+            if skill:
+                args.extend(["--skill", skill])
+            if skill == "delivering-morning-briefings":
+                city = self.skill_inputs.get("city", "").strip()
+                if city:
+                    args.extend(["--city", city])
+            elif skill == "reporting-github-ci-failures":
+                for key, flag in (
+                    ("owner", "--owner"),
+                    ("repo", "--repo"),
+                    ("branch", "--branch"),
+                    ("pr_number", "--pr"),
+                ):
+                    value = self.skill_inputs.get(key, "").strip()
+                    if value:
+                        args.extend([flag, value])
         chat = self.chat_id.strip()
         if chat:
             args.extend(["--chat-id", chat])
@@ -95,7 +120,12 @@ class PendingScheduleOffer:
         chat = self.chat_id.strip()
         if chat:
             dest = f"{self.provider} ({chat})"
-        return f"schedule this as a recurring {self.kind} {cadence} to {dest}"
+        label = (
+            (self.skill_name.strip() or "recurring skill")
+            if self.kind == "recurring_skill"
+            else self.kind
+        )
+        return f"schedule this as a recurring {label} {cadence} to {dest}"
 
 
 @dataclass(frozen=True, slots=True)

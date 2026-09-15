@@ -12,8 +12,9 @@ from core.agent_harness.task_plan.progress import format_task_plan_plain
 
 ASK_USER_ANSWERED_GUIDANCE = (
     "ASK USER JUST ANSWERED (this turn). Continue — do not sit idle. "
-    "If this is the FIRST round and the answers open new discriminating "
-    "questions, call ask_user_choice for ONE more scoped round. If two rounds "
+    "The answer settles the question it belongs to: do not re-ask it, do not ask "
+    "what it means, and do not open another round unless the work is impossible "
+    "without one more fixed choice. If two rounds "
     "are already answered (see the Q&A above), do NOT ask again — write the "
     "plan now with your best reading of the answers. Two rounds is the hard "
     "maximum.\n"
@@ -38,9 +39,10 @@ ASK_USER_ANSWERED_GUIDANCE = (
 
 ASK_USER_ANSWERED_PLAN_ONLY_GUIDANCE = (
     "ASK USER JUST ANSWERED (this turn). This request is plan-only — answering "
-    "does not authorize execution. If this is the FIRST round and the answers "
-    "open new discriminating questions, call ask_user_choice for ONE more "
-    "scoped round. If two rounds are already answered, do NOT ask again. "
+    "does not authorize execution. The answer settles the question it belongs "
+    "to: do not re-ask it or ask what it means; open another round only when the "
+    "plan is impossible without one more fixed choice. If two rounds are already "
+    "answered, do NOT ask again. "
     "Then update_plan with every step pending and STOP. Put the rationale in "
     "explanation=... "
     "If this is a diagnosis: Facts; What the signature tells us (what each "
@@ -53,6 +55,18 @@ ASK_USER_ANSWERED_PLAN_ONLY_GUIDANCE = (
     "that request; they never replace it. "
     "Do not pass plan_only=false; the host keeps the plan-only latch until the user "
     "confirms a mutating step at the execution gate."
+)
+
+
+PLAN_PRECEDENCE_RULE = (
+    "This plan was made in an earlier turn. The user's latest message decides "
+    "what this turn does. If it continues the plan (a plan continuation, a "
+    "go-ahead, or an answer to this plan's own question), work the next step. "
+    "If it asks for something else — a question, a remark, a new request — "
+    "answer that and leave the plan as it is; do not resume it unasked and do "
+    "not announce that you will continue it. Inside an ACTIVE SKILL, the "
+    "skill's branch for the answer is the next step: update the plan to match "
+    "the skill instead of replaying steps the plan still lists."
 )
 
 
@@ -75,6 +89,8 @@ def current_task_plan_block(
         return ""
     if plan.all_completed:
         status = "complete"
+    elif plan.is_settled:
+        status = f"ended; {plan.blocked_count} blocked, nothing left to run"
     elif plan.all_pending:
         status = "ready, nothing executed"
     else:
@@ -88,6 +104,7 @@ def current_task_plan_block(
     ]
     if plan.explanation:
         lines.append(f"explanation: {plan.explanation}")
+    lines.append(PLAN_PRECEDENCE_RULE)
     if plan.all_pending and not plan_only:
         lines.append(
             "Execution is authorized: set the first step to in_progress and "
@@ -100,15 +117,21 @@ def current_task_plan_block(
     if in_progress is not None:
         lines.append(f"now: {in_progress}")
         lines.append(
-            "Do not conclude this turn while a step is in_progress. "
-            "Keep working that step, or ask_user_choice if facts are missing. "
-            "Do not start another workload."
+            "When this turn continues the plan: Do not conclude this turn while "
+            "a step is in_progress. Keep working that step, or ask_user_choice "
+            "if facts are missing. Do not start another workload."
         )
-    elif not plan.all_completed and not plan_only:
+    elif not plan.is_settled and not plan_only:
         lines.append(
-            "Work remains on this plan and no step is in_progress. "
-            "Call update_plan to set the next pending step in_progress and "
-            "execute it now — do not end the turn idle."
+            "When this turn continues the plan: Work remains on this plan and "
+            "no step is in_progress. Call update_plan to set the next pending "
+            "step in_progress and execute it now — do not end the turn idle."
+        )
+    if plan.blocked_count:
+        lines.append(
+            "Blocked steps stay blocked: their work did not happen. Do not run "
+            "tools to earn a completed mark for them, and name each blocker "
+            "when you report."
         )
     lines.append("")
     return "\n".join(lines)
@@ -117,6 +140,7 @@ def current_task_plan_block(
 __all__ = [
     "ASK_USER_ANSWERED_GUIDANCE",
     "ASK_USER_ANSWERED_PLAN_ONLY_GUIDANCE",
+    "PLAN_PRECEDENCE_RULE",
     "ask_user_answered_block",
     "current_task_plan_block",
 ]

@@ -6,6 +6,7 @@ import errno
 import io
 import subprocess
 import tempfile
+import threading
 from pathlib import Path, PurePosixPath
 from unittest.mock import MagicMock
 
@@ -183,8 +184,8 @@ def test_run_shell_command_quiet_cd_hides_cwd(
 
     result = run_shell_command("cd /tmp/example", _presenter(session, console), quiet=True)
 
-    assert "$" not in buf.getvalue()
-    assert "/tmp/example" not in buf.getvalue()
+    # The dim command line shows what ran; the new cwd stays hidden.
+    assert buf.getvalue().strip() == "$ cd /tmp/example"
     assert result["ok"] is True
     assert result["response_text"] == "/tmp/example"
 
@@ -395,7 +396,7 @@ def test_run_shell_command_outputless_success_omits_marker(
     assert session.history[-1] == {"type": "shell", "text": "true", "ok": True}
 
 
-def test_run_shell_command_quiet_hides_command_and_stdout(
+def test_run_shell_command_quiet_prints_a_dim_command_line_and_no_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def _fake_execute(**_kwargs: object) -> ShellExecutionResult:
@@ -421,8 +422,7 @@ def test_run_shell_command_quiet_hides_command_and_stdout(
 
     result = run_shell_command("echo hi", _presenter(session, console), quiet=True)
     out = buf.getvalue()
-    assert "$" not in out
-    assert "hi" not in out
+    assert out.strip() == "$ echo hi"
     assert GLYPH_SUCCESS not in out
     assert result["ok"] is True
     assert result["stdout"] == "hi"
@@ -430,14 +430,12 @@ def test_run_shell_command_quiet_hides_command_and_stdout(
     assert session.history[-1]["ok"] is True
 
 
-def test_run_shell_command_quiet_outputless_success_prints_nothing(
+def test_run_shell_command_quiet_outputless_success_prints_only_the_command_line(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Quiet ``touch`` must not print a live success glyph.
+    """Quiet ``touch`` prints the dim command line and no live success glyph.
 
-    Quiet hides ``$`` and stdout. Outputless success has neither; a live
-    marker would still leak intermediate probes before a composed closing.
-    Loud mode prints the glyph. Quiet leaves the terminal blank here — the
+    Quiet hides stdout and the glyph, not the fact that a command ran. The
     action closer (kept for quiet ``shell_run``) is the turn's display.
     """
 
@@ -465,7 +463,7 @@ def test_run_shell_command_quiet_outputless_success_prints_nothing(
     result = run_shell_command("touch file", _presenter(session, console), quiet=True)
 
     out = buf.getvalue()
-    assert out == ""
+    assert out.strip() == "$ touch file"
     assert GLYPH_SUCCESS not in out
     assert result["ok"] is True
     assert "response_text" not in result
@@ -546,6 +544,46 @@ def test_run_shell_command_failure_prints_exit_line(monkeypatch: pytest.MonkeyPa
         "ok": False,
         "response_text": f"{GLYPH_ERROR} exit 7",
     }
+
+
+def test_run_shell_command_reports_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+    cancel = threading.Event()
+
+    def _fake_execute(**kwargs: object) -> ShellExecutionResult:
+        seen.update(kwargs)
+        return ShellExecutionResult(
+            command="sleep 30",
+            argv=["sleep", "30"],
+            stdout="",
+            stderr="",
+            exit_code=-15,
+            timed_out=False,
+            truncated=False,
+            executed_with_shell=False,
+            cancelled=True,
+        )
+
+    monkeypatch.setattr(
+        "tools.interactive_shell.shell.execution.execute_shell_command",
+        _fake_execute,
+    )
+
+    session = Session()
+    buf = io.StringIO()
+    console = Console(file=buf, force_terminal=False)
+
+    result = run_shell_command(
+        "sleep 30",
+        _presenter(session, console),
+        cancel_event=cancel,
+    )
+    assert seen["cancel_event"] is cancel
+    assert result["ok"] is False
+    assert result["cancelled"] is True
+    assert result["response_text"] == "command cancelled"
+    assert "command cancelled" in buf.getvalue()
+    assert session.history[-1]["ok"] is False
 
 
 def test_run_shell_command_reports_start_failure(monkeypatch: pytest.MonkeyPatch) -> None:

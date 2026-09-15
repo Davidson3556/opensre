@@ -14,8 +14,13 @@ from typing import Any
 
 from rich.console import Console
 
-from core.agent_harness.tools.tool_context import ActionToolScope
+from core.agent_harness.tools.tool_context import (
+    ACTION_TOOL_CONTEXT_RESOURCE_KEY,
+    ActionToolScope,
+)
 from core.agent_harness.turns.headless_adapters import InMemorySessionState
+from core.domain.types.tools import ToolRole
+from core.tool import AgentToolContext
 from surfaces.interactive_shell.session import Session
 from tools.interactive_shell.actions.ask_choice import (
     ask_user_choice_tool,
@@ -59,7 +64,7 @@ def test_ask_user_choice_tool_is_action_surface_read_only() -> None:
     assert ask_user_choice_tool.name == "ask_user_choice"
     assert "action" in ask_user_choice_tool.surfaces
     assert ask_user_choice_tool.side_effect_level == "read_only"
-    assert ask_user_choice_tool.parallel_safe is False
+    assert ask_user_choice_tool.role is ToolRole.TURN_ENDING
     assert any(
         "headless, scheduled, gateway, or /goal" in example
         for example in ask_user_choice_tool.anti_examples
@@ -198,6 +203,20 @@ def test_one_item_questions_array_is_rejected() -> None:
     assert "title and options" in result["error"]
 
 
+def test_duplicate_question_titles_are_rejected() -> None:
+    result = execute_ask_user_choice_tool(
+        {
+            "questions": [
+                _question("Cadence", "When should it run?"),
+                _question("Again", "  WHEN SHOULD IT RUN?  "),
+            ]
+        },
+        _ctx(),
+    )
+    assert result["ok"] is False
+    assert "already used" in result["error"]
+
+
 def test_malformed_question_is_rejected() -> None:
     result = execute_ask_user_choice_tool(
         {"title": "Ask User", "questions": [{"label": "Codebase", "title": "Where?"}]},
@@ -250,3 +269,157 @@ def test_per_question_multi_select_string_false() -> None:
     assert result["ok"] is True
     assert session.pending_user_choice is not None
     assert session.pending_user_choice.questions[0].multi_select is False
+
+
+def test_allow_custom_from_the_model_reaches_the_pending_choice() -> None:
+    # Arrange: the registry calls ``run`` with the model's public arguments as
+    # keywords, so every schema property must be accepted by the signature.
+    session = Session()
+    context = AgentToolContext(
+        resolved_integrations={},
+        resources={ACTION_TOOL_CONTEXT_RESOURCE_KEY: _ctx(session=session)},
+    )
+
+    # Act
+    result = ask_user_choice_tool.run(
+        title=_TITLE, options=_OPTIONS, allow_custom=False, context=context
+    )
+
+    # Assert
+    assert result["ok"] is True
+    assert session.pending_user_choice is not None
+    assert session.pending_user_choice.custom_answer is False
+
+
+def _answer_turn(session: Session, message: str) -> ActionToolScope:
+    console = Console(file=io.StringIO(), force_terminal=False, highlight=False)
+    return ActionToolScope(
+        session=session, console=console, slash_ports=_Ports(), turn_user_message=message
+    )
+
+
+def test_a_question_answered_in_this_message_is_not_asked_again() -> None:
+    # Arrange: the turn's user message is the answer to the same question.
+    session = Session()
+    ctx = _answer_turn(session, "1. When should it run?\nWeekdays at 08:00 (recommended)")
+
+    # Act
+    result = execute_ask_user_choice_tool(
+        {
+            "title": "When should it run?",
+            "options": ["Weekdays at 08:00 (recommended)", "Every day"],
+        },
+        ctx,
+    )
+
+    # Assert: refused with the answer, nothing queued.
+    assert result["ok"] is False
+    assert "Weekdays at 08:00 (recommended)" in result["error"]
+    assert session.pending_user_choice is None
+
+
+def test_a_different_question_still_queues_on_an_answer_turn() -> None:
+    # Arrange
+    session = Session()
+    ctx = _answer_turn(session, "1. Which repository should the agent watch?\nTracer-Cloud/opensre")
+
+    # Act
+    result = execute_ask_user_choice_tool(
+        {"title": "When should it run?", "options": ["Weekdays at 08:00", "Every day"]}, ctx
+    )
+
+    # Assert
+    assert result["ok"] is True
+    assert result["menu"] == "queued"
+
+
+def _question(label: str, title: str) -> dict[str, Any]:
+    return {"label": label, "title": title, "options": ["Weekdays at 08:00", "Every day"]}
+
+
+def test_a_batch_keeps_its_unanswered_questions() -> None:
+    # Arrange: one of three batched questions was answered in this message.
+    session = Session()
+    ctx = _answer_turn(session, "1. When should it run?\nEvery day")
+    batch = [
+        _question("Cadence", "When should it run?"),
+        _question("Channel", "Where should reports go?"),
+        _question("Window", "How many days back?"),
+    ]
+
+    # Act
+    result = execute_ask_user_choice_tool({"questions": batch}, ctx)
+
+    # Assert: the two open questions are queued, the answered one is gone.
+    assert result["ok"] is True
+    assert session.pending_user_choice is not None
+    titles = [q.title for q in session.pending_user_choice.questions]
+    assert titles == ["Where should reports go?", "How many days back?"]
+
+
+def test_a_batch_with_one_open_question_becomes_a_single_decision() -> None:
+    # Arrange
+    session = Session()
+    ctx = _answer_turn(session, "1. When should it run?\nEvery day")
+    batch = [_question("Cadence", "When should it run?"), _question("Channel", "Where to?")]
+
+    # Act
+    result = execute_ask_user_choice_tool({"questions": batch}, ctx)
+
+    # Assert
+    assert result["ok"] is True
+    assert session.pending_user_choice is not None
+    assert session.pending_user_choice.title == "Where to?"
+    assert session.pending_user_choice.questions == ()
+
+
+def test_a_fully_answered_batch_is_refused_with_the_answers() -> None:
+    # Arrange
+    session = Session()
+    ctx = _answer_turn(session, "1. When should it run?\nEvery day\n\n2. Where to?\nInbox")
+    batch = [_question("Cadence", "When should it run?"), _question("Channel", "Where to?")]
+
+    # Act
+    result = execute_ask_user_choice_tool({"questions": batch}, ctx)
+
+    # Assert
+    assert result["ok"] is False
+    assert "'Every day'" in result["error"] and "'Inbox'" in result["error"]
+    assert session.pending_user_choice is None
+
+
+def test_a_question_answered_earlier_in_the_session_is_not_asked_again() -> None:
+    """The demo menu came back because the model asked it itself, not through a hook.
+
+    A skill's entry hook is one way the question returns; the model calling
+    ``ask_user_choice`` with the same title is another, and the guard has to
+    cover both.
+    """
+    # Arrange: the user settled this question in an earlier turn.
+    session = Session()
+    session.questions_already_answered = {"which demo would you like me to run?"}
+    ctx = _ctx(session=session)
+
+    # Act
+    result = execute_ask_user_choice_tool(
+        {"title": "Which demo would you like me to run?", "options": ["A demo", "Another"]},
+        ctx,
+    )
+
+    # Assert
+    assert result["ok"] is False
+    assert "earlier in this session" in result["error"]
+    assert session.pending_user_choice is None
+
+
+def test_answering_a_menu_records_the_question_for_the_rest_of_the_session() -> None:
+    # Arrange
+    from surfaces.interactive_shell.command_registry.choice_prompt import _remember_answered
+
+    session = Session()
+
+    # Act
+    _remember_answered(session, "  Which demo would you like me to run?  ")
+
+    # Assert: stored normalized, so spacing and case cannot slip a repeat through.
+    assert session.questions_already_answered == {"which demo would you like me to run?"}

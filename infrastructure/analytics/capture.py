@@ -81,6 +81,16 @@ def capture_cli_invoked(properties: Properties | None = None) -> None:
         capture_exception(exc)
 
 
+def capture_account_authenticated() -> None:
+    """Link this installation ID to server-resolved account identity."""
+    try:
+        analytics = get_analytics()
+        analytics.refresh_destination()
+        analytics.capture(Event.ACCOUNT_AUTHENTICATED)
+    except Exception as exc:
+        capture_exception(exc)
+
+
 def capture_gateway_turn_started(*, surface: str) -> None:
     """Mark the start of one Slack/Telegram gateway agent turn."""
     _capture(Event.GATEWAY_TURN_STARTED, {"surface": surface})
@@ -114,7 +124,7 @@ def capture_gateway_turn_failed(
     """Mark a failed gateway agent turn (exception during dispatch).
 
     ``surface`` may be omitted when transport context was unbound so failures
-    still land in PostHog for regression detection.
+    still land in product analytics for regression detection.
     """
     props: Properties = {
         "duration_ms": round(duration_ms),
@@ -176,6 +186,21 @@ def capture_loop_suggestion_selected(*, option: str) -> None:
 def capture_loop_suggestion_skipped() -> None:
     """User dismissed the suggested-loops picker (Escape) without choosing."""
     _capture(Event.LOOP_SUGGESTION_SKIPPED)
+
+
+def capture_onboarding_demo_prompted() -> None:
+    """Exposure event: the onboarding demo picker was rendered."""
+    _capture(Event.ONBOARDING_DEMO_PROMPTED)
+
+
+def capture_onboarding_demo_selected(*, option: str, custom: bool) -> None:
+    """User picked a demo; ``custom`` marks a typed answer instead of a listed option."""
+    _capture(Event.ONBOARDING_DEMO_SELECTED, {"option": option, "custom": custom})
+
+
+def capture_onboarding_demo_skipped() -> None:
+    """User dismissed the onboarding demo picker without choosing."""
+    _capture(Event.ONBOARDING_DEMO_SKIPPED)
 
 
 def capture_terminal_actions_planned(*, planned_count: int, has_unhandled_clause: bool) -> None:

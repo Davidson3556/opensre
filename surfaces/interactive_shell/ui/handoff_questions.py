@@ -21,32 +21,26 @@ def _display_safe(text: str) -> str:
 
 
 def render_choice_selection(console: Console, title: str, answer: str) -> None:
-    """Persist a compact selected-choice result after the transient picker closes.
+    """Persist a single pick after its menu closes, as a one-question Ask User card.
 
-    A multi-select answer arrives as one option per line; each line is indented
-    under the heading so the selected set reads as one aligned block rather than
-    a first row that hangs indented while the rest sit flush-left.
+    The menu itself is erased, so this is the transcript's only record of the
+    choice. It uses the same card as the batched wizard (header, numbered bold
+    question, answer beneath) so every hand-off answer reads alike. Must not use
+    the plan-step ``✓`` glyph. The leading blank replaces the section gap the
+    erased menu took with it.
     """
-    heading = Text()
-    heading.append("✓ ", style=f"bold {ui_theme.HIGHLIGHT}")
-    heading.append(_display_safe(title.strip()), style=str(ui_theme.TEXT))
-    console.print(heading)
-    for line in _display_safe(answer.strip()).splitlines():
-        if not line.strip():
-            continue
-        row = Text("  ", style=str(ui_theme.DIM))
-        row.append(line, style=str(ui_theme.BRAND))
-        console.print(row)
+    console.print()
+    render_ask_user_qa(console, [(title.strip(), answer.strip())])
 
 
 def render_ask_user_qa(console: Console, pairs: list[tuple[str, str]]) -> None:
     """Print Ask User Q→A: accent header, bold numbered questions, brand answers.
 
-    Each pair is a two-line block — a bold question, then its answer in the brand
-    colour indented beneath it — with a blank row after the header and between
-    items so the filled-in recap is scannable and the answer reads apart from the
-    question. No extra blank above or below the card (the stream / prompt
-    already own that margin).
+    Each pair is a block — a bold question, then its answer in the brand colour
+    indented beneath it, one row per selected option for a multi-select — with a
+    blank row after the header and between items so the filled-in recap is
+    scannable and the answer reads apart from the question. No extra blank above
+    or below the card (the stream / prompt already own that margin).
     """
     console.print(Text("Ask User", style=f"bold {ui_theme.HIGHLIGHT}"))
     console.print()
@@ -57,10 +51,13 @@ def render_ask_user_qa(console: Console, pairs: list[tuple[str, str]]) -> None:
         qline.append(f"  {index + 1}.  ", style=str(ui_theme.DIM))
         qline.append(_display_safe(question), style=f"bold {ui_theme.TEXT}")
         console.print(qline)
-        aline = Text()
-        aline.append("      ", style=str(ui_theme.DIM))
-        aline.append(_display_safe(answer), style=str(ui_theme.BRAND))
-        console.print(aline)
+        for item in _display_safe(answer).splitlines():
+            if not item.strip():
+                continue
+            aline = Text()
+            aline.append("      ", style=str(ui_theme.DIM))
+            aline.append(item, style=str(ui_theme.BRAND))
+            console.print(aline)
 
 
 def try_render_ask_user_submission(console: Console, text: str) -> bool:

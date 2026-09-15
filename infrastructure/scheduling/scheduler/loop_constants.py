@@ -6,7 +6,22 @@ LOOP_CHANNELS_PARAM = "loop_channels"
 LOOP_CREATED_BY_PARAM = "loop_created_by"
 LOOP_DESCRIPTION_PARAM = "loop_description"
 LOOP_GROUP_ID_PARAM = "loop_group_id"
+LOOP_LEGACY_TASK_KIND_PARAM = "opensre_legacy_task_kind"
+LOOP_MIGRATION_NOTICE_PARAM = "opensre_task_migration_notice"
+LOOP_MODE_PARAM = "loop_mode"
+"""How the runner frames the tick: ``report`` (default) or ``agent``."""
+
+LOOP_MODE_REPORT = "report"
+LOOP_MODE_AGENT = "agent"
+LOOP_MODES = (LOOP_MODE_REPORT, LOOP_MODE_AGENT)
+
 LOOP_PROMPT_PARAM = "loop_prompt"
+LOOP_REPORT_PARAM = "loop_report"
+"""Name of a deterministic report builder that replaces the model turn for this loop."""
+
+LOOP_REPORT_ARGS_PARAM = "loop_report_args"
+"""JSON object of string arguments handed to the report builder."""
+
 LOOP_SLACK_CHAT_ID_PARAM = "slack_chat_id"
 LOOP_SLUG_PARAM = "loop_slug"
 LOOP_SOURCE_PARAM = "loop_source"
@@ -18,7 +33,15 @@ __all__ = [
     "LOOP_CREATED_BY_PARAM",
     "LOOP_DESCRIPTION_PARAM",
     "LOOP_GROUP_ID_PARAM",
+    "LOOP_LEGACY_TASK_KIND_PARAM",
+    "LOOP_MIGRATION_NOTICE_PARAM",
+    "LOOP_MODES",
+    "LOOP_MODE_AGENT",
+    "LOOP_MODE_PARAM",
+    "LOOP_MODE_REPORT",
     "LOOP_PROMPT_PARAM",
+    "LOOP_REPORT_ARGS_PARAM",
+    "LOOP_REPORT_PARAM",
     "LOOP_SLACK_CHAT_ID_PARAM",
     "LOOP_SLUG_PARAM",
     "LOOP_SOURCE_PARAM",

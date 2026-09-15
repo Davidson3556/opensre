@@ -6,6 +6,10 @@ from pathlib import Path
 
 _RUNTIME_PACKAGE_NAMES = (
     "integrations",
+    # Lazy-loaded via ``COMMAND_SPECS`` / ``importlib`` — Analysis cannot see
+    # these edges, so the frozen binary must list every command module here
+    # (including hidden ``_package-smoke`` for release artifact checks).
+    "surfaces.cli.commands",
     "surfaces.interactive_shell",
     "tools",
 )
@@ -57,6 +61,7 @@ def runtime_hidden_imports(repo_root: Path) -> tuple[str, ...]:
 def required_skill_files(repo_root: Path) -> tuple[Path, ...]:
     """Return built-in action skills, workflow guidance, and tool data files."""
     files = set((repo_root / _ACTION_SKILLS_DIR).rglob("*.md"))
+    files.update((repo_root / _ACTION_SKILLS_DIR).glob("**/scripts/*.py"))
     for relative_root in _SKILL_DATA_ROOTS:
         files.update((repo_root / relative_root).rglob("SKILL.md"))
     files.update(repo_root / relative_path for relative_path in _RUNTIME_DATA_FILES)

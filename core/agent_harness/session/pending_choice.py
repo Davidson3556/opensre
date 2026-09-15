@@ -14,9 +14,14 @@ and no "Reply with 1, 2, or 3" free-text parsing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 _ANSWER_HEADER = re.compile(r"^(\d+)\.\s+(.+)$")
+
+
+def question_key(title: str) -> str:
+    """Identity of a question for matching it to an answer: whitespace and case folded."""
+    return " ".join(title.split()).casefold()
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +56,15 @@ class PendingUserChoice:
 
     multi_select: bool = False
     """Multi-select for the single-question path (ignored when ``questions`` is set)."""
+
+    note: str = ""
+    """Short explainer painted with the single-question menu; cleared when it closes."""
+
+    commands: dict[str, str] = field(default_factory=dict)
+    """Option label -> slash command the shell runs instead of answering the model."""
+
+    custom_answer: bool = True
+    """Offer the free-text row under the options (single-question path)."""
 
     def items(self) -> tuple[AskUserQuestion, ...]:
         """Questions to render: ``questions`` when set, otherwise one from title/options."""
@@ -109,4 +123,5 @@ __all__ = [
     "PendingUserChoice",
     "format_ask_user_answers",
     "parse_ask_user_answers",
+    "question_key",
 ]

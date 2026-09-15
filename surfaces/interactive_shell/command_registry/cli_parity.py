@@ -7,6 +7,7 @@ import subprocess
 
 from rich.console import Console
 
+from config.constants import OPENSRE_PARENT_INTERACTIVE_SHELL_ENV
 from core.agent_harness.spi.session_state import session_terminal, set_turn_outcome_hint
 from surfaces.interactive_shell.command_registry.types import SlashCommand
 from surfaces.interactive_shell.runtime import Session
@@ -16,7 +17,6 @@ from surfaces.interactive_shell.ui import DIM, ERROR, print_command_output
 from surfaces.shared.terminal.components.choice_menu import prepare_repl_output_line
 
 _UPDATE_SUBPROCESS_TIMEOUT_SECONDS = 300
-_PARENT_INTERACTIVE_SHELL_ENV = "OPENSRE_PARENT_INTERACTIVE_SHELL"
 _HEADLESS_CLI_SUBPROCESS_TIMEOUT_SECONDS = 90.0
 
 
@@ -99,7 +99,7 @@ def run_cli_command(
     if headless and subprocess_timeout is None:
         subprocess_timeout = _HEADLESS_CLI_SUBPROCESS_TIMEOUT_SECONDS
     child_env = os.environ.copy()
-    child_env[_PARENT_INTERACTIVE_SHELL_ENV] = "1"
+    child_env[OPENSRE_PARENT_INTERACTIVE_SHELL_ENV] = "1"
     if should_capture:
         # Captured child stdout isn't a TTY, so force Rich colour there and parse
         # it back in print_command_output — otherwise its styling would be lost.
@@ -223,10 +223,11 @@ def _cmd_onboard(session: Session, console: Console, args: list[str]) -> bool:  
 
 def _cmd_setup(session: Session, console: Console, args: list[str]) -> bool:  # noqa: ARG001
     if session_terminal(session) is None:
+        cli_cmd = " ".join(["uv run opensre setup", *args]).strip()
         message = (
-            "Setup is an interactive wizard (GitHub sign-in + LLM key). "
+            "Setup signs in to an OpenSRE account and activates its hosted model. "
             "It cannot run inside a Telegram chat.\n\n"
-            "Run on the server:\n  uv run opensre setup\n\n"
+            f"Run on the server:\n  {cli_cmd}\n\n"
             "Configure integrations separately with `/integrations setup <service>`."
         )
         console.print()
@@ -240,17 +241,28 @@ def _cmd_account(session: Session, console: Console, args: list[str]) -> bool:  
     subcommand = args[0].lower() if args else "status"
     if session_terminal(session) is None and subcommand == "login":
         message = (
-            "GitHub account login opens a browser and cannot run inside a chat.\n\n"
+            "OpenSRE account login opens a browser and cannot run inside a chat.\n\n"
             "Run on the server:\n  uv run opensre account login"
         )
         console.print()
         console.print(message)
         publish_headless_slash_response(session, message=message)
         return True
-    capture_output = subcommand in {"status", "logout"}
-    return run_cli_command(
-        console, ["account", *args], capture_output=capture_output, session=session
+    cli_args = list(args)
+    if subcommand == "usage" and session_terminal(session) is None and "--no-browser" not in args:
+        # A chat user cannot use a browser opened on the server; give them the URL.
+        cli_args.append("--no-browser")
+    capture_output = subcommand in {"status", "usage", "logout"}
+    handled = run_cli_command(
+        console, ["account", *cli_args], capture_output=capture_output, session=session
     )
+    if subcommand == "logout" and session_terminal(session) is not None:
+        from config.account import account_llm_route
+
+        if account_llm_route() is None:
+            console.print(f"[{DIM}]Signed out. Closing the interactive shell.[/]")
+            return False
+    return handled
 
 
 def _cmd_auth(session: Session, console: Console, args: list[str]) -> bool:  # noqa: ARG001
@@ -293,6 +305,10 @@ def _cmd_config(session: Session, console: Console, args: list[str]) -> bool:
     return run_cli_command(console, ["config", *args], session=session)
 
 
+def _cmd_runbooks(session: Session, console: Console, args: list[str]) -> bool:
+    return run_cli_command(console, ["runbooks", *args], session=session)
+
+
 def _cmd_messaging(session: Session, console: Console, args: list[str]) -> bool:
     return run_cli_command(console, ["messaging", *args], session=session)
 
@@ -321,9 +337,15 @@ def _cmd_debug(session: Session, console: Console, args: list[str]) -> bool:
 COMMANDS: list[SlashCommand] = [
     SlashCommand(
         "/account",
-        "Sign in to OpenSRE with GitHub and inspect the local account.",
+        "Sign in to OpenSRE and inspect the local account.",
         _cmd_account,
-        usage=("/account", "/account login", "/account status", "/account logout"),
+        usage=(
+            "/account",
+            "/account login",
+            "/account status",
+            "/account usage",
+            "/account logout",
+        ),
     ),
     SlashCommand(
         "/auth",
@@ -339,9 +361,9 @@ COMMANDS: list[SlashCommand] = [
     ),
     SlashCommand(
         "/setup",
-        "First-run setup: GitHub sign-in, LLM key, then the interactive shell.",
+        "First-run setup: OpenSRE account, hosted model, then the interactive shell.",
         _cmd_setup,
-        usage=("/setup",),
+        usage=("/setup", "/setup --dev"),
     ),
     SlashCommand(
         "/onboard",
@@ -386,6 +408,17 @@ COMMANDS: list[SlashCommand] = [
         "Show or edit local OpenSRE config.",
         _cmd_config,
         usage=("/config show", "/config set <key> <value>"),
+    ),
+    SlashCommand(
+        "/runbooks",
+        "Manage trusted runbook sources for guided investigations.",
+        _cmd_runbooks,
+        usage=(
+            "/runbooks list",
+            "/runbooks add github --name <name> --repo <owner/repo>",
+            "/runbooks verify <name>",
+            "/runbooks remove <name>",
+        ),
     ),
     SlashCommand(
         "/messaging",

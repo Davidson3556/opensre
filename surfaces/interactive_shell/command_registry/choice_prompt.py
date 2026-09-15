@@ -12,12 +12,21 @@ as the next user message so the agent receives the decision verbatim.
 from __future__ import annotations
 
 from rich.console import Console
+from rich.markup import escape
 
-from core.agent_harness.spi.handoff import format_ask_user_answers
+from config.constants.skills import ONBOARDING_SKILL_NAME, SKIP_DEMO_OPTION
+from core.agent_harness.spi.handoff import (
+    format_ask_user_answers,
+    question_key,
+)
+from core.agent_harness.spi.task_plan import discard_task_plan
 from infrastructure.terminal import theme as ui_theme
 from infrastructure.terminal.notify import NotifyEvent, play_notification
 from surfaces.interactive_shell.command_registry.types import SlashCommand
 from surfaces.interactive_shell.runtime import Session
+from surfaces.interactive_shell.runtime.startup.onboarding_telemetry import (
+    capture_onboarding_choice,
+)
 from surfaces.interactive_shell.ui.ask_user import CUSTOM_OPTION, repl_ask_user
 from surfaces.interactive_shell.ui.handoff_questions import render_choice_selection
 from surfaces.interactive_shell.ui.prompt_visibility import clear_live_prompt_paint
@@ -26,6 +35,28 @@ from surfaces.shared.terminal.components.choice_menu import (
     repl_choose_one,
     repl_tty_interactive,
 )
+
+_CANCELLED = "Selection cancelled — type a reply instead."
+_DEMO_SKIPPED = "Demo skipped — type a request, or /demo to come back to it."
+_DEMO_UNAVAILABLE = "Guided demo selection is unavailable here — request a task directly."
+
+
+def _remember_answered(session: Session, *titles: str) -> None:
+    """Record questions the user has settled, so nothing asks them again."""
+    settled = getattr(session, "questions_already_answered", None)
+    if not isinstance(settled, set):
+        return
+    settled.update(question_key(title) for title in titles if title.strip())
+
+
+def _leave_menu(session: Session, console: Console, note: str) -> None:
+    """Close the menu with no answer for the model and leave the skill."""
+    console.print(f"[{ui_theme.DIM}]{note}[/]")
+    session.terminal.awaiting_handoff_answer = False
+    if session.active_skill is not None:
+        session.skills_already_prompted.discard(session.active_skill)
+        discard_task_plan(session)
+    session.active_skill = None
 
 
 def _cmd_choose(session: Session, console: Console, args: list[str]) -> bool:
@@ -37,6 +68,9 @@ def _cmd_choose(session: Session, console: Console, args: list[str]) -> bool:
         return True
 
     if not repl_tty_interactive():
+        if session.active_skill == ONBOARDING_SKILL_NAME:
+            _leave_menu(session, console, _DEMO_UNAVAILABLE)
+            return True
         for question in pending.items():
             print_valid_choice_list(
                 console,
@@ -52,31 +86,58 @@ def _cmd_choose(session: Session, console: Console, args: list[str]) -> bool:
     if pending.is_batch():
         picked = repl_ask_user(items)
         if picked is None:
-            console.print(f"[{ui_theme.DIM}]Selection cancelled — type a reply instead.[/]")
-            session.terminal.awaiting_handoff_answer = False
+            _leave_menu(session, console, _CANCELLED)
             return True
+        _remember_answered(session, *(question.title for question in items))
         session.terminal.set_auto_command(format_ask_user_answers(items, picked))
         session.terminal.awaiting_handoff_answer = True
         return True
 
     option_choices = [(option, option) for option in items[0].options]
-    option_choices.append((CUSTOM_OPTION, CUSTOM_OPTION))
+    custom_label = CUSTOM_OPTION if pending.custom_answer else None
+    if custom_label is not None:
+        option_choices.append((custom_label, custom_label))
+    custom_answer = False
+
+    def mark_custom_answer() -> None:
+        nonlocal custom_answer
+        custom_answer = True
+
     # Custom row: type in place on the OpenSRE option array (Droid-style).
     picked_one = repl_choose_one(
         title=items[0].title,
         choices=option_choices,
-        custom_label=CUSTOM_OPTION,
+        custom_label=custom_label,
         multi_select=items[0].multi_select,
         header="Ask User",
         letter_keys=True,
+        note=pending.note,
+        on_custom_answer=mark_custom_answer,
     )
+    capture_onboarding_choice(session.active_skill, picked_one, custom=custom_answer)
     if picked_one is None:
-        console.print(f"[{ui_theme.DIM}]Selection cancelled — type a reply instead.[/]")
-        session.terminal.awaiting_handoff_answer = False
+        _leave_menu(session, console, _CANCELLED)
+        return True
+    if picked_one == SKIP_DEMO_OPTION:
+        # A shell decision, not an answer for the model: the demo is over.
+        _leave_menu(session, console, _DEMO_SKIPPED)
         return True
 
+    command = pending.commands.get(picked_one) or (picked_one if picked_one.startswith("/") else "")
+    if command:
+        # A mapped option, or a slash command typed into the custom row, is a
+        # command the shell runs, not an answer for the model.
+        _remember_answered(session, items[0].title)
+        console.print(f"[{ui_theme.DIM}]Running {escape(command)}.[/]")
+        session.terminal.awaiting_handoff_answer = False
+        session.terminal.set_auto_command(command)
+        return True
+    _remember_answered(session, items[0].title)
     render_choice_selection(console, items[0].title, picked_one)
-    session.terminal.set_auto_command(picked_one)
+    # The answer travels with its question, as the batched wizard's does: a bare
+    # label such as "owner/repo (757 commits, CI configured)" reads to the
+    # planner like a fresh request and gets re-asked or re-routed.
+    session.terminal.set_auto_command(format_ask_user_answers(items, (picked_one,)))
     session.terminal.awaiting_handoff_answer = True
     return True
 
@@ -87,6 +148,8 @@ COMMANDS: list[SlashCommand] = [
         "Open the pending interactive selection menu queued by the agent.",
         _cmd_choose,
         usage=("/choose",),
+        # Renders the queued read-only picker; never mutates anything.
+        mutating=False,
     )
 ]
 

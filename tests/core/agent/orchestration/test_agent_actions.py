@@ -5,7 +5,6 @@ from __future__ import annotations
 import io
 import subprocess
 from pathlib import Path, PurePosixPath
-from typing import NoReturn
 
 import pytest
 from rich.console import Console
@@ -30,6 +29,8 @@ from tools.interactive_shell.action_names import (
     TOOL_KIND_TO_NAME,
     ToolKind,
 )
+from tools.interactive_shell.implementation.claude_code_executor import ImplementationLaunch
+from tools.interactive_shell.subprocess import SubprocessWatchResult
 
 _ACTION_LLM_FACTORY_PATCHES = (
     "core.agent_harness.turns.headless_build.default_llm_factory",
@@ -123,15 +124,92 @@ def _message_from_agent_prompt(messages: list[dict[str, object]]) -> str:
     part an over-budget turn drops first. Read between the delimiters rather
     than assuming the envelope spans the string.
     """
-    raw = str(messages[-1].get("content", "")) if messages else ""
     prefix = "USER MESSAGE (literal): <<<"
     suffix = ">>>"
-    start = raw.find(prefix)
-    if start == -1:
-        return raw
-    body_at = start + len(prefix)
-    end = raw.find(suffix, body_at)
-    return raw[body_at:end] if end != -1 else raw
+    # Later iterations of one turn end with tool results; the user message is
+    # the last one carrying the literal envelope.
+    for message in reversed(messages):
+        raw = str(message.get("content", ""))
+        start = raw.find(prefix)
+        if start == -1:
+            continue
+        body_at = start + len(prefix)
+        end = raw.find(suffix, body_at)
+        return raw[body_at:end] if end != -1 else raw
+    return str(messages[-1].get("content", "")) if messages else ""
+
+
+# ``execute_shell_command`` drives ``subprocess.Popen`` (not ``run``) so ESC can
+# cancel a child; tests fake the process object instead of the finished result.
+_EXPECTED_POPEN_KWARGS: dict[str, object] = {
+    "stdout": subprocess.PIPE,
+    "stderr": subprocess.PIPE,
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+    "start_new_session": True,
+}
+
+
+class _FakeProcess:
+    """Minimal ``Popen`` stand-in: piped output, exit code, optional hang until terminated."""
+
+    def __init__(self, *, stdout: str, stderr: str, returncode: int, hang: bool) -> None:
+        self.stdout = io.StringIO(stdout)
+        self.stderr = io.StringIO(stderr)
+        # ``None`` so group signalling cannot target a real pid and falls
+        # back to ``terminate()``.
+        self.pid = None
+        self.returncode: int | None = None if hang else returncode
+        self.terminated = False
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:  # noqa: ARG002
+        if self.returncode is None:
+            self.returncode = -15
+        return self.returncode
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = -15
+
+    def kill(self) -> None:
+        self.terminated = True
+        self.returncode = -9
+
+
+def _install_fake_popen(
+    monkeypatch: object,
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+    hang: bool = False,
+) -> list[tuple[list[str], dict[str, object]]]:
+    """Replace ``Popen`` in the executor and return the recorded ``(argv, kwargs)`` calls."""
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def _fake_popen(command: list[str], **kwargs: object) -> _FakeProcess:
+        calls.append((command, kwargs))
+        return _FakeProcess(stdout=stdout, stderr=stderr, returncode=returncode, hang=hang)
+
+    monkeypatch.setattr(shell_execution.subprocess, "Popen", _fake_popen)  # type: ignore[attr-defined]
+    return calls
+
+
+def _force_watch_timeout(proc: object, **_kwargs: object) -> SubprocessWatchResult:
+    """Watcher stand-in: treat the child as timed out and stop it."""
+    terminate = getattr(proc, "terminate", None)
+    if callable(terminate):
+        terminate()
+    return SubprocessWatchResult(
+        timed_out=True,
+        cancelled=False,
+        exit_code=getattr(proc, "returncode", -15),
+        terminated_by_watcher=True,
+    )
 
 
 def _expected_shell_argv(command: str) -> list[str]:
@@ -143,8 +221,11 @@ def _expected_shell_argv(command: str) -> list[str]:
 
 
 class _MessageMappedActionLLM(FakeActionLLM):
+    """Issue the planned actions for a message one per response, as the runtime requires."""
+
     def __init__(self) -> None:
         super().__init__([])
+        self._issued: dict[str, int] = {}
 
     def invoke(
         self,
@@ -156,7 +237,9 @@ class _MessageMappedActionLLM(FakeActionLLM):
         self.invocations += 1
         message = _message_from_agent_prompt(messages)
         actions, _has_unhandled = _FAKE_PLANS.get(message, ([], False))
-        return _response_from_actions(list(actions))
+        index = self._issued.get(message, 0)
+        self._issued[message] = index + 1
+        return _response_from_actions(list(actions[index : index + 1]))
 
 
 # Deterministic phrase -> (planned actions, has_unhandled_clause) mapping used by the
@@ -295,9 +378,9 @@ def test_execute_cli_actions_skips_remaining_actions_when_cancelled(
 ) -> None:
     """Multi-action plan: if the user pressed Esc / typed ``/cancel``
     between actions, the per-dispatch cancel event is set on the
-    ``StreamingConsole``. The action loop checks ``cancel_requested``
-    at the top of each iteration and breaks, so the remaining actions
-    in the plan are NOT dispatched.
+    ``StreamingConsole``. Each action is its own model response, and the
+    loop checks ``cancel_requested`` before taking the next step, so the
+    remaining actions in the plan are NOT dispatched.
 
     Pre-fix, the loop ran every action regardless of cancel state, so
     cancelling a "do A then B" plan still ran B even after the user
@@ -357,7 +440,6 @@ def test_execute_cli_actions_skips_remaining_actions_when_cancelled(
     output = buf.getvalue()
     assert "ran /health" in output
     assert "ran /integrations list" not in output
-    assert "remaining actions cancelled" in output
 
 
 def test_execute_cli_actions_falls_through_for_local_llama_request(monkeypatch: object) -> None:
@@ -489,10 +571,11 @@ def test_execute_cli_actions_sets_bare_model_for_active_provider(
 def test_execute_cli_actions_runs_implementation_action(monkeypatch: object) -> None:
     calls: list[str] = []
 
-    def _fake_run_implementation(request: str, presenter: object) -> None:
+    def _fake_run_implementation(request: str, presenter: object) -> ImplementationLaunch:
         calls.append(request)
         presenter.session.record("implementation", request, ok=True)  # type: ignore[attr-defined]
         presenter.console.print(f"implemented {request}")  # type: ignore[attr-defined]
+        return ImplementationLaunch(started=True, task_id="task-1")
 
     monkeypatch.setattr(
         "tools.interactive_shell.actions.implementation.run_claude_code_implementation",
@@ -774,38 +857,13 @@ def test_execute_cli_actions_cd_strips_quotes_on_windows(monkeypatch: object) ->
 
 
 def test_execute_cli_actions_records_shell_failure(monkeypatch: object) -> None:
-    completed = subprocess.CompletedProcess(
-        args=["false"],
-        returncode=2,
-        stdout="",
-        stderr="nope\n",
-    )
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return completed
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
+    calls = _install_fake_popen(monkeypatch, stderr="nope\n", returncode=2)
 
     session = Session()
     console, buf = _capture()
 
     assert action_turn.run_action_tool_turn("execute false", session, console).handled is True
-    assert calls == [
-        (
-            ["false"],
-            {
-                "shell": False,
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": subprocess_runner.SHELL_COMMAND_TIMEOUT_SECONDS,
-                "check": False,
-            },
-        )
-    ]
+    assert calls == [(["false"], _EXPECTED_POPEN_KWARGS)]
     assert session.history[-1] == {
         "type": "shell",
         "text": "false",
@@ -818,15 +876,11 @@ def test_execute_cli_actions_records_shell_failure(monkeypatch: object) -> None:
 
 
 def test_execute_cli_actions_shell_command_times_out(monkeypatch: object) -> None:
-    def _timeout(cmd: object, **kwargs: object) -> NoReturn:  # pragma: no cover
-        raise subprocess.TimeoutExpired(
-            cmd=cmd,
-            timeout=1,
-            output="partial out\n",
-            stderr="partial err\n",
-        )
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _timeout)
+    _install_fake_popen(monkeypatch, stdout="partial out\n", stderr="partial err\n", hang=True)
+    monkeypatch.setattr(
+        "tools.interactive_shell.shell.execution.watch_subprocess_until_exit",
+        _force_watch_timeout,
+    )
 
     session = Session()
     console, buf = _capture()
@@ -845,37 +899,13 @@ def test_execute_cli_actions_shell_command_times_out(monkeypatch: object) -> Non
 
 
 def test_execute_cli_actions_runs_passthrough_with_shell_true(monkeypatch: object) -> None:
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout="ok\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
+    calls = _install_fake_popen(monkeypatch, stdout="ok\n")
 
     session = Session()
     console, buf = _capture()
 
     assert action_turn.run_action_tool_turn("run `!echo hello`", session, console).handled is True
-    assert calls == [
-        (
-            _expected_shell_argv("echo hello"),
-            {
-                "shell": False,
-                "capture_output": True,
-                "text": True,
-                "encoding": "utf-8",
-                "errors": "replace",
-                "timeout": subprocess_runner.SHELL_COMMAND_TIMEOUT_SECONDS,
-                "check": False,
-            },
-        )
-    ]
+    assert calls == [(_expected_shell_argv("echo hello"), _EXPECTED_POPEN_KWARGS)]
     assert session.history[-1] == {
         "type": "shell",
         "text": "!echo hello",
@@ -943,18 +973,7 @@ def test_execute_cli_actions_handles_path_with_spaces_run_phrase() -> None:
 
 
 def test_execute_cli_actions_backtick_shell_preserves_space_path_token(monkeypatch: object) -> None:
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=0,
-            stdout="done\n",
-            stderr="",
-        )
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
+    calls = _install_fake_popen(monkeypatch, stdout="done\n")
 
     session = Session()
     console, _ = _capture()
@@ -1122,13 +1141,7 @@ def test_execute_cli_actions_bang_prefix_uses_only_explicit_shell_escape(
 
     _patch_action_llm_factory(monkeypatch, _fail_if_called)
 
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="ok\n", stderr="")
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
+    calls = _install_fake_popen(monkeypatch, stdout="ok\n")
 
     session = Session()
     console, buf = _capture()
@@ -1144,9 +1157,9 @@ def test_execute_cli_actions_bang_prefix_uses_only_explicit_shell_escape(
         "ok": True,
         "response_text": "ok",
     }
-    # The executor strips `!` and invokes the user's shell as argv with shell=False.
+    # The executor strips `!` and invokes the user's shell as argv, never shell=True.
     assert calls[0][0] == _expected_shell_argv("curl wttr.in/London")
-    assert calls[0][1]["shell"] is False
+    assert "shell" not in calls[0][1]
     assert "explicit shell passthrough enabled" in buf.getvalue()
 
 
@@ -1162,13 +1175,7 @@ def test_execute_cli_actions_bang_prefix_single_line_dispatches_to_shell(
 
     _patch_action_llm_factory(monkeypatch, _fail_if_called)
 
-    calls: list[tuple[list[str], dict[str, object]]] = []
-
-    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        calls.append((command, kwargs))
-        return subprocess.CompletedProcess(args=command, returncode=0, stdout="out\n", stderr="")
-
-    monkeypatch.setattr(shell_execution.subprocess, "run", _fake_run)
+    calls = _install_fake_popen(monkeypatch, stdout="out\n")
 
     session = Session()
     console, _ = _capture()
@@ -1184,4 +1191,4 @@ def test_execute_cli_actions_bang_prefix_single_line_dispatches_to_shell(
         "response_text": "out",
     }
     assert calls[0][0] == _expected_shell_argv("echo hello world")
-    assert calls[0][1]["shell"] is False
+    assert "shell" not in calls[0][1]

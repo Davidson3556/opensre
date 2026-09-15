@@ -88,6 +88,8 @@ Our mission is to build AI SRE agents on top of this, scale it to thousands of r
 
 The root installer URL auto-detects Unix shell vs PowerShell and installs the latest build from `main`. OpenSRE moves quickly, so `main` is the latest stable version for normal installs.
 
+Before installing, check the [supported platforms and architectures](SETUP.md#supported-platforms-and-architectures) table for release availability and CI coverage.
+
 macOS / Linux:
 
 ```bash
@@ -126,13 +128,15 @@ pipx install opensre
 
 Contributors: start at [`main.py`](main.py) for the process entrypoint map.
 
-Configure once, then pick how you want to run the agent:
+Create or sign in to your OpenSRE account once. Setup activates the hosted model:
 
 ```bash
 opensre setup
 ```
 
-**Interactive shell** — with no subcommand, `opensre` starts a REPL (TTY required). Describe incidents in plain language, watch the agent work, and use slash commands for session control (`/help`, `/status`, `/cost`, `/sessions`, `/resume`, `/compact`, `/new`, `/exit`), integrations (`/integrations list`, `/integrations verify`), local agent fleet monitoring (`/agents`), and reasoning depth (`/effort` for **OpenAI** and **Codex** — `low` through `max`). Ctrl+C cancels an in-flight turn without losing session state. See **[interactive shell commands](https://www.opensre.com/docs/interactive-shell-commands)** for the full reference.
+Webapp contributors can run `opensre setup --dev` to authenticate through `http://localhost:3000`.
+
+**Interactive shell** — with no subcommand, `opensre` validates your account and starts a REPL (TTY required). You can exit and stay signed out, but the shell only opens for an active account. Describe incidents in plain language, watch the agent work, and use slash commands for session control (`/help`, `/status`, `/cost`, `/sessions`, `/resume`, `/compact`, `/new`, `/exit`), integrations (`/integrations list`, `/integrations verify`), and local agent fleet monitoring (`/agents`). Ctrl+C cancels an in-flight turn without losing session state. See **[interactive shell commands](https://www.opensre.com/docs/interactive-shell-commands)** for the full reference.
 
 ```bash
 opensre
@@ -166,7 +170,7 @@ Other useful commands:
 
 ```bash
 opensre integrations setup
-opensre agents scan
+opensre fleet scan
 opensre update
 opensre uninstall   # remove opensre and all local data
 ```
@@ -280,7 +284,7 @@ OpenSRE is designed with production environments in mind: structured and auditab
 
 ## Telemetry
 
-PostHog (product analytics) and Sentry (errors) are **opt-out**. Quick disable:
+First-party product analytics and Sentry (errors) are **opt-out**. Quick disable:
 
 ```bash
 export OPENSRE_NO_TELEMETRY=1

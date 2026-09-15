@@ -16,6 +16,14 @@ def _console() -> tuple[Console, StringIO]:
     return Console(file=buf, force_terminal=False, width=120), buf
 
 
+def test_goal_set_is_unbounded_unless_max_turns_is_set() -> None:
+    session = Session()
+    console, _buf = _console()
+    assert _cmd_goal(session, console, ["set", "count the open PRs"])
+    assert session.session_goal is not None
+    assert session.session_goal.max_outer_turns == 0
+
+
 def test_goal_set_show_and_clear() -> None:
     session = Session()
     console, buf = _console()
@@ -46,7 +54,11 @@ def test_goal_set_queues_condition_as_immediate_turn() -> None:
     assert session.terminal.pending_prompt_autosubmit is True
     assert session.session_goal is not None
     assert session.session_goal.host_owned is True
+    # A condition without numbered steps gets no checklist: one item would only echo it.
+    assert session.session_goal.checklist == ()
     assert session.session_goal.max_outer_turns == 3
+    # The block printed here is remembered, so the loop's first paint is one line.
+    assert session.terminal.goal_paint_signature is not None
     assert session.session_goal.started_at is not None
     out = buf.getvalue()
     assert "◎ /goal active" in out

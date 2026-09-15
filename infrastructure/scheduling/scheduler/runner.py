@@ -1,20 +1,26 @@
 """APScheduler-backed blocking runner for scheduled tasks.
 
 Loads all enabled tasks from the store, creates CronTrigger jobs, and
-blocks until SIGINT/SIGTERM. Fire times for dedup come from
-``JobSubmissionEvent.scheduled_run_times[0]`` (UTC, minute precision),
-not wall-clock time inside the callback.
+blocks until SIGINT/SIGTERM. Fire times for dedup are passed directly from the
+APScheduler executor to each callback (UTC, second precision), not recovered
+from listener timing or wall-clock time inside the callback.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
+from config.constants.turn_concurrency import (
+    DEFAULT_SCHEDULED_RUN_CONCURRENCY,
+    OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV,
+)
+from infrastructure.scheduling.scheduler.cron_expression import build_cron_trigger
 from infrastructure.scheduling.scheduler.executor import execute_task
 from infrastructure.scheduling.scheduler.operation_log import (
     record_scheduler_execution_operation,
@@ -26,20 +32,31 @@ from infrastructure.scheduling.scheduler.reload_signal import (
     watch_and_reconcile,
 )
 from infrastructure.scheduling.scheduler.runners import SchedulerRunners
-from infrastructure.scheduling.scheduler.store import (
-    _default_store_path,
+from infrastructure.scheduling.scheduler.storage import (
+    complete_run,
+    default_task_store_path,
+    get_latest_run_for_fire_time,
+    get_recoverable_runs,
     get_task,
     list_tasks,
+    record_task_success,
+    try_claim,
+    try_queue_run,
     update_task,
 )
-from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask, TaskStatus
+from infrastructure.scheduling.scheduler.types import (
+    Provider,
+    ScheduledTask,
+    TaskReport,
+    TaskRun,
+    TaskStatus,
+)
 
 logger = logging.getLogger(__name__)
 TaskFilter = Callable[[ScheduledTask], bool]
 
-# Populated by EVENT_JOB_SUBMITTED before each job runs (job_id -> fire_time).
-_pending_fire_times: dict[str, str] = {}
-_pending_fire_times_lock = threading.Lock()
+_RECOVERY_JOB_ID = "scheduler-claim-recovery"
+_RECOVERY_INTERVAL_SECONDS = 60
 
 
 def _make_trigger(task: ScheduledTask) -> Any:
@@ -47,17 +64,10 @@ def _make_trigger(task: ScheduledTask) -> Any:
 
     Raises ValueError if the cron expression or timezone is invalid.
     """
-    from apscheduler.triggers.cron import CronTrigger
-
-    parts = task.cron.split()
-    if len(parts) != 5:
-        raise ValueError(f"Invalid cron expression (need 5 fields): {task.cron!r}")
-
     try:
-        trigger = CronTrigger.from_crontab(task.cron, timezone=task.timezone)
-    except (ValueError, TypeError, KeyError) as exc:
+        return build_cron_trigger(task.cron, task.timezone)
+    except ValueError as exc:
         raise ValueError(f"Invalid cron/timezone for task {task.id}: {exc}") from exc
-    return trigger
 
 
 def _next_run_from_trigger(trigger: Any, now: datetime | None = None) -> str | None:
@@ -76,48 +86,89 @@ def compute_next_run(task: ScheduledTask, now: datetime | None = None) -> str | 
     return _next_run_from_trigger(_make_trigger(task), now)
 
 
-def _compute_fire_time(scheduled_run_time: Any) -> str:
+def _compute_fire_time(scheduled_run_time: datetime) -> str:
     """Compute a stable, UTC-normalized fire_time string.
 
     Always converts to UTC so DST transitions don't produce ambiguous keys.
+    Seconds are kept so a six-field cron firing several times a minute gets one
+    claim key per tick instead of deduplicating its later ticks away.
     """
-    if scheduled_run_time is not None:
-        utc_time: datetime = scheduled_run_time.astimezone(UTC)
-        return utc_time.strftime("%Y-%m-%dT%H:%MZ")
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ")
+    utc_time: datetime = scheduled_run_time.astimezone(UTC)
+    return utc_time.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _on_job_submitted(event: Any) -> None:
-    """Capture the intended fire time for this tick before the job callback runs."""
-    run_times = getattr(event, "scheduled_run_times", None)
-    if run_times:
-        fire_time = _compute_fire_time(run_times[0])
-    else:
-        fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ")
-    with _pending_fire_times_lock:
-        _pending_fire_times[event.job_id] = fire_time
+def _queue_scheduled_run(job_id: str, scheduled_run_time: datetime) -> None:
+    """Persist an admitted task tick before APScheduler submits its worker."""
+    if job_id == _RECOVERY_JOB_ID:
+        return
+    try_queue_run(job_id, _compute_fire_time(scheduled_run_time))
 
 
-def _scheduled_job(task_id: str, runners: SchedulerRunners) -> None:
+def configured_scheduled_run_limit() -> int:
+    """Return the positive scheduled-worker limit, defaulting to two."""
+    raw = os.getenv(OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV)
+    if raw is None:
+        return DEFAULT_SCHEDULED_RUN_CONCURRENCY
+    try:
+        limit = int(raw)
+    except ValueError:
+        limit = 0
+    if limit >= 1:
+        return limit
+    logger.warning(
+        "Ignoring %s=%r: not a positive integer; using %d.",
+        OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV,
+        raw,
+        DEFAULT_SCHEDULED_RUN_CONCURRENCY,
+    )
+    return DEFAULT_SCHEDULED_RUN_CONCURRENCY
+
+
+def _build_scheduler(scheduler_type: type[Any]) -> Any:
+    """Build an APScheduler with the bounded scheduled-run contract."""
+    from infrastructure.scheduling.scheduler.apscheduler_executor import (
+        ScheduledThreadPoolExecutor,
+    )
+
+    limit = configured_scheduled_run_limit()
+    return scheduler_type(
+        executors={
+            "default": ScheduledThreadPoolExecutor(
+                max_workers=limit,
+                on_submit=_queue_scheduled_run,
+            )
+        },
+        job_defaults={"max_instances": 1},
+    )
+
+
+def _scheduled_job(
+    task_id: str,
+    runners: SchedulerRunners,
+    *,
+    scheduled_run_time: datetime | None = None,
+) -> None:
     """Job callback invoked by APScheduler on each cron tick."""
-    with _pending_fire_times_lock:
-        fire_time = _pending_fire_times.pop(task_id, None)
-    if fire_time is None:
-        logger.warning(
-            "No scheduled fire_time for task %s; using UTC now (listener may have missed)",
-            task_id,
-        )
-        fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%MZ")
+    if scheduled_run_time is None:
+        raise RuntimeError("scheduled_run_time must be supplied by the scheduler executor")
+    fire_time = _compute_fire_time(scheduled_run_time)
 
     task = get_task(task_id)
     if task is None:
+        claim = try_claim(task_id, fire_time)
+        if claim is None:
+            return
         logger.warning("Task %s not found in store, skipping", task_id)
         record_scheduler_service_operation(
             "scheduler_job_skipped",
             extra={"task_id": task_id, "fire_time": fire_time, "reason": "missing_task"},
         )
+        complete_run(claim, status=TaskStatus.SKIPPED, error="missing_task")
         return
     if not task.enabled:
+        claim = try_claim(task_id, fire_time)
+        if claim is None:
+            return
         logger.info("Task %s is disabled, skipping", task_id)
         record_scheduler_execution_operation(
             "scheduled_task_execution_skipped",
@@ -126,15 +177,63 @@ def _scheduled_job(task_id: str, runners: SchedulerRunners) -> None:
             status=TaskStatus.SKIPPED,
             extra={"reason": "disabled"},
         )
+        complete_run(claim, status=TaskStatus.SKIPPED, error="disabled")
         return
 
     result = execute_task(task, fire_time, runners)
 
     if result:
-        task.last_run = datetime.now(UTC).isoformat()
-        if task.params.get("disable_after_success", "").strip().lower() == "true":
-            task.enabled = False
-        update_task(task)
+        _record_task_success_after_full_delivery(task.id, fire_time)
+
+
+def _recover_runs(
+    runners: SchedulerRunners,
+    *,
+    task_filter: TaskFilter | None = None,
+    scheduled_run_time: datetime | None = None,
+) -> None:
+    """Resume pending and expired ticks within the scheduler worker pool."""
+    _ = scheduled_run_time
+    eligible_task_ids = _desired_task_ids(task_filter=task_filter)
+    for run in get_recoverable_runs(eligible_task_ids=eligible_task_ids):
+        task = get_task(run.task_id)
+        if task is None or not task.enabled:
+            continue
+        if task_filter is not None and not task_filter(task):
+            continue
+        result = execute_task(task, run.fire_time, runners)
+        if result:
+            _record_task_success_after_full_delivery(task.id, run.fire_time)
+        logger.info(
+            "Recovered task %s fire_time=%s result=%s",
+            run.task_id,
+            run.fire_time,
+            result,
+        )
+
+
+def _register_recovery_job(
+    scheduler: Any,
+    runners: SchedulerRunners,
+    *,
+    task_filter: TaskFilter | None = None,
+) -> None:
+    """Install the periodic recovery sweep on a live APScheduler instance."""
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    scheduler.add_job(
+        _recover_runs,
+        trigger=IntervalTrigger(seconds=_RECOVERY_INTERVAL_SECONDS),
+        args=[runners],
+        kwargs={"task_filter": task_filter},
+        id=_RECOVERY_JOB_ID,
+        name="scheduler:expired-claim-recovery",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=None,
+        next_run_time=datetime.now(UTC),
+    )
 
 
 def _register_jobs(
@@ -142,14 +241,8 @@ def _register_jobs(
     runners: SchedulerRunners,
     *,
     task_filter: TaskFilter | None = None,
-    add_listener: bool = True,
 ) -> int:
     """Register all enabled tasks on *scheduler*; invalid tasks are logged and skipped."""
-    if add_listener:
-        from apscheduler.events import EVENT_JOB_SUBMITTED
-
-        scheduler.add_listener(_on_job_submitted, EVENT_JOB_SUBMITTED)
-
     enabled_count = 0
     for task in list_tasks():
         if not task.enabled:
@@ -173,7 +266,8 @@ def _register_jobs(
             id=task.id,
             name=f"{task.kind.value}:{task.id}",
             replace_existing=True,
-            misfire_grace_time=60,
+            misfire_grace_time=None,
+            max_instances=1,
         )
         enabled_count += 1
         record_scheduler_task_operation(
@@ -215,10 +309,9 @@ def resync_scheduler_jobs(
         scheduler,
         runners,
         task_filter=task_filter,
-        add_listener=False,
     )
     desired_ids = _desired_task_ids(task_filter=task_filter)
-    for job_id in existing_ids - desired_ids:
+    for job_id in existing_ids - desired_ids - {_RECOVERY_JOB_ID}:
         try:
             scheduler.remove_job(job_id)
             record_scheduler_service_operation(
@@ -228,6 +321,10 @@ def resync_scheduler_jobs(
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("Failed to remove stale scheduler job %s: %s", job_id, exc)
+    if enabled_count > 0:
+        _register_recovery_job(scheduler, runners, task_filter=task_filter)
+    elif _RECOVERY_JOB_ID in existing_ids:
+        scheduler.remove_job(_RECOVERY_JOB_ID)
     logger.info("Scheduler resynced with %d enabled task(s)", enabled_count)
     record_scheduler_service_operation("scheduler_resynced", task_count=enabled_count)
     return enabled_count
@@ -276,11 +373,12 @@ def start_background_scheduler(
     """
     from apscheduler.schedulers.background import BackgroundScheduler
 
-    scheduler = BackgroundScheduler()
+    scheduler = _build_scheduler(BackgroundScheduler)
     enabled_count = _register_jobs(scheduler, runners, task_filter=task_filter)
     if enabled_count == 0:
         record_scheduler_service_operation("scheduler_idle", task_count=0)
         return None, 0
+    _register_recovery_job(scheduler, runners, task_filter=task_filter)
     scheduler.start()
     logger.info("Scheduler started with %d task(s). Waiting for triggers...", enabled_count)
     record_scheduler_service_operation("scheduler_started", task_count=enabled_count)
@@ -300,7 +398,7 @@ def _watch_reload_signal(
     watch_and_reconcile(
         stop_event,
         lambda: resync_scheduler_jobs(scheduler, runners),
-        _default_store_path(),
+        default_task_store_path(),
         on_error=lambda exc: logger.warning("Scheduler resync failed; will retry: %s", exc),
     )
 
@@ -317,12 +415,14 @@ def start_scheduler(runners: SchedulerRunners, *, idle_when_empty: bool = False)
     """
     from apscheduler.schedulers.blocking import BlockingScheduler
 
-    scheduler = BlockingScheduler()
+    scheduler = _build_scheduler(BlockingScheduler)
     enabled_count = _register_jobs(scheduler, runners)
     if enabled_count == 0 and not idle_when_empty:
         logger.warning("No enabled tasks found. Scheduler has nothing to run.")
         record_scheduler_service_operation("scheduler_idle", task_count=0)
         raise SystemExit("No enabled tasks found. Add tasks with `opensre cron add` first.")
+    if enabled_count > 0:
+        _register_recovery_job(scheduler, runners)
 
     stop_event = threading.Event()
 
@@ -366,11 +466,17 @@ def start_scheduler(runners: SchedulerRunners, *, idle_when_empty: bool = False)
         record_scheduler_service_operation("scheduler_stopped", task_count=enabled_count)
 
 
-def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool = False) -> bool:
+def run_task_now(
+    task_id: str,
+    runners: SchedulerRunners,
+    *,
+    only_failed: bool = False,
+    on_result: Callable[[TaskRun], None] | None = None,
+) -> bool:
     """Execute a task immediately (ad-hoc one-shot for debugging).
 
-    Uses the current time with seconds precision as fire_time so it does
-    not conflict with scheduled runs (which use minute precision).
+    Uses the current time with microsecond precision as fire_time so it does
+    not conflict with scheduled runs (which use second precision).
 
     ``only_failed=True`` retries only the destinations the most recently
     completed run failed at, instead of delivering to every configured
@@ -388,6 +494,7 @@ def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool =
         return False
 
     target_filter: frozenset[tuple[Provider, str]] | None = None
+    replay_report: TaskReport | None = None
     if only_failed:
         target_filter = failed_retry_scope(task_id)
         if target_filter is None:
@@ -398,8 +505,43 @@ def run_task_now(task_id: str, runners: SchedulerRunners, *, only_failed: bool =
             )
             return False
 
-    fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return execute_task(task, fire_time, runners, target_filter=target_filter)
+        if not target_filter:
+            return True
+
+        from infrastructure.scheduling.scheduler.storage import get_latest_targeted_run
+
+        previous = get_latest_targeted_run(task_id)
+        replay_report = previous.retained_report() if previous is not None else None
+        if replay_report is None:
+            logger.warning(
+                "Task %s has no retained report; refusing to repeat work for delivery.", task_id
+            )
+            return False
+
+    fire_time = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    result = execute_task(
+        task,
+        fire_time,
+        runners,
+        target_filter=target_filter,
+        replay_report=replay_report,
+        on_result=on_result,
+    )
+    if result:
+        _record_task_success_after_full_delivery(task.id, fire_time)
+    return result
+
+
+def _record_task_success_after_full_delivery(task_id: str, fire_time: str) -> None:
+    """Finalize a task only when its persisted run completed every target."""
+    run = get_latest_run_for_fire_time(task_id, fire_time)
+    if (
+        run is not None
+        and run.status is TaskStatus.SUCCESS
+        and run.work_outcome.completed
+        and all(outcome.ok for outcome in run.targets)
+    ):
+        record_task_success(task_id)
 
 
 def failed_retry_scope(task_id: str) -> frozenset[tuple[Provider, str]] | None:
@@ -411,7 +553,7 @@ def failed_retry_scope(task_id: str) -> frozenset[tuple[Provider, str]] | None:
     message already landed. An empty (non-``None``) set means history was read
     and nothing had failed -- there is simply nothing to retry.
     """
-    from infrastructure.scheduling.scheduler.claim_store import get_latest_targeted_run
+    from infrastructure.scheduling.scheduler.storage import get_latest_targeted_run
 
     run = get_latest_targeted_run(task_id)
     if run is None:
@@ -422,6 +564,7 @@ def failed_retry_scope(task_id: str) -> frozenset[tuple[Provider, str]] | None:
 
 
 __all__ = [
+    "configured_scheduled_run_limit",
     "compute_next_run",
     "failed_retry_scope",
     "refresh_background_scheduler",

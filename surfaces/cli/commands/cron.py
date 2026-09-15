@@ -11,8 +11,15 @@ import click
 from rich.console import Console
 from rich.table import Table
 
+from core.agent_harness import pin_recurring_skill, validate_skill_inputs
 from infrastructure.scheduling.scheduler.credentials import requires_explicit_chat_id
-from infrastructure.scheduling.scheduler.types import Provider, TaskKind, TaskRun
+from infrastructure.scheduling.scheduler.loop_constants import (
+    LOOP_MODE_AGENT,
+    LOOP_MODE_PARAM,
+    LOOP_MODES,
+    LOOP_PROMPT_PARAM,
+)
+from infrastructure.scheduling.scheduler.types import Provider, TaskKind, TaskRun, TaskStatus
 from infrastructure.terminal.theme import GLYPH_ERROR, GLYPH_SUCCESS
 from surfaces.cli.commands.scheduling import validate_cron_and_timezone
 
@@ -32,6 +39,18 @@ _KIND_CHOICES = [k.value for k in _CRON_ADD_SUPPORTED_KINDS]
 _PROVIDER_CHOICES = [p.value for p in Provider]
 
 
+def _reject_generic_work_item_reminder(
+    _ctx: click.Context, _param: click.Parameter, kind: str
+) -> str:
+    """Keep reminders on the work-item creation path that supplies their ID."""
+    if kind == TaskKind.WORK_ITEM_REMINDER.value:
+        raise click.BadParameter(
+            "work_item_reminder tasks must be created with `opensre work add --remind-at`.",
+            param_hint="--kind",
+        )
+    return kind
+
+
 @click.group(name="cron")
 def cron_command() -> None:
     """Manage cron-driven scheduled deliveries to messaging providers."""
@@ -49,6 +68,7 @@ def cron_command() -> None:
     "--kind",
     type=click.Choice(_KIND_CHOICES, case_sensitive=False),
     required=True,
+    callback=_reject_generic_work_item_reminder,
     help="The kind of scheduled task.",
 )
 @click.option(
@@ -56,7 +76,10 @@ def cron_command() -> None:
     "cron_expr",
     type=str,
     required=True,
-    help="Cron expression (5 fields: minute hour day month day_of_week).",
+    help=(
+        "Cron expression (5 fields: minute hour day month day_of_week; "
+        "prepend a seconds field, e.g. '*/30 * * * * *', for sub-minute polling)."
+    ),
 )
 @click.option(
     "--tz",
@@ -91,6 +114,36 @@ def cron_command() -> None:
     show_default=True,
     help="Lookback window in hours for the report (must be >= 1).",
 )
+@click.option(
+    "--prompt",
+    type=str,
+    default="",
+    show_default=False,
+    help="Instruction to execute on each manual_loop run.",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(LOOP_MODES),
+    default=None,
+    help="Manual-loop behavior: report (default) or agent, which executes the supplied task.",
+)
+@click.option(
+    "--skill",
+    "skill_name",
+    type=str,
+    default="",
+    show_default=False,
+    help="Recurring action skill to run (required for recurring_skill kind).",
+)
+@click.option("--owner", type=str, default="", help="GitHub repository owner.")
+@click.option("--repo", type=str, default="", help="GitHub repository name.")
+@click.option("--branch", type=str, default="", help="Optional GitHub branch filter.")
+@click.option(
+    "--pr", "pr_number", type=click.IntRange(min=1), default=None, help="Optional GitHub PR filter."
+)
+@click.option(
+    "--city", type=str, default="", help="Optional city for the delivering-morning-briefings skill."
+)
 def cron_add(
     name: str,
     kind: str,
@@ -99,6 +152,14 @@ def cron_add(
     provider: str,
     chat_id: str,
     window_hours: int,
+    prompt: str,
+    mode: str | None,
+    skill_name: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    pr_number: int | None,
+    city: str,
 ) -> None:
     """Add a new scheduled delivery task."""
     from infrastructure.scheduling.scheduler.types import ScheduledTask
@@ -107,18 +168,71 @@ def cron_add(
     validate_cron_and_timezone(cron_expr, timezone)
     _validate_chat_id_for_provider(provider, chat_id)
 
+    task_kind = TaskKind(kind)
+    if mode is not None and task_kind != TaskKind.MANUAL_LOOP:
+        raise click.ClickException("--mode is only valid with --kind manual_loop.")
+    normalized_prompt = prompt.strip()
+    if task_kind == TaskKind.MANUAL_LOOP:
+        if not normalized_prompt:
+            raise click.ClickException("--prompt is required when --kind is manual_loop.")
+    elif normalized_prompt:
+        raise click.ClickException("--prompt is only valid with --kind manual_loop.")
+    pinned_name = ""
+    pinned_revision = ""
+    if task_kind == TaskKind.RECURRING_SKILL:
+        if not skill_name.strip():
+            raise click.ClickException("--skill is required when --kind is recurring_skill.")
+        try:
+            pinned_name, pinned_revision = pin_recurring_skill(skill_name)
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
+    elif skill_name.strip():
+        raise click.ClickException("--skill is only valid with --kind recurring_skill.")
+    task_params = {LOOP_PROMPT_PARAM: normalized_prompt} if normalized_prompt else {}
+    if mode == LOOP_MODE_AGENT:
+        task_params[LOOP_MODE_PARAM] = mode
+    if task_kind is TaskKind.MANUAL_LOOP and mode == LOOP_MODE_AGENT:
+        if city.strip():
+            raise click.UsageError("--city is only valid for morning briefings.")
+        if bool(owner.strip()) != bool(repo.strip()):
+            raise click.UsageError("Supply both --owner and --repo for a repository task.")
+        if (branch.strip() or pr_number) and not owner.strip():
+            raise click.UsageError("--branch and --pr require --owner and --repo.")
+        if branch.strip() and pr_number is not None:
+            raise click.UsageError("Use either --branch or --pr, not both.")
+        if owner.strip():
+            task_params.update(owner=owner.strip(), repo=repo.strip())
+        if branch.strip():
+            task_params["branch"] = branch.strip()
+        if pr_number is not None:
+            task_params["pr_number"] = str(pr_number)
+        skill_inputs = {}
+    else:
+        skill_inputs = _recurring_skill_inputs(
+            pinned_name,
+            city=city,
+            owner=owner,
+            repo=repo,
+            branch=branch,
+            pr_number=pr_number,
+        )
+
     task = ScheduledTask(
         name=name.strip(),
-        kind=TaskKind(kind),
+        kind=task_kind,
         cron=cron_expr,
         timezone=timezone,
         provider=Provider(provider),
         chat_id=chat_id.strip(),
         window_hours=window_hours,
+        skill_name=pinned_name,
+        skill_revision=pinned_revision,
+        skill_inputs=skill_inputs,
+        params=task_params,
     )
 
     from infrastructure.scheduling.scheduler.operation_log import record_scheduler_task_operation
-    from infrastructure.scheduling.scheduler.store import add_task
+    from infrastructure.scheduling.scheduler.storage import add_task
 
     added = add_task(task)
     record_scheduler_task_operation(
@@ -134,7 +248,55 @@ def cron_add(
     if added.name:
         _console.print(f"  Name: {added.name}")
     _console.print(f"  Kind: {added.kind.value}  Cron: {added.cron}  TZ: {added.timezone}")
+    if added.kind is TaskKind.MANUAL_LOOP:
+        _console.print(f"  Mode: {added.params.get(LOOP_MODE_PARAM, 'report')}")
+    if added.skill_name:
+        _console.print(f"  Skill: {added.skill_name}  Revision: {added.skill_revision[:12]}…")
     _console.print(f"  Provider: {added.provider.value}  Chat: {added.chat_id}")
+
+
+def _recurring_skill_inputs(
+    skill_name: str,
+    *,
+    city: str,
+    owner: str,
+    repo: str,
+    branch: str,
+    pr_number: int | None,
+) -> dict[str, str]:
+    """Validate and serialize inputs for the selected recurring skill."""
+    normalized_city = city.strip()
+    values_supplied = bool(owner.strip() or repo.strip() or branch.strip() or pr_number)
+    if skill_name == "delivering-morning-briefings":
+        if values_supplied:
+            raise click.UsageError(
+                "--owner, --repo, --branch, and --pr are only valid with "
+                "--kind recurring_skill --skill reporting-github-ci-failures."
+            )
+        return validate_skill_inputs({"city": normalized_city} if normalized_city else {})
+    if normalized_city:
+        raise click.UsageError(
+            "--city is only valid with --kind recurring_skill --skill delivering-morning-briefings."
+        )
+    if skill_name != "reporting-github-ci-failures":
+        if values_supplied:
+            raise click.UsageError(
+                "--owner, --repo, --branch, and --pr are only valid with "
+                "--kind recurring_skill --skill reporting-github-ci-failures."
+            )
+        return validate_skill_inputs({})
+    if not owner.strip() or not repo.strip():
+        raise click.UsageError(
+            "--owner and --repo are required for skill reporting-github-ci-failures."
+        )
+    if branch.strip() and pr_number is not None:
+        raise click.UsageError("Use either --branch or --pr, not both.")
+    params = {"owner": owner.strip(), "repo": repo.strip()}
+    if branch.strip():
+        params["branch"] = branch.strip()
+    if pr_number is not None:
+        params["pr_number"] = str(pr_number)
+    return validate_skill_inputs(params)
 
 
 @cron_command.command(name="list")
@@ -174,6 +336,11 @@ def cron_list() -> None:
         )
 
     _console.print(table)
+    for loop in loops:
+        if loop.schedule_error:
+            _console.print(
+                f"[yellow]Task {loop.id[:12]} requires action:[/yellow] {loop.schedule_error}"
+            )
 
 
 @cron_command.command(name="remove")
@@ -181,7 +348,7 @@ def cron_list() -> None:
 def cron_remove(task_id: str) -> None:
     """Remove a scheduled delivery task by ID."""
     from infrastructure.scheduling.scheduler.operation_log import record_scheduler_task_operation
-    from infrastructure.scheduling.scheduler.store import get_task, remove_task
+    from infrastructure.scheduling.scheduler.storage import get_task, remove_task
 
     task = get_task(task_id)
     if remove_task(task_id):
@@ -206,7 +373,7 @@ def _warn_if_rerun_duplicates(task_id: str) -> None:
     ``cron run`` is also the way to trigger a task on demand, and that has to
     keep reaching every destination.
     """
-    from infrastructure.scheduling.scheduler.claim_store import get_latest_targeted_run
+    from infrastructure.scheduling.scheduler.storage import get_latest_targeted_run
 
     run = get_latest_targeted_run(task_id)
     if run is None:
@@ -237,7 +404,7 @@ def cron_run(task_id: str, failed_only: bool) -> None:
     from bootstrap.process import SCHEDULED_COMMAND_PROFILE, configure_process
     from infrastructure.scheduling.scheduler.operation_log import record_scheduler_task_operation
     from infrastructure.scheduling.scheduler.runner import failed_retry_scope, run_task_now
-    from infrastructure.scheduling.scheduler.store import get_task
+    from infrastructure.scheduling.scheduler.storage import get_task
 
     configure_process(SCHEDULED_COMMAND_PROFILE)
 
@@ -267,7 +434,14 @@ def cron_run(task_id: str, failed_only: bool) -> None:
         task,
         extra={"command": "cron_run", "failed_only": failed_only},
     )
-    success = run_task_now(task_id, scheduler_runners(), only_failed=failed_only)
+    from surfaces.cli.commands.cron_results import print_run_result
+
+    success = run_task_now(
+        task_id,
+        scheduler_runners(),
+        only_failed=failed_only,
+        on_result=lambda run: print_run_result(_console, run),
+    )
     if success:
         _console.print("[green]Done.[/green]")
     else:
@@ -282,6 +456,15 @@ def _delivered_targets(run: TaskRun) -> str:
     return f"{sum(1 for outcome in run.targets if outcome.ok)}/{len(run.targets)}"
 
 
+def _run_status_label(run: TaskRun) -> str:
+    """Describe whether a run was abandoned or recovered by a later attempt."""
+    if run.status is TaskStatus.ABANDONED:
+        return "abandoned"
+    if run.attempt > 1:
+        return f"reclaimed/{run.status.value}"
+    return run.status.value
+
+
 @cron_command.command(name="logs")
 @click.argument("task_id")
 @click.option(
@@ -291,47 +474,60 @@ def _delivered_targets(run: TaskRun) -> str:
     show_default=True,
     help="Max number of runs to show (must be >= 1).",
 )
-def cron_logs(task_id: str, limit: int) -> None:
+@click.option(
+    "--run", "run_id", type=click.IntRange(min=1), default=None, help="Show one retained run."
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Return structured execution and delivery outcomes."
+)
+def cron_logs(task_id: str, limit: int, run_id: int | None, as_json: bool) -> None:
     """Show execution history for a scheduled task."""
-    from infrastructure.scheduling.scheduler.claim_store import get_runs
-    from infrastructure.scheduling.scheduler.store import get_task
+    import json
 
-    task = get_task(task_id)
-    if task is None:
-        _console.print(f"[red]Error: task {task_id} not found.[/red]")
-        raise SystemExit(1)
+    from infrastructure.scheduling.scheduler.loop_results import restore_legacy_reports
+    from infrastructure.scheduling.scheduler.storage import get_group_run, get_runs
+    from surfaces.cli.commands.cron_results import print_run_result
 
-    runs = get_runs(task_id, limit=limit)
+    selected = get_group_run((task_id,), run_id) if run_id is not None else None
+    runs = (
+        ([selected] if selected is not None else [])
+        if run_id is not None
+        else get_runs(task_id, limit=limit)
+    )
+    runs = restore_legacy_reports(runs)
+    if as_json:
+        _console.print_json(json.dumps([run.model_dump(mode="json") for run in runs]))
+        return
     if not runs:
         _console.print(f"[dim]No execution history for task {task_id}.[/dim]")
         return
 
     table = Table(show_header=True, header_style="bold")
+    table.add_column("Run")
     table.add_column("Started")
-    table.add_column("Status")
+    table.add_column("Attempt")
+    table.add_column("Execution")
+    table.add_column("Work")
+    table.add_column("Delivery")
     table.add_column("Targets")
     table.add_column("Message ID")
     table.add_column("Error")
 
     for run in runs:
-        status_style = (
-            "green"
-            if run.status.value == "success"
-            else "red"
-            if run.status.value == "failed"
-            else ""
-        )
         table.add_row(
+            str(run.run_id or "—"),
             run.started_at,
-            f"[{status_style}]{run.status.value}[/{status_style}]"
-            if status_style
-            else run.status.value,
+            str(run.attempt),
+            _run_status_label(run),
+            run.work_status.value,
+            run.delivery_status.value if run.delivery_status is not None else "none",
             _delivered_targets(run),
             run.posted_message_id or "—",
             run.error[:50] if run.error else "—",
         )
 
     _console.print(table)
+    print_run_result(_console, runs[0])
 
 
 @cron_command.command(name="start")

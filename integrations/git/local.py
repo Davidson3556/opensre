@@ -16,14 +16,19 @@ from __future__ import annotations
 import base64
 import os
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from urllib.parse import urlsplit
 
-from config.constants.git import OPENSRE_COMMIT_COAUTHOR_TRAILER
+from config.constants.git import (
+    OPENSRE_COMMIT_COAUTHOR_EMAIL,
+    OPENSRE_COMMIT_COAUTHOR_NAME,
+    OPENSRE_COMMIT_COAUTHOR_TRAILER,
+)
 from integrations.git.errors import (
     BRANCH_FAILED,
     COMMIT_FAILED,
     GIT_UNAVAILABLE,
+    MERGE_FAILED,
     NOT_A_GIT_REPO,
     PROTECTED_BRANCH,
     PUSH_FAILED,
@@ -31,6 +36,7 @@ from integrations.git.errors import (
 )
 
 _GIT_TIMEOUT_SEC = 60
+_GIT_CLONE_TIMEOUT_SEC = 120
 # Networked lookups get a tighter bound so a slow/unreachable remote can't stall
 # the whole flow (they always have a safe local fallback).
 _REMOTE_TIMEOUT_SEC = 15
@@ -49,13 +55,26 @@ def _with_opensre_coauthor(message: str) -> str:
     return f"{stripped}\n\n{trailer}"
 
 
+def _opensre_author_env(env: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Environment that makes git record the OpenSRE Agent account as author and committer."""
+    identity = {
+        "GIT_AUTHOR_NAME": OPENSRE_COMMIT_COAUTHOR_NAME,
+        "GIT_AUTHOR_EMAIL": OPENSRE_COMMIT_COAUTHOR_EMAIL,
+        "GIT_COMMITTER_NAME": OPENSRE_COMMIT_COAUTHOR_NAME,
+        "GIT_COMMITTER_EMAIL": OPENSRE_COMMIT_COAUTHOR_EMAIL,
+    }
+    return {**(env if env is not None else os.environ), **identity}
+
+
 def _run_git(
     workspace: str,
     *args: str,
     env: dict[str, str] | None = None,
     timeout: float = _GIT_TIMEOUT_SEC,
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``git <args>`` in *workspace*; raise GitCommandError if git is missing."""
+    """Run ``git <args>`` in *workspace*; raise GitCommandError if git or the directory is missing."""
+    if not os.path.isdir(workspace):
+        raise GitCommandError(NOT_A_GIT_REPO, f"{workspace} is not a directory.")
     try:
         return subprocess.run(  # nosemgrep: dangerous-subprocess-use-audit
             ["git", *args],
@@ -82,10 +101,23 @@ def _remote_https_base(workspace: str, remote: str = "origin") -> str:
     result = _run_git(workspace, "remote", "get-url", remote)
     if result.returncode != 0:
         return ""
-    parsed = urlsplit(result.stdout.strip())
+    return _https_base(result.stdout.strip())
+
+
+def _https_base(url: str) -> str:
+    parsed = urlsplit(url)
     if parsed.scheme == "https" and parsed.hostname:
         return f"https://{parsed.hostname}/"
     return ""
+
+
+def _is_url(destination: str) -> bool:
+    return "://" in destination or destination.startswith(("/", "git@", "ssh:"))
+
+
+def _config(workspace: str, key: str) -> str:
+    result = _run_git(workspace, "config", "--get", key)
+    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _token_auth_env(token: str, base_url: str) -> dict[str, str]:
@@ -116,6 +148,30 @@ def is_git_repo(workspace: str) -> bool:
     """True when *workspace* is inside a git work tree."""
     result = _run_git(workspace, "rev-parse", "--is-inside-work-tree")
     return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def clone_repository(url: str, workspace: str, *, token: str | None = None) -> None:
+    """Clone an HTTPS repository into *workspace* (absent or empty) without prompting.
+
+    Credentials stay confined to the child's environment; without a token the
+    clone relies on the repository being public.
+    """
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        raise GitCommandError(NOT_A_GIT_REPO, "Cloning requires an HTTPS repository URL.")
+    env = _token_auth_env(token, f"https://{parsed.netloc}/") if token else dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    result = _run_git(
+        os.path.dirname(workspace),
+        "clone",
+        "--",
+        url,
+        workspace,
+        env=env,
+        timeout=_GIT_CLONE_TIMEOUT_SEC,
+    )
+    if result.returncode != 0:
+        raise GitCommandError(NOT_A_GIT_REPO, "Could not clone the selected repository.")
 
 
 def ensure_git_repo(workspace: str) -> None:
@@ -212,6 +268,16 @@ def changed_paths(workspace: str) -> list[str]:
     return paths
 
 
+def committed_paths_since(workspace: str, revision: str) -> list[str]:
+    """Return committed paths changed since a trusted revision, including rename sources."""
+    result = _run_git(
+        workspace, "diff", "--name-only", "--no-renames", "-z", revision, "HEAD", "--"
+    )
+    if result.returncode != 0:
+        raise GitCommandError(NOT_A_GIT_REPO, "Could not verify the repair's committed changes.")
+    return [path for path in result.stdout.split("\0") if path]
+
+
 def file_fingerprints(workspace: str, paths: Sequence[str]) -> dict[str, str]:
     """Map each path to a git hash of its current worktree content ("" if unreadable).
 
@@ -231,6 +297,38 @@ def file_fingerprints(workspace: str, paths: Sequence[str]) -> dict[str, str]:
         for path, digest in zip(existing, hashes):
             fingerprints[path] = digest.strip()
     return fingerprints
+
+
+def staged_paths(workspace: str) -> list[str]:
+    """Paths whose index entry differs from HEAD (added, modified, deleted, renamed)."""
+    result = _run_git(workspace, "diff", "--cached", "--name-only", "--no-renames", "-z")
+    return [path for path in result.stdout.split("\0") if path]
+
+
+def unstage_paths(workspace: str, paths: Sequence[str]) -> None:
+    """Restore the index entries of *paths* from HEAD, leaving the working tree as it is."""
+    if not paths:
+        return
+    result = _run_git(workspace, "reset", "-q", "--", *paths)
+    if result.returncode != 0:
+        raise GitCommandError(MERGE_FAILED, f"git reset failed: {result.stderr.strip()}")
+
+
+def changed_since_baseline(workspace: str, *, baseline: Mapping[str, str] | None) -> list[str]:
+    """Dirty paths that are new or whose content differs from *baseline* fingerprints."""
+    pre_existing = dict(baseline or {})
+    current = changed_paths(workspace)
+    current_fingerprints = file_fingerprints(workspace, current)
+    return [
+        path
+        for path in current
+        if path not in pre_existing or current_fingerprints.get(path, "") != pre_existing[path]
+    ]
+
+
+def is_base_branch(name: str) -> bool:
+    """True for the branch names pull requests are normally merged into."""
+    return name.strip().casefold() in _PROTECTED_BRANCHES
 
 
 def assert_not_protected(branch: str, *, protected_extra: str = "") -> None:
@@ -301,6 +399,84 @@ def commit_paths(workspace: str, paths: Sequence[str], message: str) -> None:
     )
     if commit.returncode != 0:
         raise GitCommandError(COMMIT_FAILED, f"git commit failed: {commit.stderr.strip()}")
+
+
+def upstream_branch(workspace: str) -> str:
+    """``remote/branch`` the current branch tracks, or empty when it tracks nothing."""
+    result = _run_git(workspace, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}")
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def push_destination(workspace: str) -> str:
+    """Where a push of HEAD lands: ``remote/branch``, or ``owner:branch`` for a fork URL."""
+    branch = current_branch(workspace)
+    destination, remote_branch = _push_destination(workspace, branch)
+    return _push_label(destination, remote_branch)
+
+
+def push_head_to_upstream(workspace: str, *, token: str | None = None) -> str:
+    """Push HEAD where the branch pushes (its push remote, else the branch it tracks).
+
+    A branch without any push or tracking configuration goes to a same-named
+    branch on origin. The remote branch must not be a protected base branch.
+    Returns the destination as ``push_destination`` labels it.
+    """
+    branch = current_branch(workspace)
+    if not _config(workspace, f"branch.{branch}.remote") and not _push_remote(workspace, branch):
+        push_branch(workspace, branch, token=token)
+        return f"origin/{branch}"
+    destination, remote_branch = _push_destination(workspace, branch)
+    assert_not_protected(remote_branch)
+    label = _push_label(destination, remote_branch)
+    env = None
+    if token:
+        base = (
+            _https_base(destination)
+            if _is_url(destination)
+            else _remote_https_base(workspace, destination)
+        )
+        if base:
+            env = _token_auth_env(token, base)
+    result = _run_git(workspace, "push", destination, f"HEAD:refs/heads/{remote_branch}", env=env)
+    if result.returncode != 0:
+        raise GitCommandError(PUSH_FAILED, f"git push to {label} failed: {result.stderr.strip()}")
+    return label
+
+
+def _push_destination(workspace: str, branch: str) -> tuple[str, str]:
+    """(remote name or URL, branch name there) that ``git push`` would use for *branch*.
+
+    A push remote (as ``gh pr checkout`` sets for a fork) wins over the tracked
+    remote; in that triangular setup the remote branch keeps the local name.
+    """
+    tracked = _config(workspace, f"branch.{branch}.remote") or "origin"
+    push_remote = _push_remote(workspace, branch)
+    if push_remote and push_remote != tracked:
+        return push_remote, branch
+    merge_ref = _config(workspace, f"branch.{branch}.merge")
+    return tracked, merge_ref.removeprefix("refs/heads/") or branch
+
+
+def _push_remote(workspace: str, branch: str) -> str:
+    return _config(workspace, f"branch.{branch}.pushRemote") or _config(
+        workspace, "remote.pushDefault"
+    )
+
+
+def _push_label(destination: str, remote_branch: str) -> str:
+    if not _is_url(destination):
+        return f"{destination}/{remote_branch}"
+    parts = _repository_path(destination).strip("/").split("/")
+    owner = parts[-2] if len(parts) >= 2 else parts[-1]
+    return f"{owner}:{remote_branch}"
+
+
+def _repository_path(url: str) -> str:
+    """The path part of a remote URL, including the scp form ``git@host:owner/repo.git``."""
+    if "://" in url:
+        return urlsplit(url).path
+    _host, colon, path = url.partition(":")
+    return path if colon and not url.startswith("/") else url
 
 
 def push_branch(

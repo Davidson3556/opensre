@@ -32,6 +32,12 @@ ROOT_API = frozenset(
         "SessionManager",
         "ToolCallingTurnResult",
         "TurnResult",
+        "is_legacy_skill_name",
+        "is_recurring_skill",
+        "normalize_skill_name",
+        "pin_recurring_skill",
+        "resolve_scheduled_skill",
+        "validate_skill_inputs",
     }
 )
 
@@ -64,19 +70,23 @@ SPI_ROLE_NAMES: dict[str, frozenset[str]] = {
     "session_goal": frozenset(
         {
             "MAX_GOAL_CONDITION_CHARS",
+            "SESSION_GOAL_UNBOUNDED_TURNS",
             "SessionGoal",
             "SessionGoalReason",
             "SessionGoalStatus",
+            "GoalPaintSignature",
             "attach_session_goal",
             "build_session_goal",
             "clear_session_goal",
+            "derive_session_goal_checklist",
             "format_session_goal_progress",
             "format_session_goal_status_line",
+            "goal_paint_signature",
             "run_until_session_goal",
+            "same_goal_identity",
             "session_goal_is_active",
             "session_goal_is_attached",
             "session_goal_is_paused",
-            "strip_session_goal_progress_tags",
         }
     ),
     "session_state": frozenset(
@@ -129,11 +139,17 @@ SPI_ROLE_NAMES: dict[str, frozenset[str]] = {
     ),
     "grounding": frozenset(
         {
+            "ActionSkill",
             "CacheStats",
+            "GETTING_STARTED_CUSTOM",
             "GroundingSource",
+            "SkillEntryMenu",
+            "getting_started_skills",
             "list_action_skills",
             "load_skill_body",
+            "load_skill_reference",
             "log_grounding_cache_diagnostics",
+            "skill_reference_names",
         }
     ),
     "defaults": frozenset(
@@ -151,23 +167,33 @@ SPI_ROLE_NAMES: dict[str, frozenset[str]] = {
             "AskUserQuestion",
             "format_ask_user_answers",
             "parse_ask_user_answers",
+            "question_key",
         }
     ),
     "task_plan": frozenset(
         {
+            "PLAN_ITEM_SCHEMA",
             "PLAN_STATUS_GLYPH",
             "PlanStep",
             "PlanStepStatus",
             "TaskPlan",
             "apply_update_plan_host_policy",
             "apply_update_plan_session",
+            "demote_unevidenced_completions",
+            "discard_task_plan",
             "ensure_active_step",
             "format_plan_header",
             "format_task_plan_plain",
+            "format_update_plan_instruction",
             "is_plan_diagnosis_prose",
+            "mark_plan_written",
             "parse_task_plan",
+            "plan_evidence_available",
             "promote_first_pending_step",
+            "record_blocked_this_turn",
+            "record_plan_evidence",
             "record_task_plan_work",
+            "step_label",
             "take_completed_plan_breakdown",
             "task_plan_to_payload",
         }
@@ -198,11 +224,14 @@ RUNTIME = frozenset(
 TOOLS = frozenset(
     {
         "ActionToolScope",
+        "ToolExecutor",
         "action_context_from_agent_context",
         "action_scope_from_agent_context",
         "capability_available_from_sources",
+        "capability_not_explicitly_disabled",
         "coerce_gathered_evidence",
         "execute_with_action_context",
+        "registered_single_turn_tool_names",
     }
 )
 

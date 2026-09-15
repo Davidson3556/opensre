@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Final
 from urllib.parse import quote
@@ -29,6 +31,14 @@ _ACTIONS_URL_RE = re.compile(
 )
 CI_TARGET_BRANCH: Final = "branch"
 CI_TARGET_PR: Final = "pr"
+# GitHub reports a PR whose head conflicts with its base as DIRTY and will not
+# start pull_request workflows for it because no merge commit can be built.
+MERGE_STATE_DIRTY: Final = "DIRTY"
+_MERGE_STATE_UNKNOWN: Final = "UNKNOWN"
+_MERGEABLE_CONFLICTING: Final = "CONFLICTING"
+_MERGE_STATE_FIELDS: Final = "mergeStateStatus,mergeable"
+_MERGE_STATE_RETRIES = 3
+_MERGE_STATE_RETRY_SECONDS = 3.0
 # CANCELLED is omitted: cancelled siblings of a real failure are noise, not a
 # second root cause for the coding agent to chase.
 _FAILED_CONCLUSIONS = frozenset({"ACTION_REQUIRED", "FAILURE", "STARTUP_FAILURE", "TIMED_OUT"})
@@ -44,6 +54,8 @@ _PR_FIELDS = ",".join(
         "headRefOid",
         "baseRefName",
         "isCrossRepository",
+        "mergeStateStatus",
+        "mergeable",
         "state",
         "statusCheckRollup",
     ]
@@ -93,6 +105,15 @@ class CiFixContext:
     task: str
     target_kind: str = CI_TARGET_PR
     target_branch: str = ""
+    merge_state: str = ""
+    # Check inventory from the original head, for diagnostics only. New checks
+    # still receive the full registration and settlement windows.
+    known_check_names: tuple[str, ...] = ()
+
+    @property
+    def needs_base_merge(self) -> bool:
+        """True when GitHub cannot merge the PR head, so its checks will not start."""
+        return not self.is_branch_target and self.merge_state == MERGE_STATE_DIRTY
 
     @property
     def is_branch_target(self) -> bool:
@@ -129,8 +150,14 @@ def gather_ci_fix_context(
     pr_url: str | None = None,
     workspace: str | None = None,
     github_token: str | None = None,
+    allow_clean: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> CiFixContext:
-    """Resolve PR metadata, failing checks, and log snippets."""
+    """Resolve PR metadata, merge state, failing checks, and log snippets.
+
+    A PR that conflicts with its base is accepted even without failing checks:
+    GitHub never starts checks for it, so bringing the base in is the fix.
+    """
     parsed_url = parse_pr_url(pr_url)
     repo_owner = (parsed_url.owner if parsed_url else owner or "").strip()
     repo_name = (parsed_url.repo if parsed_url else repo or "").strip().removesuffix(".git")
@@ -185,13 +212,16 @@ def gather_ci_fix_context(
             ),
         )
 
+    merge_state = _settled_merge_state(
+        pr, repo=repo_full_name, number=resolved_number, github_token=github_token, sleep=sleep
+    )
     rollup = _list_value(pr.get("statusCheckRollup"))
     checks = tuple(
         _failing_check_from_rollup(repo_full_name, item, github_token=github_token)
         for item in rollup
         if _is_failing_check(item)
     )
-    if not checks:
+    if not checks and merge_state != MERGE_STATE_DIRTY and not allow_clean:
         raise GitHubCiFixError(
             ERR_NO_FAILING_CHECKS,
             f"No failing CI checks found on {repo_full_name}#{resolved_number}; no push was made.",
@@ -214,8 +244,44 @@ def gather_ci_fix_context(
         task="",
         target_kind=CI_TARGET_PR,
         target_branch=head_branch,
+        merge_state=merge_state,
+        known_check_names=tuple(_check_name(item) for item in rollup),
     )
-    return replace(ctx, task=_build_task(ctx))
+    return replace(
+        ctx, task=build_fix_task(ctx, base_merged=ctx.needs_base_merge) if checks else ""
+    )
+
+
+def _settled_merge_state(
+    pr: dict[str, Any],
+    *,
+    repo: str,
+    number: int,
+    github_token: str | None,
+    sleep: Callable[[float], None],
+) -> str:
+    """Return the PR merge state, re-reading while GitHub is still computing it."""
+    state = _merge_state(pr)
+    for _attempt in range(_MERGE_STATE_RETRIES):
+        if state != _MERGE_STATE_UNKNOWN:
+            return state
+        sleep(_MERGE_STATE_RETRY_SECONDS)
+        state = _merge_state(
+            run_gh_json(
+                ["pr", "view", str(number), "--json", _MERGE_STATE_FIELDS],
+                repo=repo,
+                github_token=github_token,
+            )
+        )
+    return state
+
+
+def _merge_state(pr: dict[str, Any]) -> str:
+    state = str(pr.get("mergeStateStatus") or "").strip().upper()
+    mergeable = str(pr.get("mergeable") or "").strip().upper()
+    if mergeable == _MERGEABLE_CONFLICTING:
+        return MERGE_STATE_DIRTY
+    return state or _MERGE_STATE_UNKNOWN
 
 
 def gather_branch_ci_fix_context(
@@ -225,6 +291,7 @@ def gather_branch_ci_fix_context(
     repo: str | None = None,
     workspace: str | None = None,
     github_token: str | None = None,
+    allow_clean: bool = False,
 ) -> CiFixContext:
     """Resolve a branch's failing workflow runs and log snippets (no PR involved)."""
     branch_name = _normalize_branch(branch)
@@ -284,7 +351,7 @@ def gather_branch_ci_fix_context(
         for run in runs
         if _is_failing_check(run)
     )
-    if not checks:
+    if not checks and not allow_clean:
         raise GitHubCiFixError(
             ERR_NO_FAILING_CHECKS,
             (
@@ -307,8 +374,9 @@ def gather_branch_ci_fix_context(
         task="",
         target_kind=CI_TARGET_BRANCH,
         target_branch=branch_name,
+        known_check_names=tuple(_check_name(run) for run in runs),
     )
-    return replace(ctx, task=_build_task(ctx))
+    return replace(ctx, task=build_fix_task(ctx, base_merged=False))
 
 
 def _failing_check_from_run(
@@ -410,7 +478,8 @@ def _log_excerpt(raw: str) -> str:
     return excerpt[-_MAX_LOG_CHARS:]
 
 
-def _build_task(ctx: CiFixContext) -> str:
+def build_fix_task(ctx: CiFixContext, *, base_merged: bool) -> str:
+    """Coding-agent task for the failing checks; ``base_merged`` notes the head now includes the base."""
     masker = MaskingRules(MaskingPolicy.from_env())
     if ctx.is_branch_target:
         branch = ctx.target_branch or ctx.base_branch or ctx.head_branch
@@ -435,9 +504,17 @@ def _build_task(ctx: CiFixContext) -> str:
             f"Base branch: {ctx.base_branch}",
             f"Head branch to edit and push: {ctx.head_branch}",
             f"Head SHA: {ctx.head_sha}",
-            "",
-            "Failing checks and log excerpts:",
         ]
+        if base_merged:
+            lines.extend(
+                [
+                    f"{ctx.base_branch} has already been merged into the workspace; "
+                    f"the checks below ran on the pre-merge head {ctx.head_sha}.",
+                    "If that merge already resolves a failure, change nothing for it "
+                    "and say so in the summary; the merge alone is pushed.",
+                ]
+            )
+        lines.extend(["", "Failing checks and log excerpts:"])
     log_budget = _MAX_TASK_LOG_CHARS
     for check in ctx.failing_checks:
         lines.extend(
@@ -523,9 +600,11 @@ def _indent(value: str, *, prefix: str) -> str:
 __all__ = [
     "CI_TARGET_BRANCH",
     "CI_TARGET_PR",
+    "MERGE_STATE_DIRTY",
     "CiFixContext",
     "FailingCheck",
     "PullRequestRef",
+    "build_fix_task",
     "gather_branch_ci_fix_context",
     "gather_ci_fix_context",
     "parse_pr_url",

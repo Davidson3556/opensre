@@ -166,6 +166,7 @@
                 "expanded": false,
                 "pages": [
                   "alertmanager",
+                  "runbook-guided-investigations",
                   "incident_io",
                   "opsgenie",
                   "pagerduty",
@@ -199,10 +200,15 @@
                 "expanded": false,
                 "pages": [
                   "architecture-audit-tool",
+                  "structured-file-tool",
+                  "counting-files",
                   "bitbucket",
+                  "cicd-analytics-demo",
                   "github",
                   "github-ci-fix",
+                  "github-ci-health-scan",
                   "github-security-fix",
+                  "resolve-merge-conflicts",
                   "github-workflow-tools",
                   "integrations/github-actions",
                   "gitlab",

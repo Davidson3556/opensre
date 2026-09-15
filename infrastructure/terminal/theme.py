@@ -19,7 +19,7 @@ Token reference
   BG         terminal background, never used as foreground
   INPUT_SURFACE  composer/menu plate — visibly lifted vs BG (input box fill)
   BOLD_SKILL fixed green skill-activation label
-  reply marker  assistant ``Ω`` lead-in — Factory/Droid-warm accent via
+  reply marker  assistant circle and working-state lead-in via
                 :func:`reply_marker_style` (not WARNING; must stay vivid)
 
 Usage
@@ -144,8 +144,8 @@ THEME_REGISTRY: dict[str, CliTheme] = {
         name="purple",
         HIGHLIGHT="#CCB7F0",
         BRAND="#9885B3",
-        TEXT="#B6BAC2",
-        SECONDARY="#A6A6A6",
+        TEXT="#D0D0D0",
+        SECONDARY="#B4B4BC",
         DIM="#6E6E6E",
         WARNING="#D8B06F",
         ERROR="#CF6B63",
@@ -362,7 +362,7 @@ def _parse_hex_color(value: str) -> tuple[int, int, int]:
 
 
 def reply_marker_hex() -> str:
-    """Hex for the assistant ``Ω`` / tool ``⏺`` accent — the active theme's
+    """Hex for transcript lead labels — the active theme's
     ``HIGHLIGHT``, so every component follows the selected palette rather than a
     fixed colour that would read as a copy of another tool."""
     return _ACTIVE_THEME.HIGHLIGHT
@@ -499,10 +499,11 @@ def _apply_theme(theme: CliTheme) -> None:
 
     MARKDOWN_THEME = Theme(
         {
-            # Sunny Droid-like reply: bright warm-grey body (#D0D0D0 TEXT), warm
-            # ``Ω`` accent. Strong stays bold TEXT; avoid icy blue chrome.
+            # Bright warm-grey body with the accent reserved for code spans; bold
+            # marks headings, strong text and table headers only, so structure
+            # stays visible when a reply is mostly file names and flags.
             "markdown.paragraph": theme.TEXT,
-            "markdown.code": f"bold {theme.HIGHLIGHT}",
+            "markdown.code": theme.HIGHLIGHT,
             "markdown.code_block": theme.TEXT,
             "markdown.h1": f"bold {theme.HIGHLIGHT}",
             "markdown.h2": f"bold {theme.WARNING}",
@@ -516,6 +517,8 @@ def _apply_theme(theme: CliTheme) -> None:
             "markdown.link": f"underline {theme.HIGHLIGHT}",
             "markdown.link_url": theme.DIM,
             "markdown.hr": theme.DIM,
+            "markdown.table.header": f"bold {theme.HIGHLIGHT}",
+            "markdown.table.border": theme.DIM,
         }
     )
 

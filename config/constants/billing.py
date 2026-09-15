@@ -29,6 +29,12 @@ CLERK_API_BASE_URL_DEFAULT: Final[str] = "https://api.clerk.com"
 
 CREDITS_HTTP_TIMEOUT_SECONDS: Final[float] = 5.0
 
+# Idempotency header for the consume ledger. The polling transports replay a
+# delivery by design after a restart, so the same delivery must carry the same
+# key and debit at most once. The gateway derives the key from the transport's
+# stable per-delivery id; the webapp is what makes the repeat safe.
+CREDITS_IDEMPOTENCY_HEADER: Final[str] = "Idempotency-Key"
+
 # Minted M2M tokens are short-lived and cached in-process; refresh slightly
 # before expiry so a token can't lapse mid-request.
 MACHINE_TOKEN_TTL_SECONDS: Final[int] = 3600

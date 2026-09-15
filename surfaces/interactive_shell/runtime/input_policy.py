@@ -26,6 +26,8 @@ _EXCLUSIVE_STDIN_MENU_COMMANDS: frozenset[str] = frozenset(
         # ``/choose`` renders the pending ask_user_choice arrow-key picker (raw
         # os.read on stdin), so the turn must own stdin exclusively.
         "/choose",
+        # ``/demo`` queues onboarding; finish it before reading the queued prompt.
+        "/demo",
         "/help",
         "/integrations",
         "/mcp",
@@ -71,6 +73,7 @@ _EXCLUSIVE_STDIN_SUBCOMMANDS: frozenset[tuple[str, str]] = frozenset(
         ("/loops", "inbox"),
         ("/loops", "list"),
         ("/loops", "messages"),
+        ("/loops", "show"),
     }
 )
 _WAIT_FOR_COMPLETION_COMMANDS: frozenset[str] = frozenset(

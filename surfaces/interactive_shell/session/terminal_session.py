@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from config.constants.repl_autonomy import DEFAULT_AUTO_LEVEL, AutoLevel
+from core.agent_harness.spi.session_goal import GoalPaintSignature
 from surfaces.interactive_shell.session.terminal_metrics import TerminalMetrics
 
 if TYPE_CHECKING:
@@ -93,6 +94,9 @@ class TerminalSession:
     prompt_refresh_fn: Callable[[], None] | None = field(default=None, repr=False)
     """Loop-owned hook to apply pending prefill and redraw the active prompt."""
 
+    ci_fix_count_fn: Callable[[], int] | None = field(default=None, repr=False)
+    """Cached deployment repair count; reading it performs no disk or network I/O."""
+
     fleet_sampler_starter: Callable[[], None] | None = field(default=None, repr=False)
     """Loop-owned hook to lazily start the fleet sampler on first live ``/fleet`` use.
 
@@ -102,6 +106,11 @@ class TerminalSession:
 
     pending_prompt_default: str | None = None
     """When set, the next interactive prompt is pre-filled with this string (then cleared)."""
+
+    pending_prompt_plain_turn: bool = False
+    """When True alongside ``pending_prompt_autosubmit``, the submitted prefill runs
+    as an ordinary typed turn: the prompt bar (and its spinner) stays up and no
+    ``/goal`` work-turn label is painted. Set by :meth:`set_auto_prompt`."""
 
     pending_prompt_autosubmit: bool = False
     """When True alongside ``pending_prompt_default``, the prefilled prompt is
@@ -127,6 +136,8 @@ class TerminalSession:
     submitted prompt is painted so the answer uses the brand colour."""
 
     pending_choice_response: str | None = None
+    goal_paint_signature: GoalPaintSignature | None = None
+    """What the last session-goal block showed; unchanged goals repaint as one line."""
     """Selected label while its synthetic answer turn awaits a response.
 
     The response composer consumes the label to hide a pure acknowledgement
@@ -267,6 +278,16 @@ class TerminalSession:
                 entry.detail = f"{entry.detail}\n{result}" if entry.detail else result
                 return
 
+    def drop_action_log(self, call_id: str) -> None:
+        """Forget the buffered call ``call_id`` (if present).
+
+        A tool that painted its own output needs no row: the buffer flushes at
+        the end of the turn, so its label would land under that output.
+        """
+        self.action_log_entries = [
+            entry for entry in self.action_log_entries if entry.call_id != call_id
+        ]
+
     def has_action_log(self) -> bool:
         """True when at least one action is buffered for the current turn."""
         return bool(self.action_log_entries)
@@ -289,6 +310,23 @@ class TerminalSession:
         self.pending_prompt_autosubmit = False
         return value
 
+    def pop_pending_plain_turn(self) -> bool:
+        """Return whether the pending autosubmit is a plain turn, and clear the flag."""
+        value = self.pending_prompt_plain_turn
+        self.pending_prompt_plain_turn = False
+        return value
+
+    def set_auto_prompt(self, text: str) -> None:
+        """Queue *text* to be submitted as an ordinary turn, as if the user typed it.
+
+        Unlike :meth:`set_auto_command`, the controller does not suspend the
+        prompt for the turn, so the pinned-layout spinner keeps showing progress.
+        """
+        self.pending_prompt_default = text
+        self.pending_prompt_autosubmit = True
+        self.pending_prompt_plain_turn = True
+        self.notify_prompt_changed()
+
     def set_auto_command(self, command: str) -> None:
         """Queue a command to run automatically on the next prompt iteration.
 
@@ -300,6 +338,7 @@ class TerminalSession:
         """
         self.pending_prompt_default = command
         self.pending_prompt_autosubmit = True
+        self.pending_prompt_plain_turn = False
         self.notify_prompt_changed()
 
     def notify_prompt_changed(self) -> None:

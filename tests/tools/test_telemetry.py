@@ -119,6 +119,22 @@ class ToolFailureCase:
     expected_source: str
 
 
+def _ci_repair_case(tool_name: str) -> ToolFailureCase:
+    def patch(mp: pytest.MonkeyPatch) -> None:
+        from integrations.github.tools.ci_repair_loop import tool as mod
+
+        mp.setattr(mod, "RepairStore", MagicMock(side_effect=RuntimeError("storage unavailable")))
+
+    def invoke() -> dict[str, Any]:
+        from integrations.github.tools.ci_repair_loop import tool as mod
+
+        if tool_name == "schedule_ci_repair_loop":
+            return mod.schedule_ci_repair_loop(demo=True)
+        return mod.get_ci_repair_loop(task_id="a" * 12)
+
+    return ToolFailureCase(tool_name, patch, invoke, tool_name, "github")
+
+
 def _azure_case() -> ToolFailureCase:
     def patch(mp: pytest.MonkeyPatch) -> None:
         from integrations.azure.tools import azure_monitor_logs_tool as mod
@@ -301,6 +317,48 @@ def _github_star_history_case() -> ToolFailureCase:
         patch,
         invoke,
         "get_github_star_history",
+        "github",
+    )
+
+
+def _github_ci_analytics_case() -> ToolFailureCase:
+    def patch(mp: pytest.MonkeyPatch) -> None:
+        from integrations.github.client import GitHubApiError
+        from integrations.github.tools.ci_analytics import analysis as mod
+
+        mp.setattr(mod, "collect_runs", MagicMock(side_effect=GitHubApiError("boom")))
+
+    def invoke() -> dict[str, Any]:
+        from integrations.github.tools.ci_analytics.tool import analyze_github_ci_reliability
+
+        return analyze_github_ci_reliability(owner="o", repo="r", github_token="tok")
+
+    return ToolFailureCase(
+        "github_ci_analytics",
+        patch,
+        invoke,
+        "analyze_github_ci_reliability",
+        "github",
+    )
+
+
+def _github_ci_health_scan_case() -> ToolFailureCase:
+    def patch(mp: pytest.MonkeyPatch) -> None:
+        from integrations.github.client import GitHubApiError
+        from integrations.github.tools.ci_health_scan import tool as mod
+
+        mp.setattr(mod, "resolve_scope", MagicMock(side_effect=GitHubApiError("boom")))
+
+    def invoke() -> dict[str, Any]:
+        from integrations.github.tools.ci_health_scan.tool import scan_github_ci_health
+
+        return scan_github_ci_health(owners=["o"], github_token="tok")
+
+    return ToolFailureCase(
+        "github_ci_health_scan",
+        patch,
+        invoke,
+        "scan_github_ci_health",
         "github",
     )
 
@@ -676,8 +734,38 @@ def _x_mcp_call_tool_case() -> ToolFailureCase:
     )
 
 
+def _runbook_guidance_case() -> ToolFailureCase:
+    def patch(mp: pytest.MonkeyPatch) -> None:
+        from tools.system.runbook_guidance_tool import tool as mod
+
+        mp.setattr(
+            mod,
+            "load_runbook_sources",
+            MagicMock(side_effect=RuntimeError("config")),
+        )
+
+    def invoke() -> dict[str, Any]:
+        from core.tool import AgentToolContext
+        from tools.system.runbook_guidance_tool import load_runbook_guidance
+
+        return load_runbook_guidance(
+            alertname="CheckoutDown",
+            context=AgentToolContext(resolved_integrations={}),
+        )
+
+    return ToolFailureCase(
+        "runbook_guidance",
+        patch,
+        invoke,
+        "load_runbook_guidance",
+        "knowledge",
+    )
+
+
 _TOOL_FAILURE_CASES: list[ToolFailureCase] = [
     _azure_case(),
+    _ci_repair_case("schedule_ci_repair_loop"),
+    _ci_repair_case("get_ci_repair_loop"),
     _openobserve_case(),
     _snowflake_case(),
     _cloudwatch_logs_case(),
@@ -685,6 +773,8 @@ _TOOL_FAILURE_CASES: list[ToolFailureCase] = [
     _google_docs_case(),
     _github_repository_case(),
     _github_star_history_case(),
+    _github_ci_analytics_case(),
+    _github_ci_health_scan_case(),
     _eks_list_clusters_case(),
     _eks_describe_cluster_case(),
     _eks_nodegroup_case(),
@@ -701,6 +791,7 @@ _TOOL_FAILURE_CASES: list[ToolFailureCase] = [
     _sentry_mcp_call_tool_case(),
     _x_mcp_list_case(),
     _x_mcp_call_tool_case(),
+    _runbook_guidance_case(),
 ]
 
 
@@ -874,6 +965,10 @@ _MIGRATED_TOOL_NAMES: frozenset[str] = frozenset(
         "create_google_docs_incident_report",
         "get_github_repository",
         "get_github_star_history",
+        "analyze_github_ci_reliability",
+        "scan_github_ci_health",
+        "schedule_ci_repair_loop",
+        "get_ci_repair_loop",
         # EKS — enumerated in #1463
         "list_eks_clusters",
         "describe_eks_cluster",
@@ -895,6 +990,7 @@ _MIGRATED_TOOL_NAMES: frozenset[str] = frozenset(
         # X MCP — both swallow sites in x_mcp_tool/__init__.py.
         "list_x_tools",
         "call_x_tool",
+        "load_runbook_guidance",
     }
 )
 
@@ -912,6 +1008,19 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         # registry that this test enumerates.
         "alertmanager_alerts",
         "alertmanager_silences",
+        # count_files catches only FileCountError (missing path, not a
+        # directory); an unexpected walk error reaches the global wrapper.
+        "count_files",
+        # read_structured_file catches only StructureError (unreadable file,
+        # unknown key); a parser failure it did not anticipate reaches the
+        # global wrapper.
+        "read_structured_file",
+        # scan_local_git_workspace shells out to git per repository and lets
+        # anything unexpected reach the global wrapper.
+        "scan_local_git_workspace",
+        # schedule_ci_reliability_loop writes the local task store; only a bad
+        # time is caught, anything else reaches the global wrapper.
+        "schedule_ci_reliability_loop",
         # architecture_* catch only WorkspaceError / ReportPersistenceError for
         # known failure states; unexpected errors escape to the #1476 wrapper.
         "architecture_cleanup_repo",
@@ -946,6 +1055,9 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         "fix_sentry_issue_start",
         "generate_work_status_report",
         "github_cli",
+        # resolve_merge_conflicts catches only its own ResolveMergeError for
+        # known states; unexpected errors escape to the global #1476 wrapper.
+        "resolve_merge_conflicts",
         "get_airflow_dag_runs",
         "get_airflow_metrics",
         "get_airflow_task_instances",
@@ -1122,6 +1234,7 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         "search_sentry_issues",
         "shell_run",
         "skill_view",
+        "session_goal_complete",
         "session_goal_set",
         "propose_scheduled_delivery",
         "slack_add_reaction",

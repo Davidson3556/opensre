@@ -6,6 +6,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
+from core.agent_harness.prompts.action.active_skill import active_skill_block
 from core.agent_harness.prompts.action.text import _SYSTEM_PROMPT_BASE
 from core.agent_harness.prompts.action.turn_interaction import turn_interaction_facts_block
 from core.agent_harness.prompts.getting_started import load_getting_started_block
@@ -21,7 +22,7 @@ from core.agent_harness.prompts.memory.conversation import (
     format_recent_conversation,
 )
 from core.agent_harness.prompts.runtime_facts import render_static_runtime_facts
-from core.agent_harness.prompts.skills.loader import load_skills_index
+from core.agent_harness.prompts.skills import load_skills_index
 from core.agent_harness.task_plan.prompt import (
     ask_user_answered_block,
     current_task_plan_block,
@@ -33,7 +34,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MAX_TEXT_LEN = 512
 _USER_TEMPLATE = "USER MESSAGE (literal): <<<{text}>>>"
 
 
@@ -119,7 +119,13 @@ def build_action_system_prompt_envelope(turn_snapshot: TurnSnapshot) -> PromptEn
             suffix="\n\n",
         )
     )
-    skills_index = "\n\n".join(filter(None, (load_skills_index(), load_getting_started_block())))
+    skills_index = (
+        "\n\n".join(filter(None, (load_skills_index(), load_getting_started_block())))
+        if turn_snapshot.skill_discovery_enabled
+        else "The host supplies a complete task for this turn. Execute that task with its "
+        "named tools. Workflow discovery is disabled; do not load skill_view or substitute "
+        "an onboarding or report-only workflow."
+    )
     blocks.extend(
         _optional_block(
             id=PromptBlockId.ACTION_SKILLS,
@@ -174,12 +180,27 @@ def build_action_system_prompt_envelope(turn_snapshot: TurnSnapshot) -> PromptEn
             id=PromptBlockId.ASK_USER_ANSWERED,
             kind=PromptBlockKind.RULE,
             tier=PromptTier.EPHEMERAL,
-            content=ask_user_answered_block(
-                turn_snapshot.text,
-                plan_only=turn_snapshot.plan_only_until_authorized,
+            # A skill's own decision rules govern its answer turns; the generic
+            # plan-and-execute guidance would send the model back to the plan.
+            content=(
+                ""
+                if turn_snapshot.active_skill
+                else ask_user_answered_block(
+                    turn_snapshot.text,
+                    plan_only=turn_snapshot.plan_only_until_authorized,
+                )
             ),
             provenance="core.agent_harness.task_plan.prompt",
             suffix="\n\n",
+        )
+    )
+    blocks.extend(
+        _optional_block(
+            id=PromptBlockId.ACTIVE_SKILL,
+            kind=PromptBlockKind.RULE,
+            tier=PromptTier.EPHEMERAL,
+            content=active_skill_block(turn_snapshot.active_skill, turn_snapshot.text),
+            provenance="core.agent_harness.prompts.action.active_skill",
         )
     )
     blocks.append(
@@ -377,9 +398,9 @@ def build_action_user_message(text: str, *, prefix: str = "") -> str:
 
 
 def sanitize_action_text(text: str) -> str:
+    """Remove control characters and envelope delimiters; budgeting owns truncation."""
     sanitised = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-    sanitised = re.sub(r"<{3,}|>{3,}", " ", sanitised)
-    return sanitised[:_MAX_TEXT_LEN]
+    return re.sub(r"<{3,}|>{3,}", " ", sanitised)
 
 
 __all__ = [

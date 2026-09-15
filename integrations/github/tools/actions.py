@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -11,6 +12,7 @@ from core.domain.types.evidence import record_evidence_entry
 from core.domain.types.tools import ToolSurface
 from core.tool_framework import tool
 from core.tool_framework.utils import code_host_unavailable_payload
+from integrations.github.client import GitHubApiError, GitHubRestClient
 from integrations.github.envelope import normalize_github_tool_result
 from integrations.github.helpers import (
     GITHUB_INJECTED_PARAMS,
@@ -117,6 +119,148 @@ def _normalize_job(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+_RUN_HISTORY_FIELDS = (
+    "id",
+    "workflow_id",
+    "name",
+    "status",
+    "conclusion",
+    "run_number",
+    "run_attempt",
+    "event",
+    "created_at",
+    "updated_at",
+    "html_url",
+)
+
+
+def _run_history_row(run: dict[str, Any]) -> dict[str, Any]:
+    """The fields that answer "did this workflow fail and get re-run on this commit"."""
+    return {key: run.get(key) for key in _RUN_HISTORY_FIELDS}
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """Parse a GitHub numeric field; ``default`` when missing or unparsable."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _workflow_group_key(row: dict[str, Any]) -> tuple[str, str]:
+    """Stable workflow identity; name is display-only and is not unique."""
+    workflow_id = row.get("workflow_id")
+    if workflow_id not in (None, "", 0, "0"):
+        return ("workflow", str(workflow_id))
+    run_id = row.get("id")
+    if run_id not in (None, ""):
+        return ("run", str(run_id))
+    return ("name", str(row.get("name") or ""))
+
+
+def _parse_run_time(raw: Any) -> datetime | None:
+    """Parse a GitHub timestamp; ``None`` when absent or unparsable."""
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _run_recency_key(row: dict[str, Any]) -> tuple[int, float, int, int]:
+    """Order runs of one workflow; higher is later.
+
+    ``run_attempt`` is per run id, so it is only a last-resort tie-breaker.
+    ``run_number`` and timestamps choose among independent runs first.
+    """
+    when = _parse_run_time(row.get("updated_at")) or _parse_run_time(row.get("created_at"))
+    return (
+        _as_int(row.get("run_number")),
+        when.timestamp() if when is not None else 0.0,
+        _as_int(row.get("id")),
+        _as_int(row.get("run_attempt"), default=1),
+    )
+
+
+def _workflow_verdicts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One line per workflow on the commit, stated so the reader copies rather than infers.
+
+    Grouped by ``workflow_id`` (name is display-only). The latest run of that
+    workflow is the highest ``run_number`` / newest timestamp, not the highest
+    ``run_attempt``. ``re_run`` is that run's ``run_attempt > 1``;
+    ``re_run_to_green`` adds ``latest_conclusion == "success"``.
+    """
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        key = _workflow_group_key(row)
+        current = latest.get(key)
+        if current is None or _run_recency_key(row) > _run_recency_key(current):
+            latest[key] = row
+    verdicts: list[dict[str, Any]] = []
+    for row in latest.values():
+        attempt = _as_int(row.get("run_attempt"), default=1)
+        conclusion = str(row.get("conclusion") or row.get("status") or "")
+        name = str(row.get("name") or "")
+        re_run = attempt > 1
+        re_run_to_green = re_run and conclusion == "success"
+        finished = str(row.get("status") or "") == "completed" or bool(row.get("conclusion"))
+        if re_run_to_green:
+            summary = (
+                f"{name}: attempt {attempt} succeeded after an earlier attempt; re-run to green."
+            )
+        elif re_run and not finished:
+            summary = f"{name}: attempt {attempt} is {conclusion}; re-run, not green yet."
+        elif re_run:
+            summary = (
+                f"{name}: attempt {attempt} ended {conclusion}; re-run, but not re-run to green."
+            )
+        elif not finished:
+            summary = f"{name}: attempt 1 is {conclusion}; never re-run."
+        else:
+            summary = f"{name}: attempt 1 {conclusion}; never re-run."
+        verdicts.append(
+            {
+                "workflow_id": row.get("workflow_id"),
+                "workflow": name,
+                "latest_attempt": attempt,
+                "latest_conclusion": conclusion,
+                "re_run": re_run,
+                "re_run_to_green": re_run_to_green,
+                "summary": summary,
+            }
+        )
+    return verdicts
+
+
+def _history_summary(verdicts: list[dict[str, Any]], *, fully_fetched: bool) -> str:
+    """One sentence for the commit, to be copied into an answer.
+
+    An incomplete history is said so in the sentence itself, since the
+    sentence is what gets copied.
+    """
+    green = [item["workflow"] for item in verdicts if item["re_run_to_green"]]
+    if green:
+        text = "Re-run to green on this commit: " + ", ".join(green) + "."
+    else:
+        re_run = [item["workflow"] for item in verdicts if item["re_run"]]
+        if re_run:
+            text = (
+                "No workflow on this commit was re-run to green; re-run without green: "
+                + ", ".join(re_run)
+                + "."
+            )
+        elif verdicts:
+            text = "No workflow on this commit was re-run; every run is attempt 1."
+        else:
+            text = "No workflow runs found for this commit."
+    if not fully_fetched:
+        text += " History incomplete: runs beyond the pages read may exist."
+    return text
+
+
 def _normalize_run(run: dict[str, Any]) -> dict[str, Any]:
     """Normalize workflow run data."""
     actor_raw = run.get("actor")
@@ -141,6 +285,7 @@ def _normalize_run(run: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "id": run.get("id"),
+        "workflow_id": run.get("workflow_id"),
         "name": run.get("name", ""),
         "display_title": run.get("display_title", ""),
         "head_branch": run.get("head_branch", ""),
@@ -170,17 +315,17 @@ RATE_WINDOW_HOURS = 24
 #: No window: return the page as fetched, whatever the age of its runs.
 NO_RUN_WINDOW = 0
 
+#: MCP ``actions_list`` listings are repository-wide (it does not apply
+#: ``head_sha``). Page newest-first until the commit's cluster is past or
+#: the listing ends. Cap pages so one tool call cannot scan the repo.
+_HEAD_SHA_MAX_PAGES = 10
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
+_GITHUB_RUNS_PER_PAGE_MAX = 100
+
 
 def _run_started_at(run: dict[str, Any]) -> datetime | None:
     """Parse a run's ``created_at``; ``None`` when absent or unparsable."""
-    raw = str(run.get("created_at") or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+    return _parse_run_time(run.get("created_at"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -235,6 +380,140 @@ def window_runs(
         runs=inside,
         window_fully_fetched=older > 0 or page_exhausted,
         undated=undated,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CommitRunHistory:
+    """One commit's workflow runs collected from newest-first MCP pages."""
+
+    payload: dict[str, Any]
+    runs: list[dict[str, Any]]
+    fully_fetched: bool
+    fetched_before_filter: int
+    pages_fetched: int
+
+
+def _matches_head_sha(run: dict[str, Any], head_sha: str) -> bool:
+    """True when ``run`` is for ``head_sha`` (full SHA or a prefix)."""
+    return str(run.get("head_sha") or "").startswith(head_sha)
+
+
+def _strip_raw_mcp_page(payload: dict[str, Any]) -> None:
+    """Drop the raw MCP echo; the normalized rows are the result."""
+    for raw_key in ("text", "content", "structured_content"):
+        payload.pop(raw_key, None)
+
+
+def _fetch_workflow_run_page(
+    config: Any, arguments: dict[str, Any]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """One ``actions_list`` page and its normalized runs."""
+    result = call_github_mcp_tool(config, "actions_list", arguments)
+    payload = normalize_github_tool_result(result)
+    if not isinstance(payload, dict):
+        return {"error": "Unexpected payload format returned from GitHub MCP tool"}, []
+    if not payload.get("available"):
+        return payload, []
+    runs = [_normalize_run(item) for item in _extract_list(result, "workflow_runs")]
+    return payload, runs
+
+
+def _commit_run_history_rest(
+    owner: str, repo: str, *, head_sha: str, github_token: str | None
+) -> CommitRunHistory | None:
+    """One commit's runs through the REST filter, or ``None`` when REST is unavailable.
+
+    The REST endpoint filters by ``head_sha`` server-side, so the history is
+    complete in one listing however old the commit is. The MCP listing does
+    not honour that filter and is repository-wide, so it stays the fallback.
+    """
+    if not _FULL_SHA.fullmatch(head_sha):
+        # The REST filter matches whole SHAs only; a prefix needs the page scan.
+        return None
+    try:
+        raw_runs = GitHubRestClient(github_token).paginate(
+            f"repos/{owner}/{repo}/actions/runs",
+            params={"head_sha": head_sha, "per_page": _GITHUB_RUNS_PER_PAGE_MAX},
+            collection_key="workflow_runs",
+            max_pages=_HEAD_SHA_MAX_PAGES,
+        )
+    except (GitHubApiError, OSError):
+        # OSError covers the socket timeout urlopen raises directly.
+        return None
+    runs = [
+        _normalize_run(item)
+        for item in raw_runs
+        if isinstance(item, dict) and _matches_head_sha(item, head_sha)
+    ]
+    payload: dict[str, Any] = {
+        "source": "github",
+        "available": True,
+        "history_source": "rest",
+    }
+    # paginate stops silently at max_pages; a full cap means more may exist.
+    page_cap = _HEAD_SHA_MAX_PAGES * _GITHUB_RUNS_PER_PAGE_MAX
+    return CommitRunHistory(
+        payload=payload,
+        runs=runs,
+        fully_fetched=len(raw_runs) < page_cap,
+        fetched_before_filter=len(raw_runs),
+        pages_fetched=max(1, -(-len(raw_runs) // _GITHUB_RUNS_PER_PAGE_MAX)),
+    )
+
+
+def _commit_run_history(
+    config: Any,
+    base_arguments: dict[str, Any],
+    *,
+    head_sha: str,
+    per_page: int,
+) -> CommitRunHistory:
+    """Collect one commit's runs from newest-first MCP pages.
+
+    Completeness is a short page (listing exhausted) or a full page with no
+    matches after at least one match (the listing has moved past this
+    commit). Hitting the page cap while pages stay full is incomplete.
+    A later page failure keeps already-fetched matches and reports incomplete.
+    """
+    # A commit's runs sit behind everything newer in the repository-wide
+    # listing, so page at the API maximum whatever page size the caller asked.
+    page_limit = _GITHUB_RUNS_PER_PAGE_MAX if per_page < _GITHUB_RUNS_PER_PAGE_MAX else per_page
+    page_limit = max(1, min(page_limit, _GITHUB_RUNS_PER_PAGE_MAX))
+    collected: list[dict[str, Any]] = []
+    fetched = 0
+    pages_fetched = 0
+    saw_match = False
+    complete = False
+    last_payload: dict[str, Any] = {"available": False}
+
+    for page in range(1, _HEAD_SHA_MAX_PAGES + 1):
+        arguments = {**base_arguments, "page": page, "per_page": page_limit}
+        payload, page_runs = _fetch_workflow_run_page(config, arguments)
+        if not payload.get("available"):
+            if pages_fetched == 0:
+                return CommitRunHistory(payload, [], False, 0, 0)
+            break
+        last_payload = payload
+        pages_fetched += 1
+        fetched += len(page_runs)
+        matches = [run for run in page_runs if _matches_head_sha(run, head_sha)]
+        collected.extend(matches)
+        if matches:
+            saw_match = True
+        if len(page_runs) < page_limit:
+            complete = True
+            break
+        if saw_match and not matches:
+            complete = True
+            break
+
+    return CommitRunHistory(
+        payload=last_payload,
+        runs=collected,
+        fully_fetched=complete,
+        fetched_before_filter=fetched,
+        pages_fetched=pages_fetched,
     )
 
 
@@ -377,11 +656,24 @@ def _map_list_github_actions_workflow_runs(
 @tool(
     name="list_github_actions_workflow_runs",
     source="github",
-    description="List recent GitHub Actions workflow runs for a repository.",
+    description=(
+        "List GitHub Actions workflow runs for a repository, each with status, "
+        "conclusion and run_attempt. With head_sha it is the run history of one "
+        "commit: a run_attempt above 1 means that workflow was re-run on that "
+        "commit, and its conclusion says whether the re-run passed. The result "
+        "also carries workflow_verdicts, one line per workflow with "
+        "latest_attempt, latest_conclusion, re_run, re_run_to_green and a "
+        "summary sentence, plus history_summary for the commit: copy those "
+        "into the answer instead of inferring them from the rows. It "
+        "reports history_fully_fetched — when false, more runs for that commit "
+        "may exist beyond the pages fetched, so a missing attempt is not proof "
+        "it did not happen."
+    ),
     use_cases=[
         "Checking which deploy or test workflow failed right before an incident",
         "Reviewing recent workflow status, trigger, and branch context",
         "Finding a run that matches an outage window or rollback event",
+        "Telling whether a commit's workflow failed and was re-run to green (run_attempt per run)",
     ],
     requires=["owner", "repo"],
     surfaces=(ToolSurface.CHAT, ToolSurface.ACTION),
@@ -393,6 +685,15 @@ def _map_list_github_actions_workflow_runs(
             "branch": {"type": "string", "default": ""},
             "status": {"type": "string", "default": ""},
             "event": {"type": "string", "default": ""},
+            "head_sha": {
+                "type": "string",
+                "default": "",
+                "description": (
+                    "Only return runs for this commit SHA. Pages until the "
+                    "commit's history is complete or the page cap; see "
+                    "history_fully_fetched."
+                ),
+            },
             "per_page": {"type": "integer", "default": 30},
             "window_hours": {
                 "type": "integer",
@@ -424,6 +725,7 @@ def list_github_actions_workflow_runs(
     branch: str = "",
     status: str = "",
     event: str = "",
+    head_sha: str = "",
     per_page: int = 30,
     window_hours: int = NO_RUN_WINDOW,
     github_url: str | None = None,
@@ -452,6 +754,8 @@ def list_github_actions_workflow_runs(
         workflow_runs_filter["status"] = status
     if event:
         workflow_runs_filter["event"] = event
+    if head_sha:
+        workflow_runs_filter["head_sha"] = head_sha
 
     arguments: dict[str, Any] = {
         "method": "list_workflow_runs",
@@ -462,20 +766,50 @@ def list_github_actions_workflow_runs(
     if workflow_runs_filter:
         arguments["workflow_runs_filter"] = workflow_runs_filter
 
-    result = call_github_mcp_tool(config, "actions_list", arguments)
-    payload = normalize_github_tool_result(result)
+    history: CommitRunHistory | None = None
+    if head_sha:
+        history = _commit_run_history_rest(
+            owner, repo, head_sha=head_sha, github_token=github_token
+        )
+        if history is None:
+            history = _commit_run_history(config, arguments, head_sha=head_sha, per_page=per_page)
+        payload = history.payload
+        workflow_runs = history.runs
+    else:
+        result = call_github_mcp_tool(config, "actions_list", arguments)
+        payload = normalize_github_tool_result(result)
+        workflow_runs = [_normalize_run(item) for item in _extract_list(result, "workflow_runs")]
+
     if not isinstance(payload, dict):
         return {"error": "Unexpected payload format returned from GitHub MCP tool"}
 
     if payload.get("available"):
-        workflow_runs_raw = _extract_list(result, "workflow_runs")
-        workflow_runs = [_normalize_run(item) for item in workflow_runs_raw]
+        if history is not None:
+            workflow_runs = [_run_history_row(item) for item in workflow_runs]
+            payload["workflow_verdicts"] = _workflow_verdicts(workflow_runs)
+            payload["history_summary"] = _history_summary(
+                payload["workflow_verdicts"], fully_fetched=history.fully_fetched
+            )
+            payload["runs_fetched_before_commit_filter"] = history.fetched_before_filter
+            payload["history_fully_fetched"] = history.fully_fetched
+            if not workflow_runs and not history.fully_fetched:
+                payload["history_note"] = (
+                    f"No runs for this commit among the {history.fetched_before_filter} "
+                    "newest runs fetched and the listing was not exhausted: the commit's "
+                    "runs may be older than the pages read. Do not report that it has "
+                    "no runs; say the history is incomplete."
+                )
+            payload["pages_fetched"] = history.pages_fetched
+        _strip_raw_mcp_page(payload)
         if window_hours > NO_RUN_WINDOW:
+            page_limit = per_page
+            if history is not None:
+                page_limit = len(workflow_runs) + 1 if history.fully_fetched else len(workflow_runs)
             windowed = window_runs(
                 workflow_runs,
                 window_hours=window_hours,
                 now=datetime.now(UTC),
-                page_limit=per_page,
+                page_limit=page_limit,
             )
             workflow_runs = windowed.runs
             payload["window_fully_fetched"] = windowed.window_fully_fetched
@@ -490,6 +824,7 @@ def list_github_actions_workflow_runs(
     payload["branch"] = branch
     payload["status"] = status
     payload["event"] = event
+    payload["head_sha"] = head_sha
 
     return payload
 

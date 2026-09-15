@@ -54,6 +54,10 @@ from core.llm.types import AgentLLMResponse, ModelType, SchemaDescribedTool, Too
 
 logger = logging.getLogger(__name__)
 
+# The runtime executes one action per response (``core.tool.execution``); ask
+# the model for one tool call so the batch is never generated and rejected.
+ANTHROPIC_SINGLE_TOOL_CHOICE: dict[str, Any] = {"type": "auto", "disable_parallel_tool_use": True}
+
 
 def _anthropic_tool_schema(tool: Any) -> dict[str, Any]:
     return {
@@ -186,6 +190,7 @@ class AnthropicAgentClient:
             kwargs["system"] = _anthropic_cached_system(system) if cache else system
         if tools:
             kwargs["tools"] = _anthropic_tools_with_cache(tools) if cache else tools
+            kwargs["tool_choice"] = ANTHROPIC_SINGLE_TOOL_CHOICE
 
         backoff = _RETRY_INITIAL_BACKOFF_SEC
         last_err: Exception | None = None
@@ -286,7 +291,7 @@ class AnthropicAgentClient:
                 f"{self.provider_name} API returned an unexpected response: {type(response).__name__}"
             )
 
-        emit_provider_usage(
+        input_tokens, output_tokens = emit_provider_usage(
             self._model,
             getattr(response, "usage", None),
             input_key="input_tokens",
@@ -310,6 +315,8 @@ class AnthropicAgentClient:
             raw_content=content_blocks,
             cache_read_tokens=cache_read,
             cache_creation_tokens=cache_write,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     @staticmethod
@@ -474,7 +481,7 @@ class BedrockConverseAgentClient:
         if response is None:
             raise RuntimeError("Bedrock invocation failed without a response") from last_err
 
-        emit_provider_usage(
+        input_tokens, output_tokens = emit_provider_usage(
             self._model,
             response.get("usage"),
             input_key="inputTokens",
@@ -491,6 +498,8 @@ class BedrockConverseAgentClient:
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             raw_content=raw_message,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     @staticmethod
@@ -639,7 +648,7 @@ class OpenAIAgentClient:
             if tools:
                 kwargs["tools"] = responses_tool_specs(tools)
                 kwargs["tool_choice"] = "auto"
-                kwargs["parallel_tool_calls"] = True
+                kwargs["parallel_tool_calls"] = False
             from config.llm_reasoning_effort import get_active_reasoning_effort
 
             reasoning_effort = get_active_reasoning_effort()
@@ -655,7 +664,7 @@ class OpenAIAgentClient:
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
                 if _supports_openai_parallel_tool_calls_param(api_key_env):
-                    kwargs["parallel_tool_calls"] = True
+                    kwargs["parallel_tool_calls"] = False
 
         backoff = _RETRY_INITIAL_BACKOFF_SEC
         last_err: Exception | None = None
@@ -708,18 +717,23 @@ class OpenAIAgentClient:
             raise RuntimeError(f"{self._provider_label} invocation failed") from last_err
 
         if use_responses:
-            emit_provider_usage(
+            input_tokens, output_tokens = emit_provider_usage(
                 self._model,
                 getattr(response, "usage", None),
                 input_key="input_tokens",
                 output_key="output_tokens",
             )
             responses_tool_calls = response_tool_calls(response)
+            cache_read, cache_write = extract_cache_tokens(getattr(response, "usage", None))
             return AgentLLMResponse(
                 content=str(getattr(response, "output_text", "") or ""),
                 tool_calls=responses_tool_calls,
                 stop_reason="tool_calls" if responses_tool_calls else "stop",
                 raw_content=response_raw_message(response),
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_write,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
 
         if not hasattr(response, "choices") or not response.choices:
@@ -727,12 +741,13 @@ class OpenAIAgentClient:
                 f"{self._provider_label} API returned an unexpected response: "
                 f"{type(response).__name__}"
             )
-        emit_provider_usage(
+        input_tokens, output_tokens = emit_provider_usage(
             self._model,
             getattr(response, "usage", None),
             input_key="prompt_tokens",
             output_key="completion_tokens",
         )
+        cache_read, cache_write = extract_cache_tokens(getattr(response, "usage", None))
         choice = response.choices[0]
         msg = choice.message
         content = msg.content or ""
@@ -755,6 +770,10 @@ class OpenAIAgentClient:
             # exclude_none=True strips null fields (refusal, audio, function_call …)
             # that strict OpenAI-compatible endpoints may reject on replay.
             raw_content=msg.model_dump(exclude_none=True),
+            cache_read_tokens=cache_read,
+            cache_creation_tokens=cache_write,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     @staticmethod

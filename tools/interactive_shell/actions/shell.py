@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from core.agent_harness.tools import (
@@ -12,6 +13,10 @@ from core.agent_harness.tools import (
 from core.domain.types.tools import ToolSurface
 from core.tool import RegisteredTool, SideEffectLevel
 from core.tool_framework.utils import object_schema, string_property
+from tools.interactive_shell.shell.merge_guard import (
+    git_refusal_during_merge,
+    pull_request_checkout_refusal,
+)
 from tools.interactive_shell.shell.runner import run_shell_command
 from tools.interactive_shell.subprocess import require_subprocess_presenter
 
@@ -24,12 +29,25 @@ def _coerce_quiet(value: Any) -> bool:
     return bool(value)
 
 
+def _turn_cancel_event(console: Any) -> threading.Event | None:
+    event = getattr(console, "cancel_event", None)
+    return event if isinstance(event, threading.Event) else None
+
+
 def execute_shell_tool(args: dict[str, Any], ctx: ActionToolScope) -> dict[str, Any]:
     command = str(args.get("command", "")).strip()
     if not command:
         return {"ok": False, "command": "", "response_text": "missing shell command"}
     quiet = _coerce_quiet(args.get("quiet", False))
-    return run_shell_command(command, require_subprocess_presenter(ctx), quiet=quiet)
+    refusal = git_refusal_during_merge(command) or pull_request_checkout_refusal(command)
+    if refusal is not None:
+        return {"ok": False, "command": command, "response_text": refusal}
+    return run_shell_command(
+        command,
+        require_subprocess_presenter(ctx),
+        quiet=quiet,
+        cancel_event=_turn_cancel_event(ctx.console),
+    )
 
 
 def run_shell(*, command: str, context: Any, quiet: bool = False) -> dict[str, Any]:
@@ -50,9 +68,12 @@ shell_run_tool = RegisteredTool(
         "a specific command, propose it exactly as requested — the approval gate confirms "
         "anything risky before it runs, so do not refuse a destructive command the user "
         "explicitly asked for. Do not volunteer destructive, credential-exfiltrating, or "
-        "unrelated commands the user did not ask for. Set quiet=true to hide the $ line "
-        "and stdout/stderr from the terminal while still returning output to the agent "
-        "(required for architecture-audit probes)."
+        "unrelated commands the user did not ask for. Set quiet=true to hide stdout/stderr "
+        "from the terminal while still returning output to the agent (required for "
+        "intermediate skill probes); a dim command line still shows what ran. When a "
+        "command errors (missing module, non-zero exit), fix and rerun it rather than "
+        "estimating the result another way; never present an approximation as the "
+        "measured figure."
     ),
     input_schema=object_schema(
         properties={
@@ -71,10 +92,10 @@ shell_run_tool = RegisteredTool(
             "quiet": {
                 "type": "boolean",
                 "description": (
-                    "When true, do not print the command line or stdout/stderr to the "
-                    "interactive shell. Tool result payload is unchanged. Use for "
-                    "intermediate skill fetches (morning-report weather/news curls, "
-                    "architecture-audit scans) when the user should only see the "
+                    "When true, do not print stdout/stderr to the interactive shell; the "
+                    "command line still prints dimmed. Tool result payload is unchanged. Use for "
+                    "intermediate skill fetches (delivering-morning-briefings weather/news "
+                    "curls, repository scans) when the user should only see the "
                     "composed answer, not the raw $ output twice."
                 ),
             },
@@ -84,7 +105,6 @@ shell_run_tool = RegisteredTool(
     source="interactive_shell",
     surfaces=(ToolSurface.ACTION,),
     side_effect_level=SideEffectLevel.MUTATING,
-    parallel_safe=False,
     accepts_runtime_context=True,
     run=run_shell,
     is_available=lambda sources: capability_available_from_sources(sources, "shell_commands"),

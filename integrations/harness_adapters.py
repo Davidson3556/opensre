@@ -2,9 +2,29 @@
 
 from __future__ import annotations
 
+from typing import Any
+
+
+def _setupable_services() -> tuple[str, ...]:
+    """Services with a setup wizard; imported on first use.
+
+    ``integrations.cli`` pulls every vendor's setup flow (~2,000 modules).
+    Registration must stay cheap at process boot, so the import waits until
+    the port is actually read (``/integrations setup``).
+    """
+    from integrations.cli import setup_services
+
+    return tuple(setup_services())
+
+
+def _fetch_webapp_vault() -> list[dict[str, Any]] | None:
+    """Webapp org integrations; the vault client imports on first use."""
+    import integrations.webapp_vault as webapp_vault
+
+    return webapp_vault.fetch_webapp_org_integrations()
+
 
 def register_harness_adapters() -> None:
-    import integrations.webapp_vault as webapp_vault
     from infrastructure.harness_providers import IntegrationResolutionAdapters
     from integrations.catalog import (
         classify_integrations,
@@ -13,7 +33,6 @@ def register_harness_adapters() -> None:
         merge_integrations_by_service,
         merge_local_integrations,
     )
-    from integrations.cli import setup_services
     from integrations.store import load_integrations, resolve_store_path
 
     IntegrationResolutionAdapters(
@@ -24,11 +43,12 @@ def register_harness_adapters() -> None:
         merge_local_integrations=merge_local_integrations,
         merge_integrations_by_service=merge_integrations_by_service,
         configured_services=lambda: tuple(configured_integration_services()),
-        setupable_services=lambda: tuple(setup_services()),
-        fetch_webapp_vault=lambda: webapp_vault.fetch_webapp_org_integrations(),
+        setupable_services=_setupable_services,
+        fetch_webapp_vault=_fetch_webapp_vault,
     ).install()
 
     _register_vcs_repo_scope_providers()
+    _register_runbook_source_providers()
     _register_cli_llm_adapters()
     _register_alert_source_detectors()
     _register_alert_source_routing()
@@ -52,6 +72,17 @@ def _register_vcs_repo_scope_providers() -> None:
     clear_vcs_repo_scope_providers()
     register_vcs_repo_scope_provider(GITHUB_VCS_REPO_SCOPE_PROVIDER)
     register_vcs_repo_scope_provider(GITLAB_VCS_REPO_SCOPE_PROVIDER)
+
+
+def _register_runbook_source_providers() -> None:
+    from infrastructure.harness_providers import (
+        clear_runbook_source_providers,
+        register_runbook_source_provider,
+    )
+    from integrations.github.runbooks import build_github_runbook_source
+
+    clear_runbook_source_providers()
+    register_runbook_source_provider("github", build_github_runbook_source)
 
 
 def _register_alert_source_detectors() -> None:
@@ -197,7 +228,6 @@ def _register_preferred_evidence_sources() -> None:
 
 
 def _register_cli_llm_adapters() -> None:
-    from typing import Any
 
     from core.llm.types import CliLLMClient, ModelType
     from infrastructure.harness_providers import CliLlmAdapters

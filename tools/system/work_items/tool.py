@@ -23,7 +23,7 @@ from core.domain.work_items import (
 )
 from core.tool import AgentToolContext, SideEffectLevel
 from core.tool_framework import tool
-from infrastructure.scheduling.scheduler.store import add_task as add_scheduled_task
+from infrastructure.scheduling.scheduler.storage import add_task as add_scheduled_task
 from infrastructure.scheduling.scheduler.types import Provider, ScheduledTask, TaskKind
 from tools.system.work_items._evidence import map_work_task_list, map_work_task_prioritize
 from tools.system.work_items.delivery import delivery_targets, invalid_delivery_targets
@@ -75,7 +75,6 @@ def _work_items_available(_sources: dict[str, dict[str, Any]]) -> bool:
     tags=("safe", "fast", "no-credentials"),
     surfaces=(ToolSurface.ACTION,),
     side_effect_level=SideEffectLevel.MUTATING,
-    parallel_safe=False,
     accepts_runtime_context=True,
     is_available=_work_items_available,
     input_schema={
@@ -248,7 +247,6 @@ def work_task_list(
     tags=("safe", "fast", "no-credentials"),
     surfaces=(ToolSurface.ACTION,),
     side_effect_level=SideEffectLevel.MUTATING,
-    parallel_safe=False,
     is_available=_work_items_available,
     input_schema={
         "type": "object",
@@ -284,7 +282,6 @@ def work_task_complete(selectors: list[str]) -> dict[str, Any]:
     tags=("safe", "fast", "no-credentials"),
     surfaces=(ToolSurface.ACTION,),
     side_effect_level=SideEffectLevel.MUTATING,
-    parallel_safe=False,
     accepts_runtime_context=True,
     is_available=_work_items_available,
     input_schema={
@@ -486,7 +483,6 @@ def work_task_prioritize(
     tags=("safe", "no-credentials"),
     surfaces=(ToolSurface.ACTION,),
     side_effect_level=SideEffectLevel.MUTATING,
-    parallel_safe=False,
     accepts_runtime_context=True,
     is_available=_work_items_available,
     input_schema={

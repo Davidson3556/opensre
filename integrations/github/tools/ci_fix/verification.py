@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from integrations.github.tools.ci_fix.context import CiFixContext
+from integrations.github.tools.ci_fix.context import MERGE_STATE_DIRTY, CiFixContext
 from integrations.github.tools.ci_fix.gh import run_gh_json
 
 DEFAULT_CHECK_WAIT_SECONDS = 900
@@ -17,7 +17,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 10
 DEFAULT_SETTLE_SECONDS = 30
 DEFAULT_HEAD_PROPAGATION_SECONDS = 30
 
-_PR_CHECK_FIELDS = "headRefOid,statusCheckRollup"
+_PR_CHECK_FIELDS = "headRefOid,mergeStateStatus,statusCheckRollup"
 _WORKFLOW_RUN_FIELDS = "databaseId,status"
 _WORKFLOW_RUNS_KEY = "runs"
 _WORKFLOW_RUN_COMPLETED = "completed"
@@ -44,6 +44,7 @@ class CheckState(StrEnum):
     FAILED = "failed"
     TIMED_OUT = "timed_out"
     SUPERSEDED = "superseded"
+    CONFLICTED = "conflicted"
 
 
 @dataclass(frozen=True)
@@ -69,7 +70,11 @@ def wait_for_pr_checks(
     sleep: Callable[[float], None] = time.sleep,
     monotonic: Callable[[], float] = time.monotonic,
 ) -> CheckVerification:
-    """Poll until the fix commit's PR checks pass, fail, or time out."""
+    """Poll until the fix commit's PR checks pass, fail, or time out.
+
+    A pushed head GitHub reports as conflicted with its base gets no checks at
+    all, so that returns CONFLICTED at once instead of waiting for the timeout.
+    """
     repo = f"{ctx.owner}/{ctx.repo}"
     started_at = monotonic()
     deadline = started_at + max(0, timeout_seconds)
@@ -97,6 +102,8 @@ def wait_for_pr_checks(
         if head_sha == expected_head_sha:
             if expected_head_seen_at is None:
                 expected_head_seen_at = now
+            if str(payload.get("mergeStateStatus") or "").strip().upper() == MERGE_STATE_DIRTY:
+                return CheckVerification(state=CheckState.CONFLICTED, check_names=last_names)
         elif head_sha and (
             head_sha != ctx.head_sha
             or expected_head_seen_at is not None
@@ -121,9 +128,8 @@ def wait_for_pr_checks(
         else:
             workflows_complete, workflow_signature = False, ()
         external_checks_registered = required_external_checks.issubset(set(last_names))
-        registration_complete = (
-            expected_head_seen_at is not None
-            and now - expected_head_seen_at >= max(0, registration_seconds)
+        registration_complete = expected_head_seen_at is not None and (
+            now - expected_head_seen_at >= max(0, registration_seconds)
         )
         if (
             head_sha == expected_head_sha
@@ -142,7 +148,7 @@ def wait_for_pr_checks(
                     failing = tuple(
                         _check_name(check)
                         for check in checks
-                        if _check_failed(check, expected_skips=expected_skips)
+                        if check_failed(check, expected_skips=expected_skips)
                     )
                     return CheckVerification(
                         state=CheckState.FAILED if failing else CheckState.PASSED,
@@ -195,8 +201,8 @@ def wait_for_branch_checks(
         if runs and first_seen_at is None:
             first_seen_at = now
         # Give late workflows time to register after the first run appears.
-        registration_complete = first_seen_at is not None and now - first_seen_at >= max(
-            0, registration_seconds
+        registration_complete = first_seen_at is not None and (
+            now - first_seen_at >= max(0, registration_seconds)
         )
         all_completed = bool(runs) and all(
             str(run.get("status") or "").strip().lower() == _WORKFLOW_RUN_COMPLETED for run in runs
@@ -404,7 +410,8 @@ def _check_signature(checks: list[dict[str, Any]]) -> tuple[str, ...]:
     return tuple(sorted(signatures))
 
 
-def _check_failed(check: dict[str, Any], *, expected_skips: set[str]) -> bool:
+def check_failed(check: dict[str, Any], *, expected_skips: set[str]) -> bool:
+    """Classify a GitHub check or commit status, allowing only explicitly expected skips."""
     conclusion = str(check.get("conclusion") or "").strip().upper()
     state = str(check.get("state") or "").strip().upper()
     if conclusion == _SKIPPED_CONCLUSION:
@@ -427,6 +434,7 @@ def _check_is_terminal(check: dict[str, Any]) -> bool:
 __all__ = [
     "CheckState",
     "CheckVerification",
+    "check_failed",
     "DEFAULT_CHECK_WAIT_SECONDS",
     "DEFAULT_HEAD_PROPAGATION_SECONDS",
     "DEFAULT_POLL_INTERVAL_SECONDS",

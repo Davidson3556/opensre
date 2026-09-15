@@ -32,8 +32,7 @@ from __future__ import annotations
 # Not part of __all__: exists so tests can substitute the renderer's Markdown
 # class via ``streaming.Markdown = ...`` — renderer._build_markdown_block reads
 # it back off this package rather than importing it directly.
-from rich.markdown import Markdown  # noqa: F401
-
+from infrastructure.terminal.markdown import ReplyMarkdown as Markdown  # noqa: F401
 from surfaces.interactive_shell.ui.streaming.closer import finish_deferred_closer
 from surfaces.interactive_shell.ui.streaming.console import StreamingConsole
 from surfaces.interactive_shell.ui.streaming.loop import (

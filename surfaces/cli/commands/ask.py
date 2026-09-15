@@ -1,22 +1,22 @@
-"""One-shot configured agent command."""
+"""One-shot configured agent command.
+
+This module is the Click adapter: options, prompt, and exit codes.
+The agent harness lives in :mod:`surfaces.cli.ask.service` and loads
+when the command runs, not when ``opensre ask --help`` prints usage.
+"""
 
 from __future__ import annotations
 
 import json
 import sys
+from typing import TYPE_CHECKING
 
 import click
 
 from infrastructure.process.runtime_flags import is_json_output
-from surfaces.cli.ask.approval import unknown_allowed_tools
-from surfaces.cli.ask.service import (
-    AskOutcome,
-    AskSignal,
-    AskStatus,
-    ask_signal_scope,
-    cancelled_outcome,
-    run_ask,
-)
+
+if TYPE_CHECKING:
+    from surfaces.cli.ask.service import AskOutcome
 
 
 def _resolve_prompt(value: str) -> str:
@@ -38,18 +38,20 @@ def _echo_answer(text: str) -> None:
         click.echo(text)
         return
     from rich.console import Console
-    from rich.markdown import Markdown
 
     from infrastructure.safety.terminal_output import strip_terminal_controls
+    from infrastructure.terminal.markdown import ReplyMarkdown
     from infrastructure.terminal.theme import MARKDOWN_CODE_THEME, MARKDOWN_THEME
 
     console = Console()
     safe = strip_terminal_controls(text, keep_whitespace=True)
     with console.use_theme(MARKDOWN_THEME):
-        console.print(Markdown(safe, code_theme=MARKDOWN_CODE_THEME))
+        console.print(ReplyMarkdown(safe, code_theme=MARKDOWN_CODE_THEME))
 
 
 def _render_outcome(outcome: AskOutcome) -> None:
+    from surfaces.cli.ask.service import AskStatus
+
     if is_json_output():
         click.echo(json.dumps(outcome.as_dict(), ensure_ascii=False))
         return
@@ -62,6 +64,11 @@ def _render_outcome(outcome: AskOutcome) -> None:
         click.echo(outcome.error.message, err=True)
         if outcome.error.suggestion:
             click.echo(f"Suggestion: {outcome.error.suggestion}", err=True)
+
+
+def _show_live_progress() -> bool:
+    """Show activity only when it cannot alter a machine-readable result."""
+    return not is_json_output() and sys.stdout.isatty() and sys.stderr.isatty()
 
 
 @click.command(name="ask")
@@ -88,21 +95,36 @@ def ask_command(
         raise click.UsageError(
             "--allowed-tool cannot be combined with --dangerously-bypass-approvals."
         )
-    unknown = unknown_allowed_tools(allowed_tools)
-    if unknown:
-        names = ", ".join(unknown)
-        raise click.BadParameter(
-            f"unknown registered tool name(s): {names}",
-            param_hint="--allowed-tool",
-        )
+
+    if allowed_tools:
+        from surfaces.cli.ask import approval as ask_approval
+
+        unknown = ask_approval.unknown_allowed_tools(allowed_tools)
+        if unknown:
+            names = ", ".join(unknown)
+            raise click.BadParameter(
+                f"unknown registered tool name(s): {names}",
+                param_hint="--allowed-tool",
+            )
+
+    from surfaces.cli.ask.progress import ask_progress_scope
+    from surfaces.cli.ask.signals import AskSignal, ask_signal_scope
+
     try:
         with ask_signal_scope():
-            outcome = run_ask(
-                _resolve_prompt(prompt),
-                allowed_tools=allowed_tools,
-                bypass_approvals=dangerously_bypass_approvals,
-            )
+            resolved_prompt = _resolve_prompt(prompt)
+            with ask_progress_scope(enabled=_show_live_progress()) as tool_event_observer:
+                from surfaces.cli.ask import service as ask_service
+
+                outcome = ask_service.run_ask(
+                    resolved_prompt,
+                    allowed_tools=allowed_tools,
+                    bypass_approvals=dangerously_bypass_approvals,
+                    tool_event_observer=tool_event_observer,
+                )
     except AskSignal as exc:
+        from surfaces.cli.ask.service import cancelled_outcome
+
         outcome = cancelled_outcome(exc.signum)
     _render_outcome(outcome)
     if outcome.exit_code:

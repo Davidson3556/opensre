@@ -30,7 +30,12 @@ _ARGS_SCHEMA: dict[str, Any] = {
         },
         "repo": {
             "type": "string",
-            "description": "Optional owner/name passed to gh as -R (overrides default repo).",
+            "description": (
+                "Optional owner/name passed to gh as -R (overrides default repo). "
+                "Ignored for `gh repo`, `gh api`, and other commands without -R; "
+                "give those the repository positionally, e.g. "
+                '["repo", "create", "owner/name", "--private"].'
+            ),
         },
         "timeout": {
             "type": "integer",
@@ -83,7 +88,10 @@ def _normalize_args(args: list[str] | None) -> list[str]:
         "Pass args after the gh binary; optional repo as owner/name for -R. "
         "After the call, reply from the result summary — plain prose for simple "
         "confirms; chat-like markdown bullets for multi-item reads (not report "
-        "tables/headers). Not raw JSON/GraphQL dumps."
+        "tables/headers). Not raw JSON/GraphQL dumps. For a commit's workflow "
+        "run history with attempts and conclusions use "
+        "list_github_actions_workflow_runs with head_sha; gh run list does not "
+        "show attempts."
     ),
     use_cases=[
         "Creating a GitHub issue (title/body/assignee/labels) when the user asks",

@@ -7,18 +7,18 @@ import sys
 from typing import TYPE_CHECKING
 
 from rich.console import Console
-from rich.padding import Padding
-from rich.table import Table
 from rich.text import Text
 
 import infrastructure.terminal.theme as ui_theme
 from core.agent_harness.spi.prompt_chrome import normalize_three_tier_spacing
-from core.agent_harness.spi.session_goal import strip_session_goal_progress_tags
 from infrastructure.safety.terminal_output import strip_terminal_controls
 from infrastructure.text import looks_like_data_blob
+from surfaces.interactive_shell.ui.transcript import (
+    TranscriptRole,
+    transcript_gutter,
+)
 
 if TYPE_CHECKING:
-    from rich.console import RenderableType
     from rich.markdown import Markdown
 
 STREAM_LABEL_ASSISTANT = "assistant"
@@ -28,16 +28,22 @@ STREAM_LABEL_ANSWER = "answer"
 # strips the underscores and restyles that span. Escape dunder filenames so
 # path-heavy reports (architecture audits, etc.) keep uniform body color.
 _DUNDER_FILENAME_RE = re.compile(r"__([A-Za-z0-9_]+)__(?=\.py\b)")
+# Fenced blocks and inline code spans render verbatim, so a backslash added
+# there would show as a backslash.
+_MARKDOWN_CODE_RE = re.compile(r"(```.*?```|`[^`\n]*`)", re.DOTALL)
 
 
 def _escape_markdown_dunder_filenames(text: str) -> str:
-    """Neutralize ``__name__.py`` so Markdown does not parse it as strong emphasis."""
-    return _DUNDER_FILENAME_RE.sub(r"\_\_\1\_\_", text)
+    """Neutralize ``__name__.py`` outside code so Markdown does not parse it as emphasis."""
+    parts = _MARKDOWN_CODE_RE.split(text)
+    return "".join(
+        part if index % 2 else _DUNDER_FILENAME_RE.sub(r"\_\_\1\_\_", part)
+        for index, part in enumerate(parts)
+    )
 
 
 # The model sometimes pastes a tool's raw result (JSON, listings) into its reply
-# instead of answering in prose. Collapse such a block to a compact marker so the
-# reply reads like Claude Code / Droid, regardless of which model echoed it.
+# instead of answering in prose. Collapse such a block to a compact marker.
 _DUMP_TRUNCATED_MARKER = "output truncated"
 _DUMP_MIN_CHARS = 200
 _DUMP_MIN_JSON_KEYS = 3
@@ -132,78 +138,75 @@ def render_markdown_block(console: Console, text: str) -> None:
     so every markdown surface shares one escaping/theme policy. Terminal
     controls are stripped inside ``_build_markdown_block``.
     """
-    visible = strip_session_goal_progress_tags(text)
+    visible = text
     if not visible.strip():
         return
     with console.use_theme(ui_theme.MARKDOWN_THEME):
         console.print(_build_markdown_block(visible))
 
 
-_REPLY_MARKER = "Ω"
+# Reply rows stop short of the last column: a row padded to the full terminal
+# width followed by a newline leaves a blank line and a shifted continuation
+# in Terminal.app.
+_RIGHT_MARGIN = 2
+_MIN_REPLY_WIDTH = 20
+
+
+def reply_width(console: Console) -> int:
+    """Render width for reply rows: the console width less the right margin."""
+    return max(_MIN_REPLY_WIDTH, console.width - _RIGHT_MARGIN)
 
 
 def render_note_block(console: Console, text: str) -> None:
-    """Render intermediate agent narration as a dim, indented note.
-
-    Distinct from the bright ``Ω`` reply and the recessed grey ``[n] ❯`` user
-    row: a note carries no glyph, only a dim left indent, so the three turn
-    roles — your ask, opensre's working notes, and its final reply — read apart.
-    Bold spans (the action words) stay bold within the dim base.
-    """
-    visible = strip_session_goal_progress_tags(text)
+    """Render intermediate narration with an explicit working-state label."""
+    visible = text
     if not visible.strip():
         return
     with console.use_theme(ui_theme.MARKDOWN_THEME):
         console.print(
-            Padding(_build_markdown_block(visible), (0, 0, 0, 3)),
+            transcript_gutter(
+                _build_markdown_block(visible),
+                lead=True,
+                role=TranscriptRole.WORKING,
+                label_style=_transcript_label_style(),
+            ),
             style=str(ui_theme.SECONDARY),
+            width=reply_width(console),
         )
 
 
-def _reply_marker_style() -> str:
-    """Unbolded warm accent for the ``Ω`` reply marker."""
-    return ui_theme.reply_marker_hex()
-
-
-def reply_gutter(body: RenderableType, *, lead: bool) -> Table:
-    """Lay a reply renderable in a two-column gutter.
-
-    The first paragraph carries the ``Ω`` marker in the gutter; every other row
-    (wrapped lines and following paragraphs) sits in the same indented body
-    column, so the whole reply reads as one block hanging under the marker.
-    """
-    grid = Table.grid(padding=0)
-    grid.add_column(width=3, no_wrap=True)
-    grid.add_column(overflow="fold")
-    marker = Text(f"{_REPLY_MARKER}  ", style=_reply_marker_style()) if lead else Text("   ")
-    grid.add_row(marker, body)
-    return grid
+def _transcript_label_style() -> str:
+    """Bold accent for the assistant marker and working-state labels."""
+    return ui_theme.reply_marker_style()
 
 
 def render_reply_block(console: Console, text: str, *, lead: bool = True) -> None:
-    """Render a whole assistant reply inside the ``Ω`` hanging-indent gutter."""
-    visible = strip_session_goal_progress_tags(text)
+    """Render a whole assistant reply inside the marked transcript gutter."""
+    visible = text
     if not visible.strip():
         return
     with console.use_theme(ui_theme.MARKDOWN_THEME):
         # Explicit TEXT on the row so plain paragraphs never fall through to the
-        # terminal default white (which washed out the warm marker in dogfood).
+        # terminal default white, which would flatten the label/body hierarchy.
         console.print(
-            reply_gutter(_build_markdown_block(visible), lead=lead),
+            transcript_gutter(
+                _build_markdown_block(visible),
+                lead=lead,
+                label_style=_transcript_label_style(),
+            ),
             style=str(ui_theme.TEXT),
+            width=reply_width(console),
         )
 
 
 def render_response_header(console: Console, label: str) -> None:
-    """Print the ``Ω`` row marker that opens every assistant response.
+    """Print the marker that opens every assistant response.
 
-    A single omega is opensre's uniquely identifiable agent marker. Shared
-    with ``action_turn.run_action_tool_turn`` so the planned-actions path and the
-    streaming response path use the exact same prefix.
+    Shared with ``action_turn.run_action_tool_turn`` so the planned-actions path
+    and the streaming response path use the exact same prefix.
 
     ``label`` is accepted for port compatibility (callers still pass
-    ``answer`` / ``assistant``) but is not painted — a dim role word under the
-    marker read as school-project chrome next to Droid's silent replies.
+    ``answer`` / ``assistant``) but is not painted.
     """
     del label
-    console.print(f"[{_reply_marker_style()}]{_REPLY_MARKER}[/]")
+    console.print(Text(TranscriptRole.ASSISTANT.value, style=_transcript_label_style()))

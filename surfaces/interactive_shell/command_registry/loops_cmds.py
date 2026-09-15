@@ -25,6 +25,7 @@ _LOOPS_FIRST_ARGS: tuple[tuple[str, str], ...] = (
     ("list", "all active and draft loops"),
     ("active", "only enabled loops"),
     ("all", "active and draft loops"),
+    ("show", "full report, run history, and configuration"),
     ("add", "create a recurring prompt loop"),
     ("run", "execute one loop immediately"),
     ("stop", "disable a loop without deleting it"),
@@ -32,18 +33,21 @@ _LOOPS_FIRST_ARGS: tuple[tuple[str, str], ...] = (
     ("delete", "remove a loop permanently"),
     ("next", "debug one loop's next fire time"),
     ("messages", "local interactive-shell loop inbox"),
+    ("service", "background scheduler service: status, install, remove"),
 )
 
 _USAGE = (
     "/loops",
     "/loops active",
-    "/loops add --name NAME --time HH:MM --prompt PROMPT [--run-now]",
+    "/loops show [NAME_OR_ID] [--run RUN]",
+    "/loops add --name NAME --time HH:MM --prompt PROMPT [--mode report|agent] [--run-now]",
     "/loops run LOOP_ID",
     "/loops stop LOOP_ID",
     "/loops start LOOP_ID",
     "/loops delete LOOP_ID",
     "/loops next LOOP_ID",
     "/loops messages [--limit N]",
+    "/loops service [install|remove]",
 )
 
 
@@ -60,6 +64,7 @@ class _AddLoopArgs:
     telegram_chat_id: str = ""
     slack_chat_id: str = ""
     window_hours: int = 24
+    mode: str = ""
 
 
 def _channel_label(channel: str) -> str:
@@ -68,10 +73,6 @@ def _channel_label(channel: str) -> str:
 
 def _channels_label(channels: tuple[str, ...]) -> str:
     return ", ".join(_channel_label(channel) for channel in channels)
-
-
-def _schedule_label(cron: str, timezone: str) -> str:
-    return f"{cron} ({timezone})"
 
 
 def _short(text: str, *, max_chars: int = 120) -> str:
@@ -84,9 +85,10 @@ def _short(text: str, *, max_chars: int = 120) -> str:
 def _loops_usage_error() -> str:
     return (
         f"[{ERROR}]usage:[/] "
-        "/loops [list|active|all|add|run|stop|start|delete|next|messages]\n"
+        "/loops [list|active|all|show|add|run|stop|start|delete|next|messages|service]\n"
         f'[{DIM}]example:[/] /loops add --name "Morning ops" --time 08:30 '
-        '--prompt "Check open incidents and summarize risk" --run-now'
+        '--prompt "Check open incidents and summarize risk" --run-now\n'
+        f"[{DIM}]add --mode agent lets the tick act with tools instead of only reporting[/]"
     )
 
 
@@ -137,6 +139,8 @@ def _parse_add_args(args: list[str]) -> tuple[_AddLoopArgs | None, str]:
                     parsed.window_hours = int(value)
                 except ValueError:
                     return None, "--window must be an integer"
+        elif flag == "--mode":
+            parsed.mode, index, error = _take_flag_value(args, index, flag)
         elif flag == "--weekdays":
             parsed.weekdays = True
             error = ""
@@ -176,6 +180,8 @@ def _validate_loops_args(args: list[str]) -> str | None:
         "remove",
         "resume",
         "run",
+        "service",
+        "show",
         "start",
         "stop",
     }:
@@ -188,6 +194,10 @@ def _cmd_loops(session: Session, console: Console, args: list[str]) -> bool:
     rest = args[1:] if args else []
     if sub in {"list", "all", "active"}:
         return _cmd_loops_list(session, console, args)
+    if sub == "show":
+        from surfaces.interactive_shell.command_registry.loop_show import show_loop
+
+        return show_loop(session, console, rest)
     if sub == "add":
         return _cmd_loops_add(session, console, rest)
     if sub == "run":
@@ -202,13 +212,17 @@ def _cmd_loops(session: Session, console: Console, args: list[str]) -> bool:
         return _cmd_loops_next(session, console, rest)
     if sub in {"messages", "inbox"}:
         return _cmd_loops_messages(session, console, rest)
+    if sub == "service":
+        return _cmd_loops_service(session, console, rest)
 
     console.print(_loops_usage_error())
     return True
 
 
 def _cmd_loops_list(session: Session, console: Console, args: list[str]) -> bool:  # noqa: ARG001
+    from infrastructure.scheduling.scheduler.loop_results import latest_loop_runs
     from infrastructure.scheduling.scheduler.loops import list_loop_summaries
+    from surfaces.interactive_shell.ui.loops import render_loops
 
     sub = args[0].lower() if args else "list"
     include_disabled = sub != "active"
@@ -227,37 +241,7 @@ def _cmd_loops_list(session: Session, console: Console, args: list[str]) -> bool
             )
         return True
 
-    table = repl_table(title="Loops\n", title_style=BOLD_BRAND)
-    table.add_column("id", style="bold")
-    table.add_column("loop")
-    table.add_column("status")
-    table.add_column("time", style=DIM)
-    table.add_column("schedule", style=DIM, overflow="fold")
-    table.add_column("next", style=DIM)
-    table.add_column("channels", style=DIM, overflow="fold")
-    table.add_column("last run", style=DIM)
-
-    for loop in loops:
-        if loop.schedule_error:
-            status_style = ERROR
-            status = "invalid"
-            next_run = "-"
-        else:
-            status_style = HIGHLIGHT if loop.enabled else WARNING
-            status = loop.status
-            next_run = format_repl_timestamp(loop.next_run, style="utc")
-        table.add_row(
-            loop.id[:12],
-            escape(loop.name),
-            f"[{status_style}]{status}[/]",
-            escape(loop.time or "-"),
-            escape(_schedule_label(loop.cron, loop.timezone)),
-            next_run,
-            escape(_channels_label(loop.channels)),
-            format_repl_timestamp(loop.last_run, style="utc"),
-        )
-
-    print_repl_table(console, table)
+    render_loops(console, loops, latest_loop_runs(loops))
     return True
 
 
@@ -282,6 +266,7 @@ def _cmd_loops_add(session: Session, console: Console, args: list[str]) -> bool:
             telegram_chat_id=parsed.telegram_chat_id,
             slack_chat_id=parsed.slack_chat_id,
             window_hours=parsed.window_hours,
+            mode=parsed.mode,
         )
     except ValueError as exc:
         console.print(f"[{ERROR}]could not add loop:[/] {escape(str(exc))}")
@@ -426,16 +411,37 @@ def _cmd_loops_messages(session: Session, console: Console, args: list[str]) -> 
     return True
 
 
-def _run_loop_task_ids_once(console: Console, task_ids: tuple[str, ...]) -> bool:
-    from bootstrap.adapters import scheduler_runners
-    from bootstrap.process import SCHEDULED_COMMAND_PROFILE, configure_process
-    from infrastructure.scheduling.scheduler.runner import run_task_now
+def _cmd_loops_service(session: Session, console: Console, args: list[str]) -> bool:  # noqa: ARG001
+    from infrastructure.scheduling.scheduler.background_service import (
+        background_service_state,
+        install_background_service,
+        remove_background_service,
+    )
 
-    configure_process(SCHEDULED_COMMAND_PROFILE)
-    failures: list[str] = []
-    for task_id in task_ids:
-        if not run_task_now(task_id, scheduler_runners()):
-            failures.append(task_id)
+    action = args[0].lower() if args else "status"
+    try:
+        if action == "install":
+            state = install_background_service()
+        elif action == "remove":
+            state = remove_background_service()
+        elif action == "status":
+            state = background_service_state()
+        else:
+            console.print(f"[{ERROR}]usage:[/] /loops service [install|remove]")
+            return True
+    except RuntimeError as exc:
+        console.print(f"[{ERROR}]service change failed:[/] {escape(str(exc))}")
+        return True
+    console.print(escape(state.summary))
+    if state.installed and state.log_path is not None:
+        console.print(f"  [{DIM}]log:[/] {escape(str(state.log_path))}")
+    return True
+
+
+def _run_loop_task_ids_once(console: Console, task_ids: tuple[str, ...]) -> bool:
+    from surfaces.interactive_shell.runtime.loop_scheduler import run_loop_now
+
+    failures = [task_id for task_id in task_ids if not run_loop_now(task_id)]
 
     if failures:
         console.print(

@@ -7,12 +7,14 @@ import logging
 from core.agent_harness import AgentSession
 from infrastructure.harness_providers import configured_integration_services
 from infrastructure.scheduling.scheduler.agent_runner import AgentPayload
+from infrastructure.scheduling.scheduler.types import TaskReport
+from integrations.scheduled_outcomes import ScheduledOutcomes
 
 logger = logging.getLogger(__name__)
 
 _PR_SWEEP_PROMPT = (
     "GitHub PR sweep for engineering standup: use summarize_github_pr_status and "
-    "list_github_work_items (or the github-workflow skill) to report mergeable PRs, "
+    "list_github_work_items (or the tracking-github-work-status skill) to report mergeable PRs, "
     "stale/superseded PRs, and conflicted PRs. Format a short Slack-ready plain-text "
     "digest with owners to ping. If GitHub is not configured, say so clearly."
 )
@@ -26,7 +28,7 @@ def _require_github_configured() -> None:
         )
 
 
-def run_github_pr_sweep(payload: AgentPayload) -> str:
+def run_github_pr_sweep(payload: AgentPayload) -> TaskReport:
     """Run one headless turn that produces a PR sweep digest."""
     del payload  # reserved for future repo/org scoping
     _require_github_configured()
@@ -41,7 +43,7 @@ def run_github_pr_sweep(payload: AgentPayload) -> str:
         raise RuntimeError(
             "GitHub PR sweep failed: the reasoning client did not produce a response."
         )
-    return report
+    return ScheduledOutcomes().report(result, agent_mode=False)
 
 
 __all__ = ["run_github_pr_sweep"]
