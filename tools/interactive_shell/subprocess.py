@@ -13,6 +13,14 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from config.constants import (
+    CAPABLE_TERMINAL_TYPE,
+    DUMB_TERMINAL_TYPES,
+    FORCE_COLOR_ENV,
+    TERMINAL_COLUMNS_ENV,
+    TERMINAL_LINES_ENV,
+    TERMINAL_TYPE_ENV,
+)
 from core.agent_harness.tools import ActionToolScope
 from infrastructure.process.termination import terminate_process_tree
 from tools.interactive_shell.shared import ExecutionPolicyResult
@@ -30,6 +38,11 @@ TASK_OUTPUT_JOIN_TIMEOUT_SECONDS = 2
 # Width of the ``<task_id> <stream> │ `` prefix relayed subprocess lines add.
 TASK_OUTPUT_PREFIX_WIDTH = 18
 MIN_SUBPROCESS_TERMINAL_WIDTH = 60
+# Render width for a child no human reads (gateway / headless turns). Only the
+# action agent consumes that output, and it needs whole table cells — Rich at
+# its 80-column non-TTY default ellipsizes ``/cron list`` ids to ``ecf7c2580b…``,
+# which cannot be chained into ``/cron remove <id>``.
+HEADLESS_SUBPROCESS_TERMINAL_WIDTH = 200
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*[mA-Za-z]")
 
@@ -170,15 +183,45 @@ def read_diag(buf: tempfile.SpooledTemporaryFile[bytes]) -> str:  # type: ignore
 # --- environment ---
 
 
-def subprocess_env_with_width(*, columns: int, lines: int | None = None) -> dict[str, str]:
-    """Return ``os.environ`` patched so a piped Rich subprocess wraps to fit."""
-    available = max(
-        MIN_SUBPROCESS_TERMINAL_WIDTH,
-        columns - TASK_OUTPUT_PREFIX_WIDTH - 1,
-    )
+def subprocess_env_with_width(
+    *,
+    columns: int,
+    lines: int | None = None,
+    prefix_width: int = TASK_OUTPUT_PREFIX_WIDTH,
+) -> dict[str, str]:
+    """Return ``os.environ`` patched so a piped Rich subprocess wraps to fit.
+
+    ``prefix_width`` is what the parent prepends to every replayed line — the
+    task-relay prefix by default, or the ``↳`` command-output gutter — so a
+    child table row plus prefix still fits in ``columns`` without folding.
+    """
+    available = max(MIN_SUBPROCESS_TERMINAL_WIDTH, columns - prefix_width - 1)
+    env = _piped_rich_env(columns=available)
+    env.setdefault(TERMINAL_LINES_ENV, str(max(20, lines or 24)))
+    return env
+
+
+def headless_subprocess_env() -> dict[str, str]:
+    """Return ``os.environ`` patched for a piped Rich child with no human reader."""
+    return _piped_rich_env(columns=HEADLESS_SUBPROCESS_TERMINAL_WIDTH)
+
+
+def _piped_rich_env(*, columns: int) -> dict[str, str]:
+    """``os.environ`` with a width Rich will actually honour on a pipe.
+
+    On a dumb ``TERM`` Rich short-circuits to 80x25 and ignores ``COLUMNS``,
+    so the width hint is only meaningful once the terminal type is capable.
+    """
     env = dict(os.environ)
-    env["COLUMNS"] = str(available)
-    env.setdefault("LINES", str(max(20, lines or 24)))
+    env[TERMINAL_COLUMNS_ENV] = str(columns)
+    if env.get(TERMINAL_TYPE_ENV, "").lower() in DUMB_TERMINAL_TYPES:
+        env[TERMINAL_TYPE_ENV] = CAPABLE_TERMINAL_TYPE
+    return env
+
+
+def force_rich_color(env: dict[str, str]) -> dict[str, str]:
+    """Make a piped Rich child emit ANSI so a ``Text.from_ansi`` replay keeps its styling."""
+    env[FORCE_COLOR_ENV] = "1"
     return env
 
 
@@ -267,7 +310,12 @@ class SubprocessPresenter(Protocol):
         """Report an unexpected exception to observability."""
 
     def subprocess_env(self) -> dict[str, str]:
-        """Environment for child subprocesses with terminal width alignment."""
+        """Environment for a piped child whose output this presenter replays.
+
+        Sets ``COLUMNS`` so the child's Rich tables fit the reader: the real
+        terminal minus the replay gutter on the REPL, or a wide fixed width on
+        headless surfaces where only the action agent reads the output.
+        """
 
     def start_task_output_streams(
         self,
@@ -303,6 +351,7 @@ def require_subprocess_presenter(ctx: ActionToolScope) -> SubprocessPresenter:
 
 __all__ = [
     "CLAUDE_CODE_IMPLEMENTATION_TIMEOUT_SECONDS",
+    "HEADLESS_SUBPROCESS_TERMINAL_WIDTH",
     "MAX_COMMAND_OUTPUT_CHARS",
     "MIN_SUBPROCESS_TERMINAL_WIDTH",
     "SHELL_COMMAND_TIMEOUT_SECONDS",
@@ -313,6 +362,8 @@ __all__ = [
     "SubprocessWatchResult",
     "TASK_OUTPUT_JOIN_TIMEOUT_SECONDS",
     "TASK_OUTPUT_PREFIX_WIDTH",
+    "force_rich_color",
+    "headless_subprocess_env",
     "read_diag",
     "read_task_output",
     "require_subprocess_presenter",

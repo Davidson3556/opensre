@@ -1334,6 +1334,48 @@ def test_run_opensre_cli_command_runs_integrations_list_in_foreground(
     assert start_calls == []
 
 
+def test_foreground_cli_child_renders_to_terminal_width_minus_replay_gutter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Foreground ``cli_exec`` children get the same env contract as slash parity.
+
+    The child's stdout is a pipe: with no ``COLUMNS`` Rich rendered at 80 and
+    ellipsized ids (``ecf7c2580b…``) the action agent then failed to chain; its
+    output is replayed under the 4-cell ``↳`` gutter, so it must render exactly
+    ``width − gutter − 1`` wide to fit without folding. The width is only
+    honoured on a capable ``TERM``, and the replay parses ANSI, so colour is
+    forced and a dumb ``TERM`` is lifted exactly as ``_captured_child_env`` does.
+    """
+    from surfaces.interactive_shell.ui import COMMAND_OUTPUT_GUTTER_WIDTH
+
+    monkeypatch.setenv("TERM", "dumb")
+    seen_env: list[dict[str, str] | None] = []
+
+    def _fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        env = kwargs.get("env")
+        seen_env.append(env if isinstance(env, dict) else None)
+        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(_CLI_RUN, _fake_run)
+    console = Console(file=io.StringIO(), force_terminal=False, width=134)
+
+    assert (
+        run_opensre_cli_command(
+            "integrations list",
+            Session(),
+            console,
+            confirm_fn=lambda _prompt: "y",
+            is_tty=True,
+        )
+        is True
+    )
+
+    assert seen_env and seen_env[0] is not None
+    assert seen_env[0]["COLUMNS"] == str(134 - COMMAND_OUTPUT_GUTTER_WIDTH - 1)
+    assert seen_env[0]["TERM"] == "xterm-256color"
+    assert seen_env[0]["FORCE_COLOR"] == "1"
+
+
 def test_start_background_cli_task_echoes_command_markup_literally(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
