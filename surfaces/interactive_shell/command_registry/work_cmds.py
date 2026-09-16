@@ -31,7 +31,7 @@ _STATUSES = frozenset({"open", "completed", "blocked", "deferred", "active", "al
 _OPTION_NAMES = frozenset({"--project", "--owner", "--priority", "--due"})
 _REMINDER_OPTIONS = frozenset({"--remind", "--remind-at"})
 _REMINDER_ERROR = (
-    f"[{ERROR}]/work add cannot schedule reminders because it has no delivery target.[/] "
+    f"[{ERROR}]reminder not scheduled:[/] /work has no delivery target. "
     "Use `opensre work add <title> --remind-at <datetime> "
     "--target <provider>:<chat-id>`, or ask from a connected chat."
 )

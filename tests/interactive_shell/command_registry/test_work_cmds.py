@@ -49,7 +49,8 @@ def test_work_add_rejects_unscheduled_reminder_before_persistence(
     )
 
     rendered = output.getvalue()
-    assert "cannot schedule reminders" in rendered
+    assert "reminder not scheduled:" in rendered
+    assert "/work has no delivery target" in rendered
     assert "opensre work add" in rendered
     assert "--target <provider>:<chat-id>" in rendered
     assert confirm_calls == []
