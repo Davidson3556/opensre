@@ -242,35 +242,41 @@ def _run_install_sh(
             README,
             (
                 "curl -fsSL https://install.opensre.com | bash",
-                "irm https://install.opensre.com | iex",
+                "## Before you begin",
+                "## Step 1: Install and start opensre",
+                "opensre\n",
+                "images/opensre-welcome.png",
             ),
         ),
         (
             QUICKSTART,
             (
-                "brew tap tracer-cloud/tap",
-                "brew install tracer-cloud/tap/opensre",
                 "curl -fsSL https://install.opensre.com | bash",
-                "irm https://install.opensre.com | iex",
+                "## Before you begin",
+                "## Step 1: Install and start opensre",
+                "opensre\n",
+                "images/opensre-welcome.png",
             ),
         ),
         (
             INSTALL_MDX,
             (
                 "curl -fsSL https://install.opensre.com | bash",
-                "irm https://install.opensre.com | iex",
+                "## Before you begin",
+                "## Step 1: Install and start opensre",
+                "opensre\n",
+                "images/opensre-welcome.png",
                 "opensre onboard",
             ),
         ),
         (
             INSTALL_LOCAL,
             (
-                "brew tap tracer-cloud/tap",
-                "brew install tracer-cloud/tap/opensre",
                 "curl -fsSL https://install.opensre.com | bash",
-                "OPENSRE_AUTO_LAUNCH=0",
-                "OPENSRE_SKIP_GH_INSTALL=1",
-                "Homebrew installs pull in `gh` automatically.",
+                "## Before you begin",
+                "## Step 1: Install and start opensre",
+                "opensre\n",
+                "images/opensre-welcome.png",
             ),
         ),
         (
@@ -287,6 +293,17 @@ def test_install_docs_list_every_process(path: Path, needles: tuple[str, ...]) -
     text = path.read_text(encoding="utf-8")
     for needle in needles:
         assert needle in text, f"{path.name} missing install step {needle!r}"
+    for retired_instruction in (
+        "brew ",
+        "homebrew",
+        "irm https://install.opensre.com",
+        "pipx install opensre",
+        "opensre_auto_launch",
+        "opensre_skip_gh_install",
+    ):
+        assert retired_instruction not in text.lower(), (
+            f"{path.name} advertises retired install guidance {retired_instruction!r}"
+        )
 
 
 def test_install_sh_help_lists_all_channels() -> None:
