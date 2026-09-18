@@ -18,6 +18,7 @@ from infrastructure.turn_host.session_lock import session_execution_lock
 from surfaces.cli.ask import service
 from surfaces.cli.ask import session as ask_session
 from surfaces.cli.ask.approval import unknown_allowed_tools
+from surfaces.cli.ask.file_input import AskFileInput
 from surfaces.cli.ask.service import AskExitCode, AskSignal, AskStatus
 
 _CHAT_ONLY_TOOL = "query_tempo"
@@ -856,6 +857,43 @@ def test_agent_turn_binds_hooks_and_restricts_capabilities_via_start(monkeypatch
     assert session.available_capabilities["shell"] == ("keep",)
     assert recorded["prompt"] == "hello"
     assert result.primary_response_text == "answer"
+    assert manager.closed == [(session, False)]
+
+
+def test_resumed_agent_turn_rejects_context_while_answering_choice(monkeypatch) -> None:
+    manager = _FakeSessionManager()
+    session = _FakeSession()
+    pending = PendingUserChoice(
+        title="Which environment?",
+        options=("Production", "Staging"),
+    )
+    session.pending_user_choice = pending
+
+    class _RecordingAgentSession:
+        @classmethod
+        def start(cls, _config: object, **_kwargs: object) -> _RecordingAgentSession:
+            return cls()
+
+        @property
+        def bound_session(self) -> _FakeSession:
+            return session
+
+        def chat(self, _prompt: str, **_kwargs: object) -> TurnResult:
+            pytest.fail("agent turn should not start")
+
+    monkeypatch.setattr(service, "SessionManager", lambda: manager)
+    monkeypatch.setattr(service, "AgentSession", _RecordingAgentSession)
+
+    with pytest.raises(service.OpenSREError, match="answering a pending choice"):
+        service._run_agent_turn(
+            "2",
+            ToolExecutionHooks(),
+            session_id=session.session_id,
+            ephemeral=False,
+            context_files=(AskFileInput(path="alert.txt", content="latency spike"),),
+        )
+
+    assert session.pending_user_choice == pending
     assert manager.closed == [(session, False)]
 
 
