@@ -1170,9 +1170,50 @@ record_install_analytics() {
   local binary_path="${INSTALL_DIR}/${BIN_NAME}"
 
   OPENSRE_INSTALL_SOURCE="posix_installer" \
+    OPENSRE_INSTALL_MARKER_STATE="$install_marker_state" \
     OPENSRE_INSTALL_CHANNEL="$INSTALL_CHANNEL" \
     OPENSRE_INSTALL_VERSION="$installed_version" \
     "$binary_path" --record-install >/dev/null 2>&1 || true
+}
+
+expand_home_prefix() {
+  case "$1" in
+    '~') printf '%s' "$HOME" ;;
+    '~/'*) printf '%s' "$HOME/${1#\~/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  printf '%s' "${value%"${value##*[![:space:]]}"}"
+}
+
+resolve_install_marker_dir() {
+  # Mirror the runtime's get_store_path(): an explicit wizard store path wins
+  # and the marker lives beside it; otherwise OPENSRE_HOME, then ~/.opensre.
+  local store_path state_dir
+  store_path="$(trim_whitespace "${OPENSRE_WIZARD_STORE_PATH:-}")"
+  if [ -n "$store_path" ]; then
+    dirname "$(expand_home_prefix "$store_path")"
+    return 0
+  fi
+  state_dir="$(trim_whitespace "${OPENSRE_HOME:-}")"
+  [ -n "$state_dir" ] || state_dir="$HOME/.opensre"
+  expand_home_prefix "$state_dir"
+}
+
+snapshot_install_marker() {
+  local state_dir
+  state_dir="$(resolve_install_marker_dir)"
+  install_marker_state="unknown"
+  if [ -e "$state_dir/installed" ]; then
+    install_marker_state="present"
+  elif { [ -d "$state_dir" ] && [ -x "$state_dir" ]; } || \
+       { [ ! -e "$state_dir" ] && [ -x "$(dirname "$state_dir")" ]; }; then
+    install_marker_state="absent"
+  fi
 }
 
 finish_install() {
@@ -1186,6 +1227,7 @@ finish_install() {
 
 main() {
   parse_args "$@"
+  snapshot_install_marker
   require_prerequisites
   detect_platform
   resolve_install_dir
