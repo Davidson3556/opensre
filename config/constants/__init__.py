@@ -970,6 +970,9 @@ if TYPE_CHECKING:
     from config.constants.scheduler import (
         OPENSRE_GATEWAY_HOST_SCHEDULER_ENV as OPENSRE_GATEWAY_HOST_SCHEDULER_ENV,
     )
+    from config.constants.scheduler import (
+        WEEKDAY_CRON_FIELD as WEEKDAY_CRON_FIELD,
+    )
     from config.constants.secrets import (
         CREDENTIAL_FALLBACK_FILENAME as CREDENTIAL_FALLBACK_FILENAME,
     )
