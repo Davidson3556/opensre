@@ -32,7 +32,8 @@ class ShellLauncher(Protocol):
         resume_session_id: str | None,
         after_banner: AfterBanner,
         capture_shell_rendered: bool = True,
-    ) -> int: ...
+    ) -> int:
+        """Open the shell and return its exit code."""
 
 
 #: Runs the gateway attached to this terminal until it stops.
