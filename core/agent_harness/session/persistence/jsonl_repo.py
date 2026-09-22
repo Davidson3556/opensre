@@ -142,15 +142,15 @@ def _split_session_ref(ref: str) -> tuple[str, str | None]:
 
 
 def _load_v2_file(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
-    return _load_v2_lines(path.read_text(encoding="utf-8").splitlines())
+    return _load_v2_lines(path.read_bytes().splitlines())
 
 
-def _load_v2_lines(lines: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+def _load_v2_lines(lines: list[bytes]) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
     if not lines:
         return None
     try:
-        header = json.loads(lines[0])
-    except json.JSONDecodeError:
+        header = json.loads(lines[0].decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     if (
         not isinstance(header, dict)
@@ -160,8 +160,8 @@ def _load_v2_lines(lines: list[str]) -> tuple[dict[str, Any], list[dict[str, Any
         return None
     entries: list[dict[str, Any]] = []
     for line in lines[1:]:
-        with contextlib.suppress(json.JSONDecodeError):
-            rec = json.loads(line)
+        with contextlib.suppress(json.JSONDecodeError, UnicodeDecodeError):
+            rec = json.loads(line.decode("utf-8"))
             if isinstance(rec, dict) and "id" in rec and "type" in rec:
                 entries.append(rec)
     return header, entries
