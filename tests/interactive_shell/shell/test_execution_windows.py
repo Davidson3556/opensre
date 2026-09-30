@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import ctypes
 import json
 import os
 import shutil
@@ -20,6 +21,8 @@ from typing import Any
 import psutil
 import pytest
 
+from infrastructure.process import windows_job
+from infrastructure.process._windows_api import WindowsAPI
 from tools.interactive_shell.shell import execution as shell_execution
 from tools.interactive_shell.shell.execution import execute_shell_command
 
@@ -339,6 +342,95 @@ def test_cmd_reaps_descendants_after_shell_exits(
             _kill_pid(child_pid)
             _kill_pid(parent_pid)
         monitor.join(timeout=1)
+
+
+@pytest.mark.timeout(45)
+@pytest.mark.parametrize("failure", ["terminate", "query", "deadline"])
+def test_cmd_cleanup_fallback_preserves_outcome_and_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+) -> None:
+    script = tmp_path / "cleanup_failure.py"
+    marker = tmp_path / "descendant.pid"
+    script.write_text(
+        "import json, os, pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        "print('captured stdout', flush=True)\n"
+        "print('captured stderr', file=sys.stderr, flush=True)\n"
+        "marker = pathlib.Path(sys.argv[1])\n"
+        "pending = marker.with_suffix('.pending')\n"
+        "pending.write_text(json.dumps({'parent': os.getpid(), 'child': child.pid}), encoding='utf-8')\n"
+        "os.replace(pending, marker)\n"
+        "time.sleep(60)\n",
+        encoding="utf-8",
+    )
+    original_api = windows_job.WindowsAPI
+
+    def _failing_api() -> WindowsAPI:
+        api = original_api()
+
+        def _refuse_termination(_job: int, _code: int) -> int:
+            ctypes.set_last_error(5)
+            return 0
+
+        def _query_failure(job: int, _kind: int, value: Any, _size: int, _length: Any) -> int:
+            assert job != 0
+            if failure == "query":
+                ctypes.set_last_error(5)
+                return 0
+            information = ctypes.cast(
+                value, ctypes.POINTER(windows_job.BasicAccountingInformation)
+            ).contents
+            information.ActiveProcesses = 1
+            return 1
+
+        if failure == "terminate":
+            api.dll.TerminateJobObject = _refuse_termination
+        else:
+            api.dll.QueryInformationJobObject = _query_failure
+        return api
+
+    monkeypatch.setattr(windows_job, "WindowsAPI", _failing_api)
+    if failure == "deadline":
+        monkeypatch.setattr(windows_job, "_CLEANUP_WAIT_SECONDS", 0.1)
+    cancel_event = threading.Event()
+    stop_monitor = threading.Event()
+    processes: list[psutil.Process] = []
+
+    def _request_cancel_after_output() -> None:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            if stop_monitor.wait(0.01):
+                return
+        if marker.exists():
+            processes.extend(psutil.Process(pid) for pid in _read_process_ids(marker))
+            if failure == "terminate":
+                cancel_event.set()
+
+    monitor = threading.Thread(target=_request_cancel_after_output, daemon=True)
+    monitor.start()
+    try:
+        result = _execute(
+            _python_command(script, marker), timeout_seconds=15, cancel_event=cancel_event
+        )
+        assert result.cancelled is (failure == "terminate")
+        assert result.timed_out is (failure != "terminate")
+        assert "captured stdout" in result.stdout
+        assert "captured stderr" in result.stderr
+        assert len(processes) == 2
+        for process in processes:
+            process.wait(timeout=5)
+            assert not process.is_running()
+        assert "closing owned job" in caplog.text
+    finally:
+        stop_monitor.set()
+        monitor.join(timeout=1)
+        for process in reversed(processes):
+            if process.is_running():
+                process.kill()
+                process.wait(timeout=5)
 
 
 @pytest.mark.timeout(90)

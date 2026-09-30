@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ctypes
+import io
 import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import psutil
@@ -15,6 +17,7 @@ import pytest
 
 from infrastructure.process import windows_job
 from infrastructure.process._windows_api import ProcessInformation, WindowsAPI
+from tools.interactive_shell.shell.execution import _collect_shell_result
 
 _NATIVE_WINDOWS = pytest.mark.skipif(os.name != "nt", reason="requires native Windows jobs")
 
@@ -35,6 +38,111 @@ def test_command_nul_is_rejected_before_any_windows_launch() -> None:
         windows_job.spawn_windows_job("echo safe\0&echo different", environment={}),
     ):
         pytest.fail("a command containing NUL must never execute")
+
+
+@pytest.mark.parametrize("failure", ["terminate", "query", "deadline"])
+def test_cleanup_fallback_preserves_captured_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failure: str,
+) -> None:
+    alive = True
+    closed: list[int] = []
+
+    def _close(handle: int) -> int:
+        nonlocal alive
+        closed.append(handle)
+        assert handle == 41
+        alive = False
+        return 1
+
+    def _wait(_handle: int, _milliseconds: int) -> int:
+        return 258 if alive else 0
+
+    def _exit_code(_handle: int, value: Any) -> int:
+        ctypes.cast(value, ctypes.POINTER(windows_job.DWORD)).contents.value = 1
+        return 1
+
+    def _terminate(_job: int, _code: int) -> int:
+        if failure == "terminate":
+            raise OSError("injected termination failure")
+        return 1
+
+    def _query(job: int, _kind: int, value: Any, _size: int, _length: Any) -> int:
+        assert job == 41
+        if failure == "query":
+            raise OSError("injected query failure")
+        information = ctypes.cast(
+            value, ctypes.POINTER(windows_job.BasicAccountingInformation)
+        ).contents
+        information.ActiveProcesses = 1
+        return 1
+
+    api = WindowsAPI.__new__(WindowsAPI)
+    api.dll = SimpleNamespace(
+        CloseHandle=_close,
+        WaitForSingleObject=_wait,
+        GetExitCodeProcess=_exit_code,
+        TerminateJobObject=_terminate,
+        QueryInformationJobObject=_query,
+    )
+    process = windows_job.WindowsJobProcess(
+        api,
+        windows_job._Handle(api, 41),
+        windows_job._Handle(api, 42),
+        43,
+        "secret-token-do-not-log",
+        io.StringIO("captured stdout\n"),
+        io.StringIO("captured stderr\n"),
+    )
+    cancel = threading.Event()
+    if failure == "terminate":
+        cancel.set()
+    monkeypatch.setattr(windows_job, "_CLEANUP_WAIT_SECONDS", 0)
+
+    result = _collect_shell_result(
+        process,
+        command=process.args,
+        watch_cancel=cancel,
+        timeout_seconds=10 if cancel.is_set() else 0,
+        max_output_chars=1000,
+        owned_tree=process,
+    )
+
+    assert result.cancelled is cancel.is_set()
+    assert result.timed_out is not cancel.is_set()
+    assert result.stdout == "captured stdout\n"
+    assert result.stderr == "captured stderr\n"
+    assert result.exit_code == 1
+    assert closed == [41]
+    assert not alive
+    assert not process.is_alive()
+    process.terminate_tree()
+    assert closed == [41]
+    assert "closing owned job" in caplog.text
+    assert process.args not in caplog.text
+
+
+def test_failed_job_close_retains_ownership_for_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = WindowsAPI.__new__(WindowsAPI)
+
+    def _refuse(*_args: Any) -> int:
+        return 0
+
+    def _error() -> OSError:
+        return OSError("injected handle failure")
+
+    api.dll = SimpleNamespace(TerminateJobObject=_refuse, CloseHandle=_refuse)
+    monkeypatch.setattr(api, "error", _error)
+    job = windows_job._Handle(api, 41)
+    process = windows_job.WindowsJobProcess(
+        api, job, windows_job._Handle(api, 42), 43, "command", io.StringIO(), io.StringIO()
+    )
+
+    with pytest.raises(OSError, match="handle failure"):
+        process.terminate_tree()
+
+    assert job.value == 41
 
 
 @_NATIVE_WINDOWS

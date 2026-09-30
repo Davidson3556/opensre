@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import ctypes
+import logging
 import math
 import os
 import subprocess
@@ -37,6 +38,7 @@ _WAIT_TIMEOUT = 258
 _WAIT_OBJECT_0 = 0
 _INFINITE = 0xFFFFFFFF
 _CLEANUP_WAIT_SECONDS = 5.0
+_LOGGER = logging.getLogger(__name__)
 
 
 class _Handle:
@@ -46,7 +48,7 @@ class _Handle:
 
     def close(self) -> None:
         if self.value:
-            self.api.dll.CloseHandle(self.value)
+            self.api.check(self.api.dll.CloseHandle(self.value))
             self.value = 0
 
 
@@ -159,6 +161,8 @@ class WindowsJobProcess:
         return result
 
     def is_alive(self) -> bool:
+        if not self._job.value:
+            return False
         information = BasicAccountingInformation()
         self._api.check(
             self._api.dll.QueryInformationJobObject(
@@ -172,13 +176,38 @@ class WindowsJobProcess:
         return bool(information.ActiveProcesses)
 
     def terminate_tree(self) -> None:
-        self._api.check(self._api.dll.TerminateJobObject(self._job.value, 1))
-        deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
-        while self.is_alive():
-            if time.monotonic() >= deadline:
-                raise subprocess.TimeoutExpired(self.args, _CLEANUP_WAIT_SECONDS)
-            time.sleep(0.01)
-        self.wait(timeout=_CLEANUP_WAIT_SECONDS)
+        if not self._job.value:
+            return
+        try:
+            self._api.check(self._api.dll.TerminateJobObject(self._job.value, 1))
+            deadline = time.monotonic() + _CLEANUP_WAIT_SECONDS
+            while self.is_alive():
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(self.args, _CLEANUP_WAIT_SECONDS)
+                time.sleep(0.01)
+            self.wait(timeout=_CLEANUP_WAIT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            _LOGGER.warning(
+                "Windows tree cleanup failed (%s); closing owned job", type(exc).__name__
+            )
+            # This checked close invokes KILL_ON_JOB_CLOSE before reader joins.
+            # If it fails, retain the handle and propagate: cleanup is unproven.
+            self._job.close()
+            try:
+                if self.poll() is None:
+                    self.terminate()
+            except OSError as root_error:
+                _LOGGER.warning(
+                    "Windows root termination after job closure failed (%s)",
+                    type(root_error).__name__,
+                )
+            try:
+                self.wait(timeout=_CLEANUP_WAIT_SECONDS)
+            except (OSError, subprocess.TimeoutExpired) as wait_error:
+                _LOGGER.warning(
+                    "Windows root exit after job closure was not confirmed (%s)",
+                    type(wait_error).__name__,
+                )
 
     def terminate(self) -> None:
         self._api.check(self._api.dll.TerminateProcess(self._process.value, 1))
