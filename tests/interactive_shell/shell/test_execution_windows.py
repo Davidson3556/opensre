@@ -51,7 +51,7 @@ def _python_command(script: Path, marker: Path) -> str:
     return subprocess.list2cmdline([sys.executable, str(script), str(marker)])
 
 
-def _write_descendant_script(path: Path) -> None:
+def _write_descendant_script(path: Path, *, exit_parent: bool = False) -> None:
     path.write_text(
         """from __future__ import annotations
 
@@ -66,12 +66,12 @@ marker = pathlib.Path(sys.argv[1])
 pending_marker = marker.with_suffix(marker.suffix + ".pending")
 child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
 pending_marker.write_text(
-    json.dumps({"parent": os.getpid(), "child": child.pid}),
+    json.dumps({"shell": os.getppid(), "parent": os.getpid(), "child": child.pid}),
     encoding="utf-8",
 )
 os.replace(pending_marker, marker)
-time.sleep(60)
-""",
+"""
+        + ("" if exit_parent else "time.sleep(60)\n"),
         encoding="utf-8",
     )
 
@@ -285,6 +285,60 @@ def test_cmd_cancel_reaps_process_tree(tmp_path: Path) -> None:
     finally:
         _kill_pid(child_pid)
         _kill_pid(parent_pid)
+
+
+@pytest.mark.timeout(45)
+@pytest.mark.parametrize("cancel_after_root_exit", [False, True], ids=["timeout", "cancel"])
+def test_cmd_reaps_descendants_after_shell_exits(
+    tmp_path: Path,
+    cancel_after_root_exit: bool,
+) -> None:
+    script = tmp_path / "exit_parent.py"
+    marker = tmp_path / "descendant.pid"
+    _write_descendant_script(script, exit_parent=True)
+    cancel_event = threading.Event()
+    root_exited = threading.Event()
+    stop_monitor = threading.Event()
+
+    def _cancel_after_root_exits() -> None:
+        deadline = time.monotonic() + 10
+        while not marker.exists() and time.monotonic() < deadline:
+            if stop_monitor.wait(0.01):
+                return
+        if not marker.exists():
+            return
+        shell_pid = int(json.loads(marker.read_text(encoding="utf-8"))["shell"])
+        try:
+            psutil.Process(shell_pid).wait(timeout=10)
+        except psutil.NoSuchProcess:
+            pass
+        except psutil.TimeoutExpired:
+            return
+        root_exited.set()
+        if cancel_after_root_exit:
+            cancel_event.set()
+
+    monitor = threading.Thread(target=_cancel_after_root_exits, daemon=True)
+    monitor.start()
+    try:
+        result = _execute(
+            _python_command(script, marker),
+            timeout_seconds=15,
+            cancel_event=cancel_event,
+        )
+        parent_pid, child_pid = _read_process_ids(marker)
+        assert root_exited.wait(timeout=1)
+        assert result.cancelled is cancel_after_root_exit
+        assert result.timed_out is not cancel_after_root_exit
+        _wait_for_pid_exit(parent_pid)
+        _wait_for_pid_exit(child_pid)
+    finally:
+        stop_monitor.set()
+        if marker.exists():
+            parent_pid, child_pid = _read_process_ids(marker)
+            _kill_pid(child_pid)
+            _kill_pid(parent_pid)
+        monitor.join(timeout=1)
 
 
 @pytest.mark.timeout(90)
