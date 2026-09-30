@@ -42,6 +42,7 @@ def _reset_analytics(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     provider.shutdown_analytics(flush=False)
     provider._instance = None
     usage_ctx._PROCESS_SESSION_ID = None
+    usage_ctx._ProcessSessionClaim.session_id = None
 
 
 def _stub_httpx_client(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
@@ -113,21 +114,19 @@ def test_capture_stamps_org_groups_and_emits_groupidentify(
 
     analytics = provider.Analytics()
     with bound_usage_context(surface=UsageSurface.CLI, session_id="s1"):
-        analytics.capture(Event.CLI_INVOKED, {"entrypoint": "opensre"})
+        analytics.capture("cli_command_opensre", {"entrypoint": "opensre"})
     analytics.shutdown(flush=True)
 
     events = [p["json"]["event"] for p in posted]
     assert "$groupidentify" in events
-    assert Event.CLI_INVOKED.value in events
+    assert "cli_command_opensre" in events
 
     group_payload = next(p["json"] for p in posted if p["json"]["event"] == "$groupidentify")
     assert group_payload["properties"]["$group_type"] == ORGANIZATION_GROUP_TYPE
     assert group_payload["properties"]["$group_key"] == "org_prod"
     assert group_payload["properties"]["$group_set"]["organization_id"] == "org_prod"
 
-    capture_payload = next(
-        p["json"] for p in posted if p["json"]["event"] == Event.CLI_INVOKED.value
-    )
+    capture_payload = next(p["json"] for p in posted if p["json"]["event"] == "cli_command_opensre")
     props = capture_payload["properties"]
     assert props["organization_id"] == "org_prod"
     assert props["$groups"] == {ORGANIZATION_GROUP_TYPE: "org_prod"}
@@ -140,7 +139,7 @@ def test_group_identify_once_per_org(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(ORGANIZATION_ID_ENV, "org_once")
 
     analytics = provider.Analytics()
-    analytics.capture(Event.CLI_INVOKED)
+    analytics.capture("cli_command_opensre")
     analytics.capture(Event.ONBOARD_STARTED)
     analytics.shutdown(flush=True)
 
@@ -184,3 +183,16 @@ def test_process_session_id_stamps_cli_capture_without_repl(
     assert props["$groups"] == {ORGANIZATION_GROUP_TYPE: "org_cli"}
     assert props["surface"] == UsageSurface.CLI
     assert props["session_id"] == process_session
+
+
+def test_only_the_first_session_adopts_the_process_session_id() -> None:
+    from infrastructure.analytics.usage_context import (
+        claim_process_session_id,
+        ensure_process_session_id,
+    )
+
+    process_session = ensure_process_session_id()
+
+    assert claim_process_session_id() == process_session
+    assert claim_process_session_id() is None
+    assert ensure_process_session_id() == process_session

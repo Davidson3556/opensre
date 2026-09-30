@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from core.agent_harness.session.session_core import SessionCore
 from core.agent_harness.session_goal.evaluate import evaluate_session_goal
 from core.agent_harness.session_goal.goal import (
@@ -15,7 +17,11 @@ from core.agent_harness.session_goal.goal import (
     session_goal_is_active,
 )
 from core.agent_harness.session_goal.judge import SessionGoalJudgeVerdict
-from core.agent_harness.session_goal.run_until import run_until_session_goal
+from core.agent_harness.session_goal.run_until import (
+    pause_active_session_goal,
+    run_until_session_goal,
+)
+from core.agent_harness.turns.host_cancel import HostCancelEvent, HostCancelReason
 from core.agent_harness.turns.turn_results import ToolCallingTurnResult, TurnResult
 
 
@@ -333,6 +339,437 @@ def test_paused_goal_outer_loop_is_single_chat_without_turn_bump() -> None:
     assert outcome.turn_count == 2
     assert session.session_goal is not None
     assert session.session_goal.status == SessionGoalStatus.PAUSED
+
+
+def test_pause_preserves_completed_goal_work_before_stopping() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        pause_active_session_goal(session)
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+                cancelled=True,
+            ),
+            assistant_response_text="first turn finished",
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="keep going", max_outer_turns=4),
+        evaluate=lambda *_args, **_kwargs: SessionGoalStatus.ACTIVE,
+        cancel_requested=cancel.is_set,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert len(turns) == 1
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_BY_USER
+    assert outcome.goal.turns_used == 1
+    assert outcome.goal.findings == ()
+    assert outcome.goal.last_answer == "first turn finished"
+    assert outcome.goal.tool_success_seen
+
+
+def test_pause_validates_completed_ticks_before_stopping() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+    validated: list[frozenset[int]] = []
+
+    def _chat(_message: str) -> TurnResult:
+        active = session.session_goal
+        assert active is not None
+        attach_session_goal(session, active.with_completed(frozenset({0})))
+        pause_active_session_goal(session)
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=2,
+                executed_count=2,
+                executed_success_count=2,
+                has_unhandled_clause=False,
+                handled=True,
+                cancelled=True,
+                tool_evidence="verified output",
+                evidence_success_count=1,
+            ),
+            assistant_response_text="marked complete",
+        )
+
+    def _evaluate(goal: SessionGoal, result: TurnResult, *, session: object) -> str:
+        def _reject_ticks(**kwargs: object) -> frozenset[int]:
+            newly = kwargs.get("newly")
+            assert isinstance(newly, frozenset)
+            validated.append(newly)
+            return frozenset()
+
+        return evaluate_session_goal(
+            goal,
+            result,
+            session=session,
+            validate=_reject_ticks,
+            judge=lambda **_kwargs: SessionGoalJudgeVerdict(
+                verdict="NOT_REACHED",
+                reason="tick needs stronger evidence",
+            ),
+        ).status
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(
+            condition="check the result",
+            checklist=("verify output",),
+            max_outer_turns=4,
+        ),
+        evaluate=_evaluate,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert validated == [frozenset({0})]
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_BY_USER
+    assert outcome.goal.completed == frozenset()
+    assert outcome.goal.new_ticks == frozenset()
+
+
+def test_pause_validates_bookkeeping_only_ticks_without_charging_turn() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+    validated: list[frozenset[int]] = []
+
+    def _chat(_message: str) -> TurnResult:
+        active = session.session_goal
+        assert active is not None
+        attach_session_goal(
+            session,
+            active.with_completed(frozenset({0})).with_bookkeeping_call(),
+        )
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return TurnResult(
+            final_intent="cli_agent_cancelled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+                cancelled=True,
+                evidence_success_count=0,
+            ),
+        )
+
+    def _evaluate(goal: SessionGoal, result: TurnResult, *, session: object) -> str:
+        def _reject_ticks(**kwargs: object) -> frozenset[int]:
+            newly = kwargs.get("newly")
+            assert isinstance(newly, frozenset)
+            validated.append(newly)
+            return frozenset()
+
+        return evaluate_session_goal(
+            goal,
+            result,
+            session=session,
+            validate=_reject_ticks,
+        ).status
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(
+            condition="check the result",
+            checklist=("verify output",),
+            max_outer_turns=4,
+        ),
+        evaluate=_evaluate,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert validated == [frozenset({0})]
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.completed == frozenset()
+    assert outcome.goal.new_ticks == frozenset()
+    assert outcome.goal.turns_used == 0
+
+
+def test_pause_evaluates_a_completed_ticked_turn_once() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+    evaluations = 0
+
+    def _chat(_message: str) -> TurnResult:
+        active = session.session_goal
+        assert active is not None
+        attach_session_goal(
+            session,
+            active.with_completed(frozenset({0})).with_bookkeeping_call(),
+        )
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return TurnResult(
+            final_intent="cli_agent_cancelled",
+            action_result=ToolCallingTurnResult(
+                planned_count=2,
+                executed_count=2,
+                executed_success_count=2,
+                has_unhandled_clause=False,
+                handled=True,
+                cancelled=True,
+                evidence_success_count=1,
+                tool_evidence="verified output",
+            ),
+        )
+
+    def _evaluate(goal: SessionGoal, result: TurnResult, *, session: object) -> str:
+        nonlocal evaluations
+        evaluations += 1
+        return evaluate_session_goal(
+            goal,
+            result,
+            session=session,
+            validate=lambda **kwargs: kwargs["newly"],
+            judge=lambda **_kwargs: SessionGoalJudgeVerdict(
+                verdict="NOT_REACHED",
+                reason="pause after this completed turn",
+            ),
+        ).status
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(
+            condition="check the result",
+            checklist=("verify output",),
+            max_outer_turns=4,
+        ),
+        evaluate=_evaluate,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert evaluations == 1
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.completed == frozenset({0})
+    assert outcome.goal.turns_used == 1
+
+
+def test_idle_pause_command_does_not_count_as_goal_work() -> None:
+    session = SessionCore()
+    attach_session_goal(
+        session,
+        SessionGoal(
+            condition="keep going",
+            max_outer_turns=4,
+            turns_used=2,
+            host_owned=True,
+        ),
+    )
+
+    def _chat(_message: str) -> TurnResult:
+        pause_active_session_goal(session)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+                tool_evidence="Tool: slash_invoke\nOutcome: success",
+                evidence_success_count=1,
+            ),
+            assistant_response_text="goal paused",
+        )
+
+    outcome = run_until_session_goal(_chat, session, "/goal pause")
+
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.turns_used == 2
+    assert outcome.goal.findings == ()
+
+
+def test_pause_does_not_charge_a_cancelled_goal_turn_to_the_budget() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+
+    def _chat(_message: str) -> TurnResult:
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return TurnResult(
+            final_intent="cli_agent_cancelled",
+            action_result=ToolCallingTurnResult(
+                planned_count=0,
+                executed_count=0,
+                executed_success_count=0,
+                has_unhandled_clause=False,
+                handled=False,
+                cancelled=True,
+            ),
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="keep going", max_outer_turns=1),
+        cancel_requested=cancel.is_set,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_BY_USER
+    assert outcome.goal.turns_used == 0
+    assert outcome.turn_count == 0
+
+
+def test_pause_wins_when_it_arrives_with_the_cancel_signal() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+            ),
+            assistant_response_text="first turn finished",
+        )
+
+    def _cancel_and_publish_pause() -> bool:
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return cancel.is_set()
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "go",
+        goal=SessionGoal(condition="keep going", max_outer_turns=4),
+        evaluate=lambda *_args, **_kwargs: SessionGoalStatus.ACTIVE,
+        cancel_requested=_cancel_and_publish_pause,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert len(turns) == 1
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_BY_USER
+
+
+def test_pause_reason_retained_during_turn_pauses_a_new_shell_goal() -> None:
+    session = SessionCore()
+    session.terminal = SimpleNamespace(
+        pending_prompt_default="keep going",
+        pending_prompt_autosubmit=True,
+        pending_prompt_plain_turn=True,
+    )
+    cancel = HostCancelEvent()
+
+    def _chat(_message: str) -> TurnResult:
+        attach_session_goal(
+            session,
+            SessionGoal(
+                condition="keep going",
+                max_outer_turns=4,
+                host_owned=True,
+            ),
+        )
+        cancel.request(HostCancelReason.GOAL_PAUSE, interrupt=False)
+        return TurnResult(
+            final_intent="cli_agent_handled",
+            action_result=ToolCallingTurnResult(
+                planned_count=1,
+                executed_count=1,
+                executed_success_count=1,
+                has_unhandled_clause=False,
+                handled=True,
+            ),
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "/goal set keep going",
+        cancel_requested=cancel.is_set,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert cancel.is_set() is False
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_BY_USER
+    assert outcome.turn_count == 0
+    assert session.terminal.pending_prompt_default is None
+    assert session.terminal.pending_prompt_autosubmit is False
+    assert session.terminal.pending_prompt_plain_turn is False
+
+
+def test_headless_first_goal_turn_reads_pause_arriving_during_that_turn() -> None:
+    session = SessionCore()
+    cancel = HostCancelEvent()
+    turns: list[str] = []
+
+    def _chat(message: str) -> TurnResult:
+        turns.append(message)
+        if len(turns) == 1:
+            attach_session_goal(
+                session,
+                SessionGoal(
+                    condition="keep going",
+                    max_outer_turns=4,
+                    host_owned=True,
+                ),
+            )
+            return TurnResult(
+                final_intent="cli_agent_handled",
+                action_result=ToolCallingTurnResult(
+                    planned_count=1,
+                    executed_count=1,
+                    executed_success_count=1,
+                    has_unhandled_clause=False,
+                    handled=True,
+                ),
+            )
+        cancel.request(HostCancelReason.GOAL_PAUSE)
+        return TurnResult(
+            final_intent="cli_agent_cancelled",
+            action_result=ToolCallingTurnResult(
+                planned_count=0,
+                executed_count=0,
+                executed_success_count=0,
+                has_unhandled_clause=False,
+                handled=False,
+                cancelled=True,
+            ),
+        )
+
+    outcome = run_until_session_goal(
+        _chat,
+        session,
+        "/goal set keep going",
+        cancel_requested=cancel.is_set,
+        cancel_reason=lambda: cancel.reason,
+    )
+
+    assert len(turns) == 2
+    assert outcome.goal.status == SessionGoalStatus.PAUSED
+    assert outcome.goal.last_reason == SessionGoalReason.PAUSED_BY_USER
+    assert outcome.goal.turns_used == 0
 
 
 def test_the_judge_reason_is_painted_between_turns() -> None:

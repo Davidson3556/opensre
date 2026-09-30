@@ -160,6 +160,8 @@ class JsonlSessionStore:
                 }
                 with path.open("w", encoding="utf-8") as fh:
                     fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
                 key = (session.session_id, str(path))
                 self._leaf_ids[key] = None
                 self._leaf_file_sig[key] = self._file_sig(path)
@@ -570,7 +572,9 @@ class JsonlSessionStore:
                     if needs_separator:
                         fh.write("\n")
                     fh.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
-                    if durable:
+                    # S3 Files needs fsync for conversation records and durable
+                    # WAL sidecars to survive a hosted task restart.
+                    if durable or not sidecar:
                         fh.flush()
                         os.fsync(fh.fileno())
                 if not sidecar:

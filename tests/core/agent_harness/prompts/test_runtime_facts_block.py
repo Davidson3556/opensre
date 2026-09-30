@@ -254,7 +254,7 @@ def test_environment_block_quotes_hosted_credits(
             "OpenSRE hosted credits.",
         )
 
-    monkeypatch.setattr("core.llm.hosted_credits.account_llm_route", lambda: object())
+    monkeypatch.setattr("core.llm.hosted_credits.account_llm_route", object)
     monkeypatch.setattr("core.llm.hosted_credits.cached_hosted_credits", _hosted_read)
     block = _env_block({"opensre_version": "0.1"})
     assert "OpenSRE hosted credits remaining are 12,500" in block

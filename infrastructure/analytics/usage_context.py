@@ -53,6 +53,16 @@ _PROCESS_SESSION_ID: str | None = None
 _PROCESS_SESSION_ID_LOCK = threading.Lock()
 
 
+class _ProcessSessionClaim:
+    """First claimant of the process session id.
+
+    Held on a class so the read is attribute access. A module global that is
+    only read inside a function declaring ``global`` is misreported as unused.
+    """
+
+    session_id: str | None = None
+
+
 def ensure_process_session_id() -> str:
     """Return a stable session id for this process, minting one on first use."""
     global _PROCESS_SESSION_ID
@@ -61,6 +71,21 @@ def ensure_process_session_id() -> str:
             if _PROCESS_SESSION_ID is None:
                 _PROCESS_SESSION_ID = str(uuid4())
     return _PROCESS_SESSION_ID
+
+
+def claim_process_session_id() -> str | None:
+    """Return the process session id to its first claimant and ``None`` to every later one.
+
+    The interactive shell and ``opensre ask`` claim it for the session they open
+    first, so ``cli_invoked`` and that session's turns share one id. Gateway and
+    unattended hosts bind their own id per turn and must never claim it.
+    """
+    session_id = ensure_process_session_id()
+    with _PROCESS_SESSION_ID_LOCK:
+        if session_id == _ProcessSessionClaim.session_id:
+            return None
+        _ProcessSessionClaim.session_id = session_id
+    return session_id
 
 
 def get_surface() -> str | None:
@@ -146,15 +171,17 @@ def build_usage_enrichment() -> Properties:
     return props
 
 
-def merge_usage_enrichment(properties: Properties) -> Properties:
-    """Fill missing usage keys; caller-provided values win."""
+def merge_usage_enrichment(
+    properties: Properties, *, defaults: Properties | None = None
+) -> Properties:
+    """Prefer explicit event properties over bound context over process defaults."""
     enrichment = build_usage_enrichment()
-    merged = dict(properties)
+    merged = dict(defaults or {})
     for key, value in enrichment.items():
         if key == "$groups":
             continue
-        if key not in merged:
-            merged[key] = value
+        merged[key] = value
+    merged.update(properties)
 
     org = merged.get("organization_id")
     if isinstance(org, str) and org.strip():

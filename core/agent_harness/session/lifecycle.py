@@ -156,6 +156,11 @@ class SessionManager:
         self._store.open_session(session)
         return session
 
+    def has_session(self, session_id: str) -> bool:
+        """Return whether an exact session id names a readable persisted conversation."""
+        data = self._repo.load_session(session_id)
+        return data is not None and data.get("session_id") == session_id
+
     def resolve(
         self,
         session_id: str,

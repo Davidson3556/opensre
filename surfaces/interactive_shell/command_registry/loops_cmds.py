@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from rich.console import Console
 from rich.markup import escape
 
+from config.constants.capabilities import SCHEDULER_HOST_CAPABILITY, SCHEDULER_HOST_IN_PROCESS
+from core.agent_harness.tools import capability_values
 from infrastructure.scheduling.scheduler.loop_constants import LOOP_TIME_PARAM
 from surfaces.interactive_shell.command_registry.types import SlashCommand
 from surfaces.interactive_shell.runtime import Session
@@ -283,7 +285,7 @@ def _cmd_loops_add(session: Session, console: Console, args: list[str]) -> bool:
         "  channels: "
         + escape(_channels_label(tuple(provider.value for provider in created.channels)))
     )
-    _reload_loop_scheduler(console)
+    _reload_loop_scheduler(session, console)
 
     if parsed.run_now:
         _run_loop_task_ids_once(console, (created.task.id,))
@@ -305,7 +307,7 @@ def _cmd_loops_run(session: Session, console: Console, args: list[str]) -> bool:
 
 
 def _cmd_loops_set_enabled(
-    _session: Session,
+    session: Session,
     console: Console,
     args: list[str],
     *,
@@ -327,7 +329,7 @@ def _cmd_loops_set_enabled(
     console.print(f"[{HIGHLIGHT}]loop {action}:[/] {escape(result.summary.name)}")
     console.print(f"  id: [{HIGHLIGHT}]{escape(result.summary.id)}[/]")
     console.print(f"  tasks: {result.task_count}")
-    _reload_loop_scheduler(console)
+    _reload_loop_scheduler(session, console)
     return True
 
 
@@ -346,7 +348,7 @@ def _cmd_loops_delete(session: Session, console: Console, args: list[str]) -> bo
     console.print(f"[{HIGHLIGHT}]loop deleted:[/] {escape(result.summary.name)}")
     console.print(f"  id: [{HIGHLIGHT}]{escape(result.summary.id)}[/]")
     console.print(f"  tasks removed: {result.task_count}")
-    _reload_loop_scheduler(console)
+    _reload_loop_scheduler(session, console)
     return True
 
 
@@ -453,7 +455,14 @@ def _run_loop_task_ids_once(console: Console, task_ids: tuple[str, ...]) -> bool
     return True
 
 
-def _reload_loop_scheduler(console: Console) -> None:
+def _reload_loop_scheduler(session: Session, console: Console) -> None:
+    from infrastructure.scheduling.scheduler.reload_signal import request_scheduler_reload
+
+    if SCHEDULER_HOST_IN_PROCESS in capability_values(session, SCHEDULER_HOST_CAPABILITY):
+        request_scheduler_reload()
+        console.print("  scheduler: reload requested")
+        return
+
     from surfaces.interactive_shell.runtime.loop_scheduler import reload_loop_scheduler
 
     try:

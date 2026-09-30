@@ -74,9 +74,16 @@ class HostedCreditsRead:
     usage_url: str | None = None
 
 
-_cache_key: tuple[str, str] | None = None
-_cache_read: HostedCreditsRead | None = None
-_cache_at: float = 0.0
+class _HostedCreditsCache:
+    """Last ledger read in this process.
+
+    Held on a class so the read is attribute access. A module global that is
+    only read inside a function declaring ``global`` is misreported as unused.
+    """
+
+    key: tuple[str, str] | None = None
+    read: HostedCreditsRead | None = None
+    at: float = 0.0
 
 
 def _nonneg_int(value: object) -> int | None:
@@ -246,36 +253,35 @@ def fetch_hosted_credits(*, app_url: str | None = None, fresh: bool = False) -> 
     A short in-process cache lets prompt assembly and LLM admission share one
     HTTP read on the same turn.
     """
-    global _cache_key, _cache_read, _cache_at
     record = load_account_record()
     token = resolve_account_token()
     key = (token or "", (app_url or (record.app_url if record is not None else "")))
     now = time.monotonic()
+    cached = _HostedCreditsCache
     if (
         not fresh
-        and _cache_read is not None
-        and _cache_key == key
-        and now - _cache_at < _CACHE_TTL_SEC
+        and cached.read is not None
+        and cached.key == key
+        and now - cached.at < _CACHE_TTL_SEC
     ):
-        return _cache_read
+        return cached.read
     read = _read(app_url=app_url)
-    _cache_key = key
-    _cache_read = read
-    _cache_at = now
+    cached.key = key
+    cached.read = read
+    cached.at = now
     return read
 
 
 def cached_hosted_credits() -> HostedCreditsRead | None:
     """Return the last ledger read in this process, or ``None`` if none yet."""
-    return _cache_read
+    return _HostedCreditsCache.read
 
 
 def reset_hosted_credits_cache() -> None:
     """Drop the in-process cache (tests)."""
-    global _cache_key, _cache_read, _cache_at
-    _cache_key = None
-    _cache_read = None
-    _cache_at = 0.0
+    _HostedCreditsCache.key = None
+    _HostedCreditsCache.read = None
+    _HostedCreditsCache.at = 0.0
 
 
 __all__ = [

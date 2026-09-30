@@ -1052,6 +1052,9 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         # unknown key); a parser failure it did not anticipate reaches the
         # global wrapper.
         "read_structured_file",
+        # list_scheduled_loops reads the local task store and lets any store
+        # error reach the global wrapper.
+        "list_scheduled_loops",
         # scan_local_git_workspace shells out to git per repository and lets
         # anything unexpected reach the global wrapper.
         "scan_local_git_workspace",
@@ -1262,7 +1265,6 @@ _TOOLS_WITHOUT_DELIBERATE_CATCH: frozenset[str] = frozenset(
         "read_yc_db_logs",
         "read_yc_logs",
         "query_yc_metrics",
-        "redeploy_railway_service",
         "replay_slack_thread_locally",
         "scan_redis_keys",
         "search_bitbucket_code",

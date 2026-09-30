@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from config.constants.turn_concurrency import OPENSRE_SCHEDULER_MAX_CONCURRENT_RUNS_ENV
+from infrastructure.scheduling.scheduler import runner as scheduler_runner
 from infrastructure.scheduling.scheduler.loop_constants import LOOP_PROMPT_PARAM
 from infrastructure.scheduling.scheduler.outcomes import WorkOutcome, WorkStatus
 from infrastructure.scheduling.scheduler.runner import (
@@ -37,14 +38,12 @@ from tests.scheduler._bundle import real_runners
 @pytest.fixture(autouse=True)
 def _schedule_cancel_follows_runner_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep in-flight cancel checks on the same ``get_task`` the runner tests stub."""
-    import infrastructure.scheduling.scheduler.runner as runner
     import infrastructure.scheduling.scheduler.schedule_cancel as schedule_cancel
 
-    monkeypatch.setattr(
-        schedule_cancel,
-        "get_task",
-        lambda task_id: runner.get_task(task_id),
-    )
+    def _get_task_from_runner(task_id: str) -> ScheduledTask | None:
+        return scheduler_runner.get_task(task_id)
+
+    monkeypatch.setattr(schedule_cancel, "get_task", _get_task_from_runner)
 
 
 class TestMakeTrigger:

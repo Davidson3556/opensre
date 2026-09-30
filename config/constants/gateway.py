@@ -17,6 +17,11 @@ SCHEDULER_STOP_BUDGET_SHARE = 0.5
 WEB_STOP_TIMEOUT_SECONDS = 5.0
 #: Reload watcher only polls a flag; cap the join so chat workers keep the rest.
 SCHEDULER_RELOAD_JOIN_TIMEOUT_SECONDS = 2.0
+#: How often a hosted gateway checks the organization's integrations secret for a
+#: new version, so a credential saved in the web app reaches it without a restart.
+CREDENTIAL_REFRESH_INTERVAL_SECONDS = 60.0
+#: The refresh watcher only sleeps between checks; cap its join on shutdown.
+CREDENTIAL_REFRESH_JOIN_TIMEOUT_SECONDS = 2.0
 DEFAULT_MAX_CONVERSATION_LOCKS = 1024
 NEW_SESSION_MESSAGE = "Started a new session."
 #: Inbound-decision reply sentinel: rotate the session instead of replying.
@@ -36,6 +41,12 @@ PROMPT_QUEUE_MAX = 8
 PROMPT_RESULT_RETENTION_SECONDS = 3_600.0
 #: Actor recorded for a remote prompt when the caller names none.
 PROMPT_DEFAULT_ACTOR = "remote-shell"
+#: How long a queued remote prompt waits for a free turn slot before it counts as refused.
+PROMPT_SLOT_WAIT_SECONDS = 300.0
+#: Progress updates a prompt record keeps (the newest).
+PROMPT_PROGRESS_MAX_LINES = 20
+#: Character budget for one progress update: three terminal rows.
+PROMPT_PROGRESS_LINE_MAX_CHARS = 600
 #: The prompt worker ends after its current job; it gets this slice of the stop budget.
 PROMPT_WORKER_STOP_TIMEOUT_SECONDS = 2.0
 
@@ -46,6 +57,8 @@ __all__ = [
     "DATABASE_URL_ENV",
     "ATTACHMENT_MAX_FILE_CHARS",
     "ATTACHMENT_MAX_TOTAL_CHARS",
+    "CREDENTIAL_REFRESH_INTERVAL_SECONDS",
+    "CREDENTIAL_REFRESH_JOIN_TIMEOUT_SECONDS",
     "CREDITS_DENIED_MESSAGE",
     "DEFAULT_MAX_CONVERSATION_LOCKS",
     "DEFAULT_STOP_TIMEOUT_SECONDS",
@@ -61,8 +74,11 @@ __all__ = [
     "PROMPT_CONTEXT_VALUE_MAX_CHARS",
     "PROMPT_DEFAULT_ACTOR",
     "PROMPT_MAX_CHARS",
+    "PROMPT_PROGRESS_LINE_MAX_CHARS",
+    "PROMPT_PROGRESS_MAX_LINES",
     "PROMPT_QUEUE_MAX",
     "PROMPT_RESULT_RETENTION_SECONDS",
+    "PROMPT_SLOT_WAIT_SECONDS",
     "PROMPT_ROUTE_PATH",
     "PROMPT_WORKER_STOP_TIMEOUT_SECONDS",
     "TURN_ERROR_MESSAGE",

@@ -27,12 +27,56 @@ so cancelling the UI and the worker signals the same turn.
 from __future__ import annotations
 
 import contextlib
+import enum
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 from core.agent_harness.tools.tool_context import ACTION_TOOL_CONTEXT_RESOURCE_KEY
+
+
+class HostCancelReason(enum.StrEnum):
+    """Why the host requested cooperative cancellation of a turn."""
+
+    STOP = "stop"
+    GOAL_PAUSE = "goal_pause"
+
+
+class HostCancelEvent(threading.Event):
+    """The canonical turn-cancel event plus its host-supplied reason."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._reason_lock = threading.Lock()
+        self._reason: HostCancelReason | None = None
+
+    @property
+    def reason(self) -> HostCancelReason | None:
+        """Return the effective reason recorded for this turn."""
+        with self._reason_lock:
+            return self._reason
+
+    def request(self, reason: HostCancelReason, *, interrupt: bool = True) -> None:
+        """Record ``reason`` and optionally wake cooperative cancel readers."""
+        with self._reason_lock:
+            # A pause controls post-turn state as well as interruption. Once
+            # requested, a later generic stop (for example during shutdown)
+            # must not erase that boundary action.
+            if self._reason is not HostCancelReason.GOAL_PAUSE:
+                self._reason = reason
+            if interrupt:
+                super().set()
+
+    def set(self) -> None:
+        """Request an ordinary host stop."""
+        self.request(HostCancelReason.STOP)
+
+    def clear(self) -> None:
+        """Reset both the event and its recorded reason."""
+        with self._reason_lock:
+            super().clear()
+            self._reason = None
 
 
 def ensure_turn_cancel(output: Any) -> threading.Event:
@@ -45,7 +89,7 @@ def ensure_turn_cancel(output: Any) -> threading.Event:
     existing = getattr(output, "turn_cancel", None)
     if isinstance(existing, threading.Event):
         return existing
-    event = threading.Event()
+    event = HostCancelEvent()
     with contextlib.suppress(Exception):
         output.turn_cancel = event
     return event
@@ -57,6 +101,13 @@ def host_cancel_requested(output: Any | None) -> bool:
         return False
     cancel = getattr(output, "turn_cancel", None)
     return isinstance(cancel, threading.Event) and cancel.is_set()
+
+
+def turn_cancel_reason(cancel: threading.Event | None) -> HostCancelReason | None:
+    """Return the reason carried by the canonical cancel event, when available."""
+    if isinstance(cancel, HostCancelEvent):
+        return cancel.reason
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,9 +196,12 @@ def bind_cancel_predicate(
 __all__ = [
     "CancelProbeConsole",
     "CancelProbeContext",
+    "HostCancelEvent",
+    "HostCancelReason",
     "PredicateCancelConsole",
     "bind_cancel_predicate",
     "cancel_tool_resources",
     "ensure_turn_cancel",
     "host_cancel_requested",
+    "turn_cancel_reason",
 ]

@@ -69,10 +69,22 @@ if TYPE_CHECKING:
         ALERTMANAGER_USERNAME_ENV as ALERTMANAGER_USERNAME_ENV,
     )
     from config.constants.analytics import (
+        ANALYTICS_CICD_ENV as ANALYTICS_CICD_ENV,
+    )
+    from config.constants.analytics import (
         ANALYTICS_DISABLED_ENV as ANALYTICS_DISABLED_ENV,
     )
     from config.constants.analytics import (
+        ANALYTICS_ENV_ENV as ANALYTICS_ENV_ENV,
+    )
+    from config.constants.analytics import (
         ANALYTICS_EVENT_SCHEMA_VERSION as ANALYTICS_EVENT_SCHEMA_VERSION,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_EXECUTION_CONTEXT_ENV as ANALYTICS_EXECUTION_CONTEXT_ENV,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_EXECUTION_CONTEXT_PATH as ANALYTICS_EXECUTION_CONTEXT_PATH,
     )
     from config.constants.analytics import (
         ANALYTICS_INGEST_PATH as ANALYTICS_INGEST_PATH,
@@ -82,6 +94,12 @@ if TYPE_CHECKING:
     )
     from config.constants.analytics import (
         ANALYTICS_INSTALL_MARKER_STATE_ENV as ANALYTICS_INSTALL_MARKER_STATE_ENV,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_INSTALL_ORIGIN_ENV as ANALYTICS_INSTALL_ORIGIN_ENV,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_INSTALL_ORIGINS as ANALYTICS_INSTALL_ORIGINS,
     )
     from config.constants.analytics import (
         ANALYTICS_INSTALL_SOURCE_ENV as ANALYTICS_INSTALL_SOURCE_ENV,
@@ -96,6 +114,15 @@ if TYPE_CHECKING:
         ANALYTICS_MAX_PAYLOAD_BYTES as ANALYTICS_MAX_PAYLOAD_BYTES,
     )
     from config.constants.analytics import (
+        ANALYTICS_RUNNER_AUDIENCE as ANALYTICS_RUNNER_AUDIENCE,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_RUNNER_INGEST_URL as ANALYTICS_RUNNER_INGEST_URL,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_RUNNER_TOKEN_HEADER as ANALYTICS_RUNNER_TOKEN_HEADER,
+    )
+    from config.constants.analytics import (
         ANALYTICS_SIGNATURE_HEADER as ANALYTICS_SIGNATURE_HEADER,
     )
     from config.constants.analytics import (
@@ -103,6 +130,9 @@ if TYPE_CHECKING:
     )
     from config.constants.analytics import (
         ANALYTICS_SOURCE as ANALYTICS_SOURCE,
+    )
+    from config.constants.analytics import (
+        ANALYTICS_TEST_ENV as ANALYTICS_TEST_ENV,
     )
     from config.constants.analytics import (
         ANALYTICS_TIMESTAMP_HEADER as ANALYTICS_TIMESTAMP_HEADER,
@@ -230,6 +260,15 @@ if TYPE_CHECKING:
     from config.constants.buzz import (
         BUZZ_RELAY_URL_ENV as BUZZ_RELAY_URL_ENV,
     )
+    from config.constants.capabilities import (
+        HOSTED_GATEWAY_CAPABILITY as HOSTED_GATEWAY_CAPABILITY,
+    )
+    from config.constants.capabilities import (
+        SCHEDULER_HOST_CAPABILITY as SCHEDULER_HOST_CAPABILITY,
+    )
+    from config.constants.capabilities import (
+        SCHEDULER_HOST_IN_PROCESS as SCHEDULER_HOST_IN_PROCESS,
+    )
     from config.constants.ci_fixes import (
         CI_FIX_COUNT_LABEL as CI_FIX_COUNT_LABEL,
     )
@@ -244,6 +283,9 @@ if TYPE_CHECKING:
     from config.constants.ci_repair import (
         CI_REPAIR_FINISH_RESERVE_SECONDS as CI_REPAIR_FINISH_RESERVE_SECONDS,
     )
+    from config.constants.ci_repair import (
+        CI_REPAIR_MAX_ATTEMPTS as CI_REPAIR_MAX_ATTEMPTS,
+    )
     from config.constants.ci_repair import CI_REPAIR_POLL_SECONDS as CI_REPAIR_POLL_SECONDS
     from config.constants.ci_repair import CI_REPAIR_REPORT_BUILDER as CI_REPAIR_REPORT_BUILDER
     from config.constants.ci_repair import CI_REPAIR_SECONDS as CI_REPAIR_SECONDS
@@ -253,6 +295,15 @@ if TYPE_CHECKING:
     )
     from config.constants.clerk import (
         CLERK_JWKS_URL_ENV as CLERK_JWKS_URL_ENV,
+    )
+    from config.constants.coding_agent import (
+        CODING_AGENT_SANDBOX_AGENT as CODING_AGENT_SANDBOX_AGENT,
+    )
+    from config.constants.coding_agent import (
+        CODING_AGENT_SANDBOX_ENV as CODING_AGENT_SANDBOX_ENV,
+    )
+    from config.constants.coding_agent import (
+        CODING_AGENT_SANDBOX_HOST as CODING_AGENT_SANDBOX_HOST,
     )
     from config.constants.coralogix import (
         CORALOGIX_API_KEY_ENV as CORALOGIX_API_KEY_ENV,
@@ -280,6 +331,9 @@ if TYPE_CHECKING:
     )
     from config.constants.datadog import (
         DATADOG_SITE_ENV as DATADOG_SITE_ENV,
+    )
+    from config.constants.environment import (
+        CONTAINER_SUPERVISOR_PID_ENV as CONTAINER_SUPERVISOR_PID_ENV,
     )
     from config.constants.environment import (
         DEPLOYMENT_ENV_ENV as DEPLOYMENT_ENV_ENV,
@@ -330,6 +384,12 @@ if TYPE_CHECKING:
         ATTACHMENT_MAX_TOTAL_CHARS as ATTACHMENT_MAX_TOTAL_CHARS,
     )
     from config.constants.gateway import (
+        CREDENTIAL_REFRESH_INTERVAL_SECONDS as CREDENTIAL_REFRESH_INTERVAL_SECONDS,
+    )
+    from config.constants.gateway import (
+        CREDENTIAL_REFRESH_JOIN_TIMEOUT_SECONDS as CREDENTIAL_REFRESH_JOIN_TIMEOUT_SECONDS,
+    )
+    from config.constants.gateway import (
         CREDITS_DENIED_MESSAGE as CREDITS_DENIED_MESSAGE,
     )
     from config.constants.gateway import (
@@ -366,6 +426,12 @@ if TYPE_CHECKING:
         PROMPT_MAX_CHARS as PROMPT_MAX_CHARS,
     )
     from config.constants.gateway import (
+        PROMPT_PROGRESS_LINE_MAX_CHARS as PROMPT_PROGRESS_LINE_MAX_CHARS,
+    )
+    from config.constants.gateway import (
+        PROMPT_PROGRESS_MAX_LINES as PROMPT_PROGRESS_MAX_LINES,
+    )
+    from config.constants.gateway import (
         PROMPT_QUEUE_MAX as PROMPT_QUEUE_MAX,
     )
     from config.constants.gateway import (
@@ -373,6 +439,9 @@ if TYPE_CHECKING:
     )
     from config.constants.gateway import (
         PROMPT_ROUTE_PATH as PROMPT_ROUTE_PATH,
+    )
+    from config.constants.gateway import (
+        PROMPT_SLOT_WAIT_SECONDS as PROMPT_SLOT_WAIT_SECONDS,
     )
     from config.constants.gateway import (
         PROMPT_WORKER_STOP_TIMEOUT_SECONDS as PROMPT_WORKER_STOP_TIMEOUT_SECONDS,
@@ -438,6 +507,7 @@ if TYPE_CHECKING:
     from config.constants.github import (
         GITHUB_MCP_URL_ENV as GITHUB_MCP_URL_ENV,
     )
+    from config.constants.github import GITHUB_TOKEN_CHECKLIST as GITHUB_TOKEN_CHECKLIST
     from config.constants.github import (
         GITHUB_TOKEN_ENV as GITHUB_TOKEN_ENV,
     )
@@ -523,6 +593,9 @@ if TYPE_CHECKING:
         HOSTED_GATEWAY_HTTP_TIMEOUT_SECONDS as HOSTED_GATEWAY_HTTP_TIMEOUT_SECONDS,
     )
     from config.constants.hosted_gateway import (
+        HOSTED_GATEWAY_INTEGRATIONS_PATH as HOSTED_GATEWAY_INTEGRATIONS_PATH,
+    )
+    from config.constants.hosted_gateway import (
         HOSTED_GATEWAY_LOOPBACK_HOSTS as HOSTED_GATEWAY_LOOPBACK_HOSTS,
     )
     from config.constants.hosted_gateway import (
@@ -533,6 +606,9 @@ if TYPE_CHECKING:
     )
     from config.constants.hosted_gateway import (
         HOSTED_GATEWAY_PROMPTS_PATH as HOSTED_GATEWAY_PROMPTS_PATH,
+    )
+    from config.constants.hosted_gateway import (
+        HOSTED_GATEWAY_QUEUE_NOTICE_SECONDS as HOSTED_GATEWAY_QUEUE_NOTICE_SECONDS,
     )
     from config.constants.hosted_gateway import (
         HOSTED_GATEWAY_SETTINGS_PATH as HOSTED_GATEWAY_SETTINGS_PATH,
@@ -588,24 +664,6 @@ if TYPE_CHECKING:
     from config.constants.kubernetes import (
         KUBECONFIG_PATH_ENV as KUBECONFIG_PATH_ENV,
     )
-    from config.constants.langfuse import (
-        LANGFUSE_BASE_URL_ENV as LANGFUSE_BASE_URL_ENV,
-    )
-    from config.constants.langfuse import (
-        LANGFUSE_DEFAULT_BASE_URL as LANGFUSE_DEFAULT_BASE_URL,
-    )
-    from config.constants.langfuse import (
-        LANGFUSE_HOST_ENV as LANGFUSE_HOST_ENV,
-    )
-    from config.constants.langfuse import (
-        LANGFUSE_PUBLIC_KEY_ENV as LANGFUSE_PUBLIC_KEY_ENV,
-    )
-    from config.constants.langfuse import (
-        LANGFUSE_SECRET_KEY_ENV as LANGFUSE_SECRET_KEY_ENV,
-    )
-    from config.constants.langfuse import (
-        OPENSRE_LANGFUSE_DISABLED_ENV as OPENSRE_LANGFUSE_DISABLED_ENV,
-    )
     from config.constants.llm import (
         AZURE_OPENAI_API_KEY_ENV as AZURE_OPENAI_API_KEY_ENV,
     )
@@ -620,6 +678,12 @@ if TYPE_CHECKING:
     )
     from config.constants.llm import (
         LLM_PROVIDER_ENV as LLM_PROVIDER_ENV,
+    )
+    from config.constants.llm import (
+        OPENAI_API_KEY_ENV as OPENAI_API_KEY_ENV,
+    )
+    from config.constants.llm import (
+        OPENAI_BASE_URL_ENV as OPENAI_BASE_URL_ENV,
     )
     from config.constants.llm import (
         OPENSRE_LLM_NATIVE_STRUCTURED_OUTPUT_ENV as OPENSRE_LLM_NATIVE_STRUCTURED_OUTPUT_ENV,
@@ -785,6 +849,9 @@ if TYPE_CHECKING:
     )
     from config.constants.paths import (
         USERS_DIR_NAME as USERS_DIR_NAME,
+    )
+    from config.constants.paths import (
+        WIZARD_STORE_PATH_ENV as WIZARD_STORE_PATH_ENV,
     )
     from config.constants.paths import (
         UnsafePathSegmentError as UnsafePathSegmentError,

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 from rich.console import Console
 
+from config.constants.capabilities import HOSTED_GATEWAY_CAPABILITY
 from core.agent_harness.runtime import AgentBuildConfig
 from core.agent_harness.session import SessionCore
 from core.agent_harness.session.persistence.memory import InMemorySessionStore
@@ -344,7 +345,7 @@ def test_turn_runner_tolerates_sinks_without_tool_hooks(monkeypatch: Any) -> Non
     assert agent.bind_turn.call_args.args[0].tool_hooks is None
 
 
-def test_turn_runner_disables_unsupported_gateway_capabilities(monkeypatch: Any) -> None:
+def test_turn_runner_leaves_gateway_capabilities_available(monkeypatch: Any) -> None:
     _patch_headless_agent(monkeypatch, _empty_turn_result())
     session = SessionCore(store=InMemorySessionStore())
     handler = TurnRunner(console=Console(force_terminal=False))
@@ -356,8 +357,7 @@ def test_turn_runner_disables_unsupported_gateway_capabilities(monkeypatch: Any)
         logging.getLogger("test"),
     )
 
-    assert session.available_capabilities["llm_provider"] == ()
-    assert session.available_capabilities["task_cancel"] == ()
+    assert session.available_capabilities == {HOSTED_GATEWAY_CAPABILITY: ()}
 
 
 def test_turn_runner_preserves_supported_capabilities(monkeypatch: Any) -> None:
@@ -380,14 +380,14 @@ def test_turn_runner_preserves_supported_capabilities(monkeypatch: Any) -> None:
         logging.getLogger("test.gateway.capabilities"),
     )
 
-    assert session.available_capabilities["llm_provider"] == ()
-    assert session.available_capabilities["task_cancel"] == ()
+    assert session.available_capabilities["llm_provider"] == ("existing-provider",)
+    assert session.available_capabilities["task_cancel"] == ("existing-cancel",)
 
     assert session.available_capabilities["shell_commands"] == ("shell",)
     assert session.available_capabilities["custom_gateway_capability"] == ("enabled",)
 
 
-def test_turn_runner_capability_gating_is_stable_across_turns(monkeypatch: Any) -> None:
+def test_turn_runner_keeps_capabilities_available_across_turns(monkeypatch: Any) -> None:
     _patch_headless_agent(monkeypatch, _empty_turn_result())
     session = SessionCore(store=InMemorySessionStore())
     session.available_capabilities["shell_commands"] = ("shell",)
@@ -398,9 +398,10 @@ def test_turn_runner_capability_gating_is_stable_across_turns(monkeypatch: Any) 
     handler("first turn", session, RecordingTurnOutput(), logger)
     handler("second turn", session, RecordingTurnOutput(), logger)
 
-    assert session.available_capabilities["llm_provider"] == ()
-    assert session.available_capabilities["task_cancel"] == ()
-    assert session.available_capabilities["shell_commands"] == ("shell",)
+    assert session.available_capabilities == {
+        "shell_commands": ("shell",),
+        HOSTED_GATEWAY_CAPABILITY: (),
+    }
 
 
 def test_turn_runner_emits_gateway_turn_analytics(monkeypatch: Any) -> None:
@@ -561,6 +562,35 @@ def test_run_without_caller_context_is_the_transport_path(monkeypatch: Any) -> N
     binding = _last_binding(agent)
     assert binding.is_tty is False
     assert binding.confirm_fn is None
+
+
+def test_run_waits_for_a_slot_when_told_to_instead_of_refusing(monkeypatch: Any) -> None:
+    """A queued remote prompt queues behind a running turn; only a timeout refuses it."""
+    # Arrange: the only slot is taken and freed a moment later
+    import threading
+
+    from infrastructure.turn_host.concurrency import AT_CAPACITY_MESSAGE, TurnConcurrencyGate
+
+    factory = _patch_headless_agent(monkeypatch, _empty_turn_result())
+    gate = TurnConcurrencyGate(1)
+    assert gate.try_acquire() is True
+    threading.Timer(0.2, gate.release).start()
+    handler = TurnRunner(console=Console(force_terminal=False), gate=gate)
+    sink = RecordingTurnOutput()
+
+    # Act
+    returned = handler.run(
+        "hello",
+        SessionCore(store=InMemorySessionStore()),
+        sink,
+        logging.getLogger("t"),
+        slot_wait_seconds=2.0,
+    )
+
+    # Assert: the turn ran once the slot freed; nothing was finalized as "at capacity"
+    assert returned is not None
+    assert sink.finalized != AT_CAPACITY_MESSAGE
+    factory.assert_called_once()
 
 
 def test_run_returns_none_and_says_at_capacity_when_the_gate_refuses(monkeypatch: Any) -> None:

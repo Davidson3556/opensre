@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -403,3 +404,19 @@ def test_close_cancels_in_flight_warm_task() -> None:
 
     assert task.cancelled is True
     assert session.integrations._warm_task is None
+
+
+def test_has_session_requires_an_exact_readable_persisted_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.agent_harness.session import JsonlSessionRepo, JsonlSessionStore
+
+    monkeypatch.setattr("config.constants.paths.OPENSRE_HOME_DIR", tmp_path)
+    manager = SessionManager(store=JsonlSessionStore(), repo=JsonlSessionRepo())
+    session = manager.create(session_id="persisted-session")
+    session.record("chat", "keep this conversation")
+    manager.flush(session)
+
+    assert manager.has_session(session.session_id)
+    assert not manager.has_session("persisted")
+    assert not manager.has_session("missing-session")

@@ -23,6 +23,7 @@ from rich.console import Console
 if TYPE_CHECKING:
     from infrastructure.turn_host.turn_runner import TurnRunner
 
+from core.agent_harness.spi.cancel import HostCancelReason, turn_cancel_reason
 from core.llm.shared.llm_retry import OpenSRECreditsExhaustedError
 from infrastructure.analytics.usage_context import UsageSurface, bound_usage_context
 from infrastructure.observability.trace.spans import (
@@ -180,7 +181,7 @@ def _streaming_console(
 
 async def run_agent_turn(runtime: AgentTurnResources, text: str) -> None:
     """Set up shell presentation for one turn and drive its lifecycle."""
-    dispatch_cancel = threading.Event()
+    dispatch_cancel = runtime.state.ensure_current_cancel_event()
     console = _streaming_console(runtime, dispatch_cancel)
     emit = ConsoleAgentEventSink(
         session=runtime.session,
@@ -334,6 +335,7 @@ async def run_agent_turn_queue(
     *,
     state: ReplState,
     run_turn: Callable[[str], Coroutine[Any, Any, None]],
+    on_goal_pause: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Consume queued turns and run each one until exit."""
     while not state.exit_requested:
@@ -347,6 +349,7 @@ async def run_agent_turn_queue(
 
         turn_task = asyncio.create_task(run_turn(text))
         state.attach_turn_task(turn_task)
+        turn_cancel = state.current_cancel_event
         try:
             await turn_task
         except asyncio.CancelledError:
@@ -354,8 +357,24 @@ async def run_agent_turn_queue(
         except Exception as exc:
             _logger.debug("Queued turn task ended with exception: %s", exc)
         finally:
-            state.clear_current_task()
-            state.queue.task_done()
+            pause_cancel = None
+            try:
+                current_cancel = state.current_cancel_event
+                pause_cancel = next(
+                    (
+                        cancel
+                        for cancel in (turn_cancel, current_cancel)
+                        if turn_cancel_reason(cancel) is HostCancelReason.GOAL_PAUSE
+                    ),
+                    None,
+                )
+                if pause_cancel is not None and on_goal_pause is not None:
+                    await on_goal_pause()
+            finally:
+                if state.exit_requested and pause_cancel is not None:
+                    state.attach_cancel_event(pause_cancel)
+                state.clear_current_task()
+                state.queue.task_done()
 
 
 __all__ = [

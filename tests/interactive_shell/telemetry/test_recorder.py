@@ -4,6 +4,8 @@ from pathlib import Path
 
 from config.prompt_log import PromptLogConfig
 from core.agent_harness.accounting.token_accounting import LlmRunInfo
+from core.agent_harness.session.pending_choice import AskUserQuestion, PendingUserChoice
+from infrastructure.analytics.prompt_log.lifecycle import record_prompt_turn, recorded_prompt_text
 from infrastructure.analytics.prompt_log.recorder import PromptRecorder
 from surfaces.interactive_shell.session import Session
 from surfaces.interactive_shell.telemetry import integration_snapshot
@@ -138,7 +140,8 @@ def test_prompt_recorder_sends_ai_generation(monkeypatch, tmp_path: Path) -> Non
     recorder.flush()
     assert captured
     assert captured[0]["$ai_model"] == "gpt-test"
-    assert captured[0]["$ai_input_tokens"] == 0
+    assert "$ai_input_tokens" not in captured[0]
+    assert captured[0]["token_usage_status"] == "unavailable"
     assert captured[0]["connected_integrations"] == []
     assert captured[0]["connected_integrations_count"] == 0
     assert captured[0]["configured_integrations"] == []
@@ -229,10 +232,11 @@ def test_prompt_recorder_still_captures_when_tool_resolution_fails(
     assert captured
     assert captured[0]["$ai_model"] == "gpt-test"
     assert captured[0]["configured_integrations"] == ["datadog"]
-    assert captured[0]["connected_integrations"] == []
+    assert "connected_integrations" not in captured[0]
+    assert captured[0]["integration_snapshot_status"] == "partial"
 
 
-def test_prompt_recorder_uses_no_conversational_agent_without_llm_run(
+def test_prompt_recorder_uses_no_conversational_agent_for_explicit_static_dispatch(
     monkeypatch, tmp_path: Path
 ) -> None:
     captured: list[dict[str, object]] = []
@@ -264,6 +268,7 @@ def test_prompt_recorder_uses_no_conversational_agent_without_llm_run(
     assert recorder is not None
     recorder.set_properties(integration_snapshot.build_turn_integration_snapshot(session))
     recorder.set_response("slash /help (succeeded)")
+    recorder.set_llm_attempted(False)
     recorder.flush()
     assert captured[0]["$ai_model"] == "no_conversational_agent"
     assert captured[0]["$ai_provider"] == "no_conversational_agent"
@@ -336,10 +341,9 @@ def test_prompt_recorder_set_error_adds_structured_properties(monkeypatch, tmp_p
     assert captured[0]["$ai_is_error"] is True
     assert captured[0]["$ai_error"] == "ANTHROPIC_API_KEY not set"
     assert captured[0]["error_kind"] == "config"
-    # Investigation-style errors are terminal-path failures, not conversational
-    # LLM provider failures: no ai_error_kind and the sentinel model stays.
+    # A generic config error alone says nothing about whether an LLM was used.
     assert "ai_error_kind" not in captured[0]
-    assert captured[0]["$ai_model"] == "no_conversational_agent"
+    assert captured[0]["$ai_model"] == "unknown"
 
 
 def test_prompt_recorder_omits_error_properties_by_default(monkeypatch, tmp_path: Path) -> None:
@@ -369,7 +373,7 @@ def test_prompt_recorder_omits_error_properties_by_default(monkeypatch, tmp_path
     recorder.set_properties(integration_snapshot.build_turn_integration_snapshot(session))
     recorder.set_response("world")
     recorder.flush()
-    assert "$ai_is_error" not in captured[0]
+    assert captured[0]["$ai_is_error"] is False
     assert "$ai_error" not in captured[0]
     assert "error_kind" not in captured[0]
 
@@ -463,6 +467,7 @@ def test_prompt_recorder_terminal_error_kinds_keep_terminal_sentinel(
     captured: list[dict[str, object]] = []
     recorder = _posthog_recorder(monkeypatch, tmp_path, text="hi", captured=captured)
     recorder.set_error("timeout", "command timed out after 60 seconds")
+    recorder.set_llm_attempted(False)
     recorder.set_response("command timed out after 60 seconds")
     recorder.flush()
     assert captured[0]["$ai_model"] == "no_conversational_agent"
@@ -510,3 +515,61 @@ def test_prompt_recorder_uses_only_latest_slash_outcome(monkeypatch, tmp_path: P
     recorder.set_response("github and datadog")
     recorder.flush()
     assert "slash_outcome" not in captured[0]
+
+
+def test_choose_turn_is_named_by_the_queued_question() -> None:
+    session = Session()
+    session.pending_user_choice = PendingUserChoice(
+        title="Which demo would you like me to run?",
+        options=("Explore a repo", "Skip the demo"),
+    )
+    assert recorded_prompt_text("/choose", session) == "Which demo would you like me to run?"
+    assert recorded_prompt_text("  /choose  ", session) == "Which demo would you like me to run?"
+    batched = Session()
+    batched.pending_user_choice = PendingUserChoice(
+        title="Ask User",
+        options=(),
+        questions=(
+            AskUserQuestion(label="Demo", title="Which demo?", options=("One", "Two")),
+            AskUserQuestion(label="Repo", title="Which repository?", options=("acme/one",)),
+        ),
+    )
+    assert recorded_prompt_text("/choose now", batched) == "Which demo?\nWhich repository?"
+
+
+def test_choose_without_a_queued_question_stays_the_command() -> None:
+    session = Session()
+    assert recorded_prompt_text("/choose", session) == "/choose"
+    assert recorded_prompt_text("/help", session) == "/help"
+    session.pending_user_choice = PendingUserChoice(title="   ", options=("Yes", "No"))
+    assert recorded_prompt_text("/choose", session) == "/choose"
+
+
+def test_choose_turn_sends_the_question_as_the_prompt(monkeypatch, tmp_path: Path) -> None:
+    captured: list[dict[str, object]] = []
+    cfg = PromptLogConfig(
+        enabled=True,
+        local_enabled=False,
+        posthog_enabled=True,
+        redact=False,
+        max_chars=1000,
+        log_path=tmp_path / "prompt_log.jsonl",
+    )
+    monkeypatch.setattr(
+        "infrastructure.analytics.prompt_log.recorder.PromptLogConfig.load", lambda: cfg
+    )
+    monkeypatch.setattr(
+        "infrastructure.analytics.prompt_log.recorder.capture_ai_generation",
+        lambda payload: captured.append(payload),
+    )
+    session = Session()
+    session.pending_user_choice = PendingUserChoice(
+        title="Which demo would you like me to run?",
+        options=("Explore a repo", "Skip the demo"),
+    )
+    with record_prompt_turn("/choose", session, surface="interactive_shell") as recorder:
+        assert recorder is not None
+        recorder.set_response("slash /choose (succeeded)")
+    assert captured[0]["$ai_input"] == [
+        {"role": "user", "content": "Which demo would you like me to run?"}
+    ]

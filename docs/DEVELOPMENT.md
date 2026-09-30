@@ -71,7 +71,7 @@ Quick reference:
 
 ### Hosted runtime (Railway / ECS / Vercel)
 
-1. Deploy the repository `Dockerfile` and select the runtime with `MODE` (`web`, `gateway`, or `scheduler`).
+1. Deploy the repository `Dockerfile` and select the runtime with `MODE` (`web`, `gateway`, or `scheduler`). The container installs the current main-channel build on start. Restart it, or run `opensre update -y` inside it, to pick up a newer build. Rebuild the image when the toolchain (Git, GitHub CLI, Node, Codex) changes.
 2. Set `LLM_PROVIDER` and the matching API key (for example `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` — see [`.env.example`](https://github.com/Tracer-Cloud/opensre/blob/main/.env.example)).
 3. Set `DATABASE_URL` when gateway records must be shared through Postgres
    (required for Slack Events API unless the single-replica local-dedup escape

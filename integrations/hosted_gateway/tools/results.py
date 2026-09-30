@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from config.constants.capabilities import HOSTED_GATEWAY_CAPABILITY
+from core.agent_harness.tools import capability_available_from_sources
 from core.tool import report_run_error
 from integrations.hosted_gateway.client import (
     ERR_ADMIN_REQUIRED,
@@ -21,6 +23,11 @@ from integrations.hosted_gateway.client import (
 )
 
 SOURCE = "opensre"
+
+
+def hosted_gateway_available(sources: dict[str, dict[str, Any]]) -> bool:
+    return capability_available_from_sources(sources, HOSTED_GATEWAY_CAPABILITY)
+
 
 _SIGN_IN = "opensre account login"
 _FAILURE_TEXT = {
@@ -88,4 +95,12 @@ def gateway_name(health: GatewayHealth) -> str:
     return f" {health.gateway_id}" if health.gateway_id else ""
 
 
-__all__ = ["SOURCE", "STATE_OUTPUTS", "failure_output", "gateway_name", "state_output"]
+__all__ = [
+    "HOSTED_GATEWAY_CAPABILITY",
+    "SOURCE",
+    "STATE_OUTPUTS",
+    "failure_output",
+    "gateway_name",
+    "hosted_gateway_available",
+    "state_output",
+]

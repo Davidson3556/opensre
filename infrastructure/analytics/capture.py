@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Final, cast
+from uuid import uuid4
 
 from infrastructure.analytics.event_properties import (
     _bounded_redacted_text,
@@ -12,8 +13,13 @@ from infrastructure.analytics.event_properties import (
     _integration_lifecycle_properties,
     _onboard_completed_properties,
 )
-from infrastructure.analytics.events import Event
-from infrastructure.analytics.provider import JsonValue, Properties, get_analytics
+from infrastructure.analytics.events import Event, cli_command_event_name
+from infrastructure.analytics.provider import (
+    JsonValue,
+    Properties,
+    analytics_opted_out,
+    get_analytics,
+)
 from infrastructure.observability.errors.sentry import capture_exception
 
 _ASK_USER_LABEL_MAX_CHARS: Final[int] = 80
@@ -73,7 +79,9 @@ def _capture(event: Event, properties: Properties | None = None) -> None:
         capture_exception(exc)
 
 
-def capture_cli_invoked(properties: Properties | None = None) -> None:
+def capture_cli_invoked(
+    properties: Properties | None = None, command_parts: Sequence[str] = ()
+) -> None:
     # Whole-process default for local CLI; gateway binds surface per turn instead.
     try:
         from infrastructure.analytics.usage_context import UsageSurface, ensure_process_session_id
@@ -81,7 +89,7 @@ def capture_cli_invoked(properties: Properties | None = None) -> None:
         analytics = get_analytics()
         analytics.set_persistent_property("surface", UsageSurface.CLI)
         ensure_process_session_id()
-        analytics.capture(Event.CLI_INVOKED, properties)
+        analytics.capture(cli_command_event_name(command_parts), properties)
     except Exception as exc:
         capture_exception(exc)
 
@@ -245,15 +253,18 @@ def capture_terminal_actions_executed(
     executed_count: int,
     executed_success_count: int,
 ) -> None:
-    success_percent = 100.0 * executed_success_count / executed_count if executed_count > 0 else 0.0
+    properties: Properties = {
+        "planned_count": planned_count,
+        "executed_count": executed_count,
+        "executed_success_count": executed_success_count,
+    }
+    if executed_count > 0:
+        properties["success_rate_bucket"] = _bucket_percentage(
+            100.0 * executed_success_count / executed_count
+        )
     _capture(
         Event.TERMINAL_ACTIONS_EXECUTED,
-        {
-            "planned_count": planned_count,
-            "executed_count": executed_count,
-            "executed_success_count": executed_success_count,
-            "success_rate_bucket": _bucket_percentage(success_percent),
-        },
+        properties,
     )
 
 
@@ -298,7 +309,7 @@ def capture_terminal_turn_summarized(
     fallback_to_llm: bool,
     session_turn_index: int,
     session_fallback_count: int,
-    session_action_success_percent: float,
+    session_action_success_percent: float | None,
     session_fallback_rate_percent: float,
 ) -> None:
     _capture(
@@ -310,7 +321,15 @@ def capture_terminal_turn_summarized(
             "fallback_to_llm": fallback_to_llm,
             "session_turn_index": session_turn_index,
             "session_fallback_count": session_fallback_count,
-            "session_action_success_bucket": _bucket_percentage(session_action_success_percent),
+            **(
+                {
+                    "session_action_success_bucket": _bucket_percentage(
+                        session_action_success_percent
+                    )
+                }
+                if session_action_success_percent is not None
+                else {}
+            ),
             "session_fallback_rate_bucket": _bucket_percentage(session_fallback_rate_percent),
         },
     )
@@ -470,9 +489,23 @@ def capture_interactive_shell_rendered(*, entrypoint: str) -> None:
     _capture(Event.INTERACTIVE_SHELL_RENDERED, {"entrypoint": entrypoint})
 
 
-def capture_browser_open_requested(*, target: str, opened: bool) -> None:
+def begin_cli_auth_attempt() -> str | None:
+    """Record a non-secret browser handoff even when the URL will be opened manually."""
+    if analytics_opted_out():
+        return None
+    attempt_id = str(uuid4())
+    _capture(Event.CLI_AUTH_STARTED, {"cli_auth_attempt_id": attempt_id})
+    return attempt_id
+
+
+def capture_browser_open_requested(
+    *, target: str, opened: bool, cli_auth_attempt_id: str | None = None
+) -> None:
     """Record an application-requested browser open without retaining its URL."""
-    _capture(Event.BROWSER_OPEN_REQUESTED, {"target": target, "opened": opened})
+    properties: Properties = {"target": target, "opened": opened}
+    if cli_auth_attempt_id:
+        properties["cli_auth_attempt_id"] = cli_auth_attempt_id
+    _capture(Event.BROWSER_OPEN_REQUESTED, properties)
 
 
 def capture_skill_executed(*, skill_name: str, entrypoint: str) -> None:
@@ -516,6 +549,89 @@ def capture_agent_secret_detected(
     blocked: bool,
 ) -> None:
     _capture(
-        Event.AGENT_SECRET_DETECTED,
+        Event.AGENT_EXPOSURE_DETECTED,
         {"rule_names": ",".join(rule_names), "count": count, "blocked": blocked},
     )
+
+
+def capture_hosted_gateway_task_submitted(prompt_id: str) -> None:
+    """A new prompt was accepted by the managed gateway; polls do not emit this."""
+    _capture(Event.HOSTED_GATEWAY_TASK_SUBMITTED, {"prompt_id": prompt_id})
+
+
+def capture_hosted_gateway_started(
+    *, gateway_id: str, actual_state: str, already_running: bool
+) -> None:
+    """The app accepted a start of the organization's hosted gateway; it may still be coming up."""
+    _capture(
+        Event.HOSTED_GATEWAY_STARTED,
+        {
+            "gateway_id": gateway_id,
+            "actual_state": actual_state,
+            "already_running": already_running,
+        },
+    )
+
+
+def capture_hosted_gateway_healthy(*, gateway_id: str, tool_name: str) -> None:
+    """A health read found the organization's hosted gateway running with nothing pending."""
+    _capture(Event.HOSTED_GATEWAY_HEALTHY, {"gateway_id": gateway_id, "tool_name": tool_name})
+
+
+def _ci_repair_properties(
+    repair_run_id: str, repository: str, pr_number: int, demo: bool
+) -> Properties:
+    # ``repair_run_id`` joins the repair's events across the shell, gateway, and worker.
+    properties: Properties = {
+        "repair_run_id": repair_run_id,
+        "repository": repository,
+        "demo": demo,
+    }
+    if pr_number:
+        properties["pr_number"] = pr_number
+    return properties
+
+
+def capture_remote_ci_monitoring_started(
+    *, repair_run_id: str, repository: str, pr_number: int, demo: bool
+) -> None:
+    """A gateway's own scheduler registered a CI repair loop, so it runs without the shell."""
+    _capture(
+        Event.REMOTE_CI_MONITORING_STARTED,
+        _ci_repair_properties(repair_run_id, repository, pr_number, demo),
+    )
+
+
+def capture_test_ci_failure_triggered(
+    *, repair_run_id: str, repository: str, pr_number: int, demo: bool, remote: bool
+) -> None:
+    """The repair demo opened its pull request with a failing test; ``remote`` names the host."""
+    properties = _ci_repair_properties(repair_run_id, repository, pr_number, demo)
+    properties["remote"] = remote
+    _capture(Event.TEST_CI_FAILURE_TRIGGERED, properties)
+
+
+def capture_remote_ci_failure_detected(
+    *, repair_run_id: str, repository: str, pr_number: int, demo: bool
+) -> None:
+    """A remote repair loop saw its pull request fail CI and started its first repair attempt."""
+    _capture(
+        Event.REMOTE_CI_FAILURE_DETECTED,
+        _ci_repair_properties(repair_run_id, repository, pr_number, demo),
+    )
+
+
+def capture_remote_ci_repair_succeeded(
+    *,
+    repair_run_id: str,
+    repository: str,
+    pr_number: int,
+    demo: bool,
+    attempts: int,
+    duration_ms: float,
+) -> None:
+    """A remote repair loop's own commit passed CI; ``duration_ms`` counts from scheduling."""
+    properties = _ci_repair_properties(repair_run_id, repository, pr_number, demo)
+    properties["attempts"] = attempts
+    properties["duration_ms"] = round(duration_ms)
+    _capture(Event.REMOTE_CI_REPAIR_SUCCEEDED, properties)

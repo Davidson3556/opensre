@@ -29,8 +29,8 @@ from infrastructure.text.markdown import tighten_markdown_emphasis
 from infrastructure.text.truncation import truncate
 from infrastructure.turn_host.status_messages import (
     EMPTY_RESPONSE_MESSAGE,
+    chat_status_headline,
     initial_status_message,
-    normalize_gateway_status,
     status_from_response_label,
     user_facing_error_message,
 )
@@ -135,11 +135,12 @@ class SlackTurnOutput:
         self._finalize(answer or EMPTY_RESPONSE_MESSAGE)
 
     def _set_status(self, status: str) -> None:
-        status = normalize_gateway_status(status)
+        # A Slack task title is the label row. The argument row stays on the shell.
+        headline = chat_status_headline(status)
         with self._lock:
-            if self._turn_stream.note_task(status):
+            if self._turn_stream.note_task(headline):
                 return
-        self._edit_preview(_as_status_line(status))
+        self._edit_preview(_as_status_line(headline))
 
     def _drop_placeholder(self) -> None:
         """The streamed message replaces the placeholder — remove it."""

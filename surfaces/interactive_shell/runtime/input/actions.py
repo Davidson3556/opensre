@@ -22,6 +22,11 @@ QUEUE_DURING_CONFIRMATION_WARNING = (
 )
 
 
+def _is_goal_pause_control(text: str) -> bool:
+    """Return whether ``text`` is the exact literal ``/goal pause`` control."""
+    return text.lower().split() == ["/goal", "pause"]
+
+
 @dataclass(frozen=True)
 class ShellInputSnapshot:
     exit_requested: bool
@@ -45,6 +50,11 @@ class CancelTurn:
 
 
 @dataclass(frozen=True)
+class PauseGoal:
+    submitted_text: str
+
+
+@dataclass(frozen=True)
 class DeliverConfirmation:
     text: str
 
@@ -56,7 +66,7 @@ class SubmitTurn:
     warning: str | None = None
 
 
-InputAction = IgnoreInput | CloseShell | CancelTurn | DeliverConfirmation | SubmitTurn
+InputAction = IgnoreInput | CloseShell | CancelTurn | PauseGoal | DeliverConfirmation | SubmitTurn
 
 
 def decide_input_action(
@@ -84,6 +94,9 @@ def decide_input_action(
             if snapshot.dispatch_running and looks_like_cancel_request(stripped):
                 return CancelTurn(submitted_text=stripped)
 
+            if snapshot.dispatch_running and _is_goal_pause_control(stripped):
+                return PauseGoal(submitted_text=stripped)
+
             if snapshot.awaiting_confirmation:
                 if looks_like_confirmation_answer(stripped):
                     return DeliverConfirmation(text=stripped)
@@ -105,6 +118,7 @@ __all__ = [
     "DeliverConfirmation",
     "IgnoreInput",
     "InputAction",
+    "PauseGoal",
     "QUEUE_DURING_CONFIRMATION_WARNING",
     "ShellInputSnapshot",
     "SubmitTurn",

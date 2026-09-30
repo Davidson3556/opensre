@@ -941,3 +941,36 @@ def test_command_tools_suppress_the_static_action_header() -> None:
         assert "Execute" not in out
         assert "opensre" not in out
         assert cmd not in out  # header suppressed; the $cmd line comes from the presenter
+
+
+def test_a_tools_progress_update_is_drawn_as_a_dim_line() -> None:
+    # Arrange
+    observer, buffer = _observer_with_buffer()
+
+    # Act
+    observer("tool_update", {"name": "ask_hosted_gateway", "update": {"progress": "Reading runs…"}})
+    observer("tool_update", {"name": "other", "update": {"partial": 3}})
+
+    # Assert: only a progress text is drawn, once
+    output = buffer.getvalue()
+    assert "↳ Reading runs…" in output and output.count("↳") == 1
+
+
+def test_a_gateway_progress_update_keeps_three_rows() -> None:
+    """The command on a later row is printed whole, not cut to an ellipsis."""
+    observer, buffer = _observer_with_buffer()
+    command = "rg -n -C 3 'GET /repos/davincios/opensre-onboarding-ci-repair-demo'"
+    progress = "\n".join(
+        [
+            "on the gateway: ⏳ Run a local shell command on this machine…",
+            f"({command})",
+            "(operating-github-ci-repairs)",
+        ]
+    )
+
+    observer("tool_update", {"name": "ask_hosted_gateway", "update": {"progress": progress}})
+
+    output = buffer.getvalue()
+    assert command in output
+    assert "opensre-onbo…" not in output
+    assert output.count("↳") == 1

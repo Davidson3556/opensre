@@ -27,6 +27,7 @@ from infrastructure.observability.trace.redaction import redact_sensitive
 from infrastructure.safety.terminal_output import strip_terminal_controls
 from infrastructure.terminal.theme import (
     BOLD_SKILL,
+    DIM,
     ERROR,
     TEXT,
 )
@@ -42,6 +43,7 @@ from surfaces.interactive_shell.ui.transcript import (
     transcript_line,
     transcript_prefix,
 )
+from surfaces.shared.terminal.components.rendering import print_repl_renderable
 from surfaces.shared.terminal.output.console_state import get_turn_spinner
 from tools.interactive_shell.action_names import ActionToolName
 from tools.interactive_shell.shell.display import format_shell_command_for_display
@@ -415,6 +417,7 @@ class ActionRenderObserver:
                     update=data.get("update"),
                     tool_call_id=str(data.get("id") or "") or None,
                 )
+            self._render_progress_update(data.get("update"))
             return
         if kind == "tool_end":
             # Discriminate by how the start registered the call: skill entries
@@ -512,6 +515,25 @@ class ActionRenderObserver:
     def _has_active_action(self) -> bool:
         spinner = get_turn_spinner()
         return bool(spinner is not None and spinner.active_action)
+
+    def _render_progress_update(self, update: Any) -> None:
+        """Draw a tool's progress. A gateway status may use three rows and is not cut."""
+        if not isinstance(update, dict):
+            return
+        progress = update.get("progress")
+        if not isinstance(progress, str) or not progress.strip():
+            return
+        text = strip_terminal_controls(progress, keep_whitespace=True).strip()
+        rows = [row for row in text.splitlines() if row.strip()]
+        if not rows:
+            return
+        line = Text()
+        for index, row in enumerate(rows):
+            if index:
+                line.append("\n")
+            line.append("  ↳ " if index == 0 else "    ", style=str(DIM))
+            line.append(row, style=str(DIM))
+        print_repl_renderable(self.console, line)
 
     def _render_intermediate_message(self, data: dict[str, Any]) -> None:
         """Render the model's commentary preceding this iteration's tool calls.
