@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
 
 from config.constants import GH_TOKEN_ENV, GITHUB_MCP_AUTH_TOKEN_ENV, GITHUB_TOKEN_ENV
 from config.llm_credentials import resolve_env_credential
@@ -12,7 +11,7 @@ from integrations.github.helpers import github_creds
 
 
 def configured_token(explicit: str | None = None, *, connection_id: str | None = None) -> str:
-    """Prefer injected credentials, then the effective integration and env fallback."""
+    """Re-resolve a selection exactly; otherwise use normal credential precedence."""
     token = effective_github_token(explicit, connection_id=connection_id)
     if token:
         return token
@@ -24,16 +23,16 @@ def configured_token(explicit: str | None = None, *, connection_id: str | None =
 def effective_github_token(explicit: str | None = None, *, connection_id: str | None = None) -> str:
     """Resolve a GitHub token from any configured source; ``""`` when absent.
 
-    An explicit connection is resolved exactly and never falls back to another
-    stored connection or environment credential.
+    A selected connection is resolved exactly and never falls back to the
+    injected token, another stored connection, or an environment credential.
     """
+    if connection_id:
+        return _selected_github_token(connection_id)
     if explicit:
         return explicit
-    token = stored_github_token(connection_id)
+    token = stored_github_token()
     if token:
         return token
-    if connection_id:
-        return ""
     for name in (GITHUB_MCP_AUTH_TOKEN_ENV, GITHUB_TOKEN_ENV, GH_TOKEN_ENV):
         token = resolve_env_credential(name)
         if token:
@@ -41,37 +40,26 @@ def effective_github_token(explicit: str | None = None, *, connection_id: str | 
     return ""
 
 
-def _selected_connection_config(github: Mapping[str, object], connection_id: str) -> dict[str, Any]:
-    """Return one exact available connection config, or an empty mapping."""
-    instances = github.get("instances")
-    if isinstance(instances, list):
-        matches = [
-            instance
-            for instance in instances
-            if isinstance(instance, dict)
-            and str(instance.get("connection_id") or instance.get("integration_id") or "")
-            == connection_id
-        ]
-        if len(matches) != 1 or matches[0].get("available") is False:
-            return {}
-        config = matches[0].get("config")
-        return dict(config) if isinstance(config, dict) else {}
+def _selected_github_token(connection_id: str) -> str:
+    """Resolve one selected grant through the same source precedence as the host."""
+    from infrastructure.harness_providers import resolve_integrations
 
-    config = github.get("config")
-    if not isinstance(config, dict):
-        return {}
-    configured_id = str(config.get("connection_id") or config.get("integration_id") or "")
-    return dict(config) if configured_id == connection_id else {}
+    github = resolve_integrations({"github_connection_id": connection_id}).get("github")
+    if not isinstance(github, Mapping):
+        return ""
+    if github.get("connection_selection_error"):
+        return ""
+    if str(github.get("connection_id") or "") != connection_id:
+        return ""
+    creds = github_creds(dict(github))
+    return str(creds.get("github_token") or "")
 
 
-def stored_github_token(connection_id: str | None = None) -> str:
+def stored_github_token() -> str:
     """Token of the effective GitHub integration; its entry wraps the classified config."""
     github = resolve_effective_integrations().get("github", {})
-    if connection_id:
-        config = _selected_connection_config(github, connection_id)
-    else:
-        candidate = github.get("config")
-        config = candidate if isinstance(candidate, dict) else {}
+    candidate = github.get("config")
+    config = candidate if isinstance(candidate, dict) else {}
     if not config:
         return ""
     creds = github_creds(config)
