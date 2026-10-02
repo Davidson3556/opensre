@@ -6,6 +6,7 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 import yaml
@@ -27,7 +28,9 @@ def _load_benchmark_module() -> ModuleType:
 
 _benchmark = _load_benchmark_module()
 Measurement = _benchmark.Measurement
+BinaryTarget = _benchmark.BinaryTarget
 comparison_for = _benchmark.comparison_for
+measure_targets = _benchmark.measure_targets
 nearest_rank_percentile = _benchmark.nearest_rank_percentile
 render_markdown = _benchmark.render_markdown
 summarize_measurements = _benchmark.summarize_measurements
@@ -68,6 +71,65 @@ def test_summary_keeps_first_launch_separate_from_warm_distribution() -> None:
     }
     assert summary["onedir"]["warm_median_ms"] == 7.0
     assert comparison == {"onedir_saved_ms": 30.0, "onedir_speedup": 5.286}
+
+
+def test_measure_targets_balances_order_and_isolates_homes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    targets = [
+        BinaryTarget("onefile", tmp_path / "onefile.exe"),
+        BinaryTarget("onedir", tmp_path / "onedir.exe"),
+    ]
+    for target in targets:
+        target.path.touch()
+    calls: list[tuple[str, Path]] = []
+
+    def _record_run(target: Any, *, home: Path, timeout_seconds: float) -> float:
+        assert timeout_seconds == 120
+        calls.append((target.mode, home))
+        return float(len(calls))
+
+    monkeypatch.setattr(_benchmark, "_run_once", _record_run)
+
+    measurements = measure_targets(
+        targets,
+        warm_runs=20,
+        timeout_seconds=120,
+        home_root=tmp_path / "homes",
+    )
+
+    assert [measurement.mode for measurement in measurements[:2]] == ["onefile", "onedir"]
+    assert [measurement.mode for measurement in measurements[2:]] == [
+        "onefile",
+        "onedir",
+        "onedir",
+        "onefile",
+    ] * 10
+    assert dict(calls) == {
+        "onefile": tmp_path / "homes" / "onefile",
+        "onedir": tmp_path / "homes" / "onedir",
+    }
+
+
+@pytest.mark.parametrize(
+    ("warm_runs", "message"),
+    [(18, "at least 20"), (21, "must be even")],
+)
+def test_measure_targets_rejects_unrepresentative_sample_counts(
+    warm_runs: int,
+    message: str,
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "opensre.exe"
+    binary.touch()
+    with pytest.raises(ValueError, match=message):
+        measure_targets(
+            [BinaryTarget("onefile", binary)],
+            warm_runs=warm_runs,
+            timeout_seconds=120,
+            home_root=tmp_path / "homes",
+        )
 
 
 def test_markdown_does_not_overstate_the_measurement() -> None:
@@ -131,8 +193,12 @@ def test_workflow_builds_both_modes_on_one_windows_runner_without_a_timing_gate(
     assert set(workflow["on"]) == {"pull_request", "workflow_dispatch"}
     assert benchmark["runs-on"] == "windows-latest"
     assert "OPENSRE_PYINSTALLER_MODE = $mode" in raw
-    assert '"onefile=benchmark-dist\\onefile\\opensre.exe"' in raw
-    assert '"onedir=benchmark-dist\\onedir\\opensre\\opensre.exe"' in raw
+    assert 'default: "20"' in raw
+    assert 'Join-Path $env:RUNNER_TEMP "opensre-startup-binaries"' in raw
+    assert '--binary "onefile=$onefileBinary"' in raw
+    assert '--binary "onedir=$onedirBinary"' in raw
+    assert "$onefileVersion -ne $onedirVersion" in raw
+    assert "if: always()" not in raw
     assert "continue-on-error" not in raw
     assert "threshold" not in raw.lower()
     assert "actions/upload-artifact@v4" in raw

@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       warm_runs:
-        description: Warm samples per packaging mode
+        description: Even number of warm samples per packaging mode (minimum 20)
         required: false
-        default: "5"
+        default: "20"
         type: string
   pull_request:
     paths:
@@ -59,11 +59,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $distRoot = Join-Path $env:RUNNER_TEMP "opensre-startup-binaries"
+          $buildRoot = Join-Path $env:RUNNER_TEMP "opensre-startup-build"
           foreach ($mode in @("onefile", "onedir")) {
             $env:OPENSRE_PYINSTALLER_MODE = $mode
+            $distPath = Join-Path $distRoot $mode
+            $workPath = Join-Path $buildRoot $mode
             uv run pyinstaller opensre.spec --clean --noconfirm `
-              --distpath "benchmark-dist\$mode" `
-              --workpath "benchmark-build\$mode"
+              --distpath $distPath `
+              --workpath $workPath
             if ($LASTEXITCODE -ne 0) {
               throw "PyInstaller $mode build failed with exit code $LASTEXITCODE."
             }
@@ -72,12 +76,15 @@ jobs:
       - name: Measure isolated process launches
         shell: pwsh
         env:
-          WARM_RUNS: ${{ inputs.warm_runs || '5' }}
+          WARM_RUNS: ${{ inputs.warm_runs || '20' }}
         run: |
           $ErrorActionPreference = "Stop"
+          $binaryRoot = Join-Path $env:RUNNER_TEMP "opensre-startup-binaries"
+          $onefileBinary = Join-Path $binaryRoot "onefile\opensre.exe"
+          $onedirBinary = Join-Path $binaryRoot "onedir\opensre\opensre.exe"
           uv run python .github/scripts/windows_startup_benchmark.py `
-            --binary "onefile=benchmark-dist\onefile\opensre.exe" `
-            --binary "onedir=benchmark-dist\onedir\opensre\opensre.exe" `
+            --binary "onefile=$onefileBinary" `
+            --binary "onedir=$onedirBinary" `
             --warm-runs $env:WARM_RUNS `
             --home-root "$env:RUNNER_TEMP\opensre-startup-homes" `
             --output-json benchmark-results\windows-startup.json `
@@ -90,21 +97,42 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $binaries = @(
-            "benchmark-dist\onefile\opensre.exe",
-            "benchmark-dist\onedir\opensre\opensre.exe"
-          )
-          foreach ($binary in $binaries) {
-            & $binary --version
-            if ($LASTEXITCODE -ne 0) { throw "$binary --version failed." }
-            & $binary -h | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "$binary -h failed." }
-            & $binary _package-smoke
-            if ($LASTEXITCODE -ne 0) { throw "$binary _package-smoke failed." }
+          $binaryRoot = Join-Path $env:RUNNER_TEMP "opensre-startup-binaries"
+          $binaries = [ordered]@{
+            onefile = Join-Path $binaryRoot "onefile\opensre.exe"
+            onedir = Join-Path $binaryRoot "onedir\opensre\opensre.exe"
+          }
+          $versions = @{}
+          $env:OPENSRE_HOME = Join-Path $env:RUNNER_TEMP "opensre-startup-smoke-home"
+          New-Item -ItemType Directory -Force -Path $env:OPENSRE_HOME | Out-Null
+
+          Push-Location $env:RUNNER_TEMP
+          try {
+            foreach ($mode in $binaries.Keys) {
+              $binary = $binaries[$mode]
+              $versionLines = & $binary --version
+              if ($LASTEXITCODE -ne 0) { throw "$mode --version failed." }
+              $versions[$mode] = ($versionLines -join "`n").Trim()
+              if ([string]::IsNullOrWhiteSpace($versions[$mode])) {
+                throw "$mode --version returned no version."
+              }
+              & $binary -h | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "$mode -h failed." }
+              & $binary _package-smoke
+              if ($LASTEXITCODE -ne 0) { throw "$mode _package-smoke failed." }
+            }
+          } finally {
+            Pop-Location
           }
 
+          $onefileVersion = $versions["onefile"]
+          $onedirVersion = $versions["onedir"]
+          if ($onefileVersion -ne $onedirVersion) {
+            throw "Frozen layouts report different versions: onefile='$onefileVersion', onedir='$onedirVersion'."
+          }
+          Write-Host "Both frozen layouts report version $onefileVersion."
+
       - name: Publish benchmark summary
-        if: always()
         shell: pwsh
         run: |
           if (Test-Path -LiteralPath "benchmark-results\windows-startup.md") {
@@ -113,7 +141,6 @@ jobs:
           }
 
       - name: Upload raw benchmark results
-        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-startup-${{ github.run_id }}

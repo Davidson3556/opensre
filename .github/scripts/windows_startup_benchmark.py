@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 _STARTUP_ARGS = ("--skip-onboarding", "--no-interactive")
+_MIN_WARM_RUNS = 20
 _BENCHMARK_ENV = {
     "DO_NOT_TRACK": "1",
     "NO_COLOR": "1",
@@ -156,8 +157,10 @@ def measure_targets(
     """Measure one first launch and interleaved warm launches for each target."""
     if not targets:
         raise ValueError("at least one binary target is required")
-    if warm_runs < 1:
-        raise ValueError("warm_runs must be at least 1")
+    if warm_runs < _MIN_WARM_RUNS:
+        raise ValueError(f"warm_runs must be at least {_MIN_WARM_RUNS}")
+    if warm_runs % 2:
+        raise ValueError("warm_runs must be even so launch order is balanced")
 
     seen_modes: set[str] = set()
     homes: dict[str, Path] = {}
@@ -309,7 +312,7 @@ def _parse_args() -> argparse.Namespace:
         dest="targets",
         help="Frozen executable as MODE=PATH; repeat for each packaging mode",
     )
-    parser.add_argument("--warm-runs", type=int, default=5)
+    parser.add_argument("--warm-runs", type=int, default=_MIN_WARM_RUNS)
     parser.add_argument("--timeout-seconds", type=float, default=120)
     parser.add_argument("--home-root", type=Path, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
