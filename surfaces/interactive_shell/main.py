@@ -170,14 +170,58 @@ async def run_repl_async(
         _close_repl_session(session, runtime_context.state)
 
 
+class _LaunchBannerHandle:
+    """Stop the launch animation exactly once, with or without painting the banner."""
+
+    def __init__(
+        self,
+        *,
+        console: Console,
+        stop: threading.Event,
+        spinner: threading.Thread,
+        on_painted: Callable[[], None] | None,
+    ) -> None:
+        self._console = console
+        self._stop = stop
+        self._spinner = spinner
+        self._on_painted = on_painted
+        self._settled = False
+        self._settle_lock = threading.Lock()
+
+    def _settle(self) -> bool:
+        with self._settle_lock:
+            if self._settled:
+                return False
+            self._settled = True
+            self._stop.set()
+            self._spinner.join()
+            return True
+
+    def __call__(self) -> None:
+        """Stop the animation and replace it with the static shell banner."""
+        if not self._settle():
+            return
+
+        from surfaces.interactive_shell.ui.terminal_ui import render_terminal_ui
+
+        render_terminal_ui(self._console, animate=False)
+        if self._on_painted is not None:
+            self._on_painted()
+
+    def cancel(self) -> None:
+        """Stop the animation without painting startup UI over an error."""
+        self._settle()
+
+
 def _start_launch_banner(
     console: Console, *, on_painted: Callable[[], None] | None = None
-) -> Callable[[], None]:
-    """Spin the wordmark on a thread while the runtime boots; return the finisher.
+) -> _LaunchBannerHandle:
+    """Spin the wordmark on a thread while the runtime boots; return its handle.
 
-    The finisher stops the spin (after its minimum frames), waits for it, and
-    prints the static banner — call it before anything else writes to the
-    screen. Off a TTY the spin is a no-op and only the static banner prints.
+    Calling the handle stops the spin (after its minimum frames), waits for it,
+    and prints the static banner before anything else writes to the screen.
+    Cancelling it stops the thread without painting over a startup error. Off
+    a TTY the spin is a no-op and only the static banner prints.
     """
     stop = threading.Event()
 
@@ -193,16 +237,12 @@ def _start_launch_banner(
     )
     spinner.start()
 
-    def finish() -> None:
-        from surfaces.interactive_shell.ui.terminal_ui import render_terminal_ui
-
-        stop.set()
-        spinner.join()
-        render_terminal_ui(console, animate=False)
-        if on_painted is not None:
-            on_painted()
-
-    return finish
+    return _LaunchBannerHandle(
+        console=console,
+        stop=stop,
+        spinner=spinner,
+        on_painted=on_painted,
+    )
 
 
 def run_repl(
@@ -244,7 +284,7 @@ def run_repl(
         shell_rendered = True
         capture_interactive_shell_rendered(entrypoint="opensre_binary")
 
-    finish_banner: Callable[[], None] | None = None
+    launch_banner: _LaunchBannerHandle | None = None
     try:
         if not initial_input:
             if not pass_sign_in_gate(
@@ -254,7 +294,7 @@ def run_repl(
             # Wipe the calling shell or completed sign-in screen so the REPL
             # reads as its own screen, then boot it under the launch animation.
             repl_clear_screen()
-            finish_banner = _start_launch_banner(
+            launch_banner = _start_launch_banner(
                 out, on_painted=record_shell_rendered if record_shell else None
             )
 
@@ -265,12 +305,15 @@ def run_repl(
                 resume_session_id=resume_session_id,
                 console=out,
                 cli_command_group=cli_command_group,
-                finish_banner=finish_banner,
+                finish_banner=launch_banner,
                 after_banner=after_banner,
             )
         )
     except (EOFError, KeyboardInterrupt):
         return 0
+    finally:
+        if launch_banner is not None:
+            launch_banner.cancel()
 
 
 __all__ = ["run_repl", "run_repl_async"]

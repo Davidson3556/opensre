@@ -383,7 +383,33 @@ def test_launch_banner_captures_shell_render_after_successful_first_paint(
 
     assert events == ["rendered", "captured"]
 
-    assert events == ["rendered", "captured"]
+
+def test_launch_banner_cancel_stops_thread_without_painting(monkeypatch: Any) -> None:
+    events: list[str] = []
+
+    def _animate(_console: Any, *, stop: Any) -> None:
+        events.append("started")
+        stop.wait(timeout=1)
+        events.append("stopped")
+
+    monkeypatch.setattr(
+        "surfaces.shared.terminal.banner.banner.animate_launch_wordmark",
+        _animate,
+    )
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.ui.terminal_ui.render_terminal_ui",
+        lambda *_a, **_k: events.append("rendered"),
+    )
+
+    banner = main_entrypoint._start_launch_banner(
+        Console(file=io.StringIO(), force_terminal=False),
+        on_painted=lambda: events.append("captured"),
+    )
+    banner.cancel()
+    banner.cancel()
+    banner()
+
+    assert events == ["started", "stopped"]
 
 
 def test_run_repl_defaults_to_the_module_console(monkeypatch: Any) -> None:

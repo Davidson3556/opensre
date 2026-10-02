@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import subprocess
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any
 
@@ -31,6 +32,23 @@ class _RecordingAnalytics:
 
     def capture(self, event: Event, properties: dict[str, object] | None = None) -> None:
         self.events.append((event, dict(properties or {})))
+
+
+class _FakeLaunchBanner:
+    def __init__(
+        self,
+        *,
+        finish: Callable[[], None],
+        cancel: Callable[[], None],
+    ) -> None:
+        self._finish = finish
+        self._cancel = cancel
+
+    def __call__(self) -> None:
+        self._finish()
+
+    def cancel(self) -> None:
+        self._cancel()
 
 
 def _gate_with_choices(
@@ -228,7 +246,10 @@ def test_run_repl_clears_sign_in_screen_then_starts_banner(monkeypatch: Any) -> 
 
     def _start_banner(_console: Console, **_kwargs: Any) -> Any:
         events.append("banner")
-        return lambda: events.append("finish")
+        return _FakeLaunchBanner(
+            finish=lambda: events.append("finish"),
+            cancel=lambda: events.append("cancel"),
+        )
 
     monkeypatch.setattr(main_entrypoint, "_start_launch_banner", _start_banner)
 
@@ -240,7 +261,33 @@ def test_run_repl_clears_sign_in_screen_then_starts_banner(monkeypatch: Any) -> 
     monkeypatch.setattr(main_entrypoint, "run_repl_async", _run_async)
 
     assert main_entrypoint.run_repl(config=ReplConfig(enabled=True, layout="classic")) == 0
-    assert events == ["clear", "banner", "runtime"]
+    assert events == ["clear", "banner", "runtime", "cancel"]
+
+
+def test_run_repl_cancels_launch_banner_when_runtime_startup_fails(monkeypatch: Any) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(main_entrypoint.sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(account_gate, "pass_sign_in_gate", lambda _console, **_kwargs: True)
+    monkeypatch.setattr(
+        "surfaces.shared.terminal.components.rendering.repl_clear_screen", lambda: None
+    )
+
+    def _start_banner(_console: Console, **_kwargs: Any) -> _FakeLaunchBanner:
+        return _FakeLaunchBanner(
+            finish=lambda: events.append("finish"),
+            cancel=lambda: events.append("cancel"),
+        )
+
+    async def _fail_startup(**_kwargs: Any) -> int:
+        raise RuntimeError("startup failed")
+
+    monkeypatch.setattr(main_entrypoint, "_start_launch_banner", _start_banner)
+    monkeypatch.setattr(main_entrypoint, "run_repl_async", _fail_startup)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        main_entrypoint.run_repl(config=ReplConfig(enabled=True, layout="classic"))
+
+    assert events == ["cancel"]
 
 
 def test_run_repl_async_is_the_already_gated_shell_body(monkeypatch: Any) -> None:
@@ -377,7 +424,7 @@ def test_run_repl_does_not_record_shell_render_for_resume_or_onboard(
     def _start_banner(_console: Console, *, on_painted: Any = None) -> Any:
         if on_painted is not None:
             on_painted()
-        return lambda: None
+        return _FakeLaunchBanner(finish=lambda: None, cancel=lambda: None)
 
     monkeypatch.setattr(main_entrypoint, "_start_launch_banner", _start_banner)
 
@@ -419,7 +466,11 @@ def test_run_repl_records_shell_render_on_banner_when_already_signed_in(
     )
 
     def _start_banner(_console: Console, *, on_painted: Any = None) -> Any:
-        return lambda: on_painted() if on_painted is not None else None
+        def _finish() -> None:
+            if on_painted is not None:
+                on_painted()
+
+        return _FakeLaunchBanner(finish=_finish, cancel=lambda: None)
 
     async def _run_async(**kwargs: Any) -> int:
         finish = kwargs["finish_banner"]
