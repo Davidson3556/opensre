@@ -16,6 +16,7 @@ Internal notes for repository automation under `.github/workflows/`. Not publish
 | [`release.yml`](release.yml) | Release builds and artifacts |
 | [`installer-canary.yml`](installer-canary.yml) | Post-publish canaries for the public install paths (CDN, GitHub release resolution, platform installers) on Linux/macOS/Windows |
 | [`telemetry-integrity.yml`](telemetry-integrity.yml) | Post-merge telemetry identity/login probes in fresh processes on Linux/macOS/Windows and a Linux container (see [`tests/analytics/INTEGRITY.md`](../../tests/analytics/INTEGRITY.md)) |
+| [`windows-startup-benchmark.yml`](windows-startup-benchmark.yml) | Same-runner comparison of Windows PyInstaller onefile and onedir startup proxies; measurement only, never a release gate |
 
 See [CI.md](../../CI.md) for local parity commands before push.
 

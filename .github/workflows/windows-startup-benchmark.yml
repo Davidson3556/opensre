@@ -1,0 +1,122 @@
+name: Windows Startup Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      warm_runs:
+        description: Warm samples per packaging mode
+        required: false
+        default: "5"
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/windows-startup-benchmark.yml"
+      - ".github/scripts/windows_startup_benchmark.py"
+      - "tests/github_ci/test_windows_startup_benchmark.py"
+      - "infrastructure/deployment/packaging/release_manifest.py"
+      - "opensre.spec"
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OPENSRE_CICD: "1"
+
+concurrency:
+  group: windows-startup-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: compare onefile and onedir
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "latest-known"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install binary build dependencies
+        run: uv sync --frozen --extra release-binary --extra postgresql
+
+      - name: Build both packaging modes from the same commit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          foreach ($mode in @("onefile", "onedir")) {
+            $env:OPENSRE_PYINSTALLER_MODE = $mode
+            uv run pyinstaller opensre.spec --clean --noconfirm `
+              --distpath "benchmark-dist\$mode" `
+              --workpath "benchmark-build\$mode"
+            if ($LASTEXITCODE -ne 0) {
+              throw "PyInstaller $mode build failed with exit code $LASTEXITCODE."
+            }
+          }
+
+      - name: Measure isolated process launches
+        shell: pwsh
+        env:
+          WARM_RUNS: ${{ inputs.warm_runs || '5' }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          uv run python .github/scripts/windows_startup_benchmark.py `
+            --binary "onefile=benchmark-dist\onefile\opensre.exe" `
+            --binary "onedir=benchmark-dist\onedir\opensre\opensre.exe" `
+            --warm-runs $env:WARM_RUNS `
+            --home-root "$env:RUNNER_TEMP\opensre-startup-homes" `
+            --output-json benchmark-results\windows-startup.json `
+            --output-markdown benchmark-results\windows-startup.md
+          if ($LASTEXITCODE -ne 0) {
+            throw "Windows startup benchmark failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Smoke test both frozen layouts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $binaries = @(
+            "benchmark-dist\onefile\opensre.exe",
+            "benchmark-dist\onedir\opensre\opensre.exe"
+          )
+          foreach ($binary in $binaries) {
+            & $binary --version
+            if ($LASTEXITCODE -ne 0) { throw "$binary --version failed." }
+            & $binary -h | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "$binary -h failed." }
+            & $binary _package-smoke
+            if ($LASTEXITCODE -ne 0) { throw "$binary _package-smoke failed." }
+          }
+
+      - name: Publish benchmark summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath "benchmark-results\windows-startup.md") {
+            Get-Content -LiteralPath "benchmark-results\windows-startup.md" |
+              Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload raw benchmark results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-startup-${{ github.run_id }}
+          path: benchmark-results/
+          if-no-files-found: warn
+          retention-days: 30
