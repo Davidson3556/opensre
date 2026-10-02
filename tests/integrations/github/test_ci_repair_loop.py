@@ -360,6 +360,41 @@ def test_scheduling_persists_the_selected_github_connection(
     assert "secondary-token" not in persisted_json
 
 
+def test_scheduling_rejects_a_removed_selection_even_with_an_injected_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import infrastructure.harness_providers as harness_providers
+
+    selected_connection = "github-secondary"
+    monkeypatch.setattr(
+        harness_providers,
+        "resolve_integrations",
+        lambda _state: {
+            "github": {
+                "connection_id": selected_connection,
+                "connection_selection_error": "github_connection_required",
+            }
+        },
+    )
+
+    def client(_token: str) -> None:
+        pytest.fail("A removed GitHub connection reached the API client.")
+
+    monkeypatch.setattr(schedule, "GitHubRestClient", client)
+    store = RepairStore(tmp_path)
+
+    with pytest.raises(ValueError, match="selected GitHub connection is unavailable"):
+        schedule.schedule_repair(
+            demo=True,
+            owner="alice",
+            github_token="stale-injected-token",
+            github_connection_id=selected_connection,
+            store=store,
+        )
+
+    assert not store.path.exists()
+
+
 def test_schedule_refuses_when_owner_is_omitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -624,39 +659,25 @@ def test_restarted_worker_resolves_the_persisted_nondefault_connection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A fresh worker uses the selected grant rather than the current default."""
-    from integrations.github.tools.ci_repair_loop import credentials, worker
+    import infrastructure.harness_providers as harness_providers
+    from integrations.github.tools.ci_repair_loop import worker
 
     selected_connection = "github-secondary"
     store = RepairStore(tmp_path)
     store.save(_run().model_copy(update={"github_connection_id": selected_connection}))
     restarted = RepairStore(tmp_path).get("a" * 12)
-    effective = {
-        "github": {
-            "config": {
-                "auth_token": "default-token",
-                "connection_id": "github-default",
-            },
-            "instances": [
-                {
-                    "connection_id": "github-default",
-                    "available": True,
-                    "config": {
-                        "auth_token": "default-token",
-                        "connection_id": "github-default",
-                    },
-                },
-                {
-                    "connection_id": selected_connection,
-                    "available": True,
-                    "config": {
-                        "auth_token": "secondary-token",
-                        "connection_id": selected_connection,
-                    },
-                },
-            ],
+    resolution_requests: list[dict[str, str]] = []
+
+    def resolve_integrations(state: dict[str, str]) -> dict[str, dict[str, str]]:
+        resolution_requests.append(state)
+        return {
+            "github": {
+                "auth_token": "secondary-token",
+                "connection_id": selected_connection,
+            }
         }
-    }
-    monkeypatch.setattr(credentials, "resolve_effective_integrations", lambda: effective)
+
+    monkeypatch.setattr(harness_providers, "resolve_integrations", resolve_integrations)
     monkeypatch.setattr(worker, "verify_coding_agent", lambda: (True, "ready"))
     api = _GitHub()
     client_tokens: list[str] = []
@@ -679,6 +700,7 @@ def test_restarted_worker_resolves_the_persisted_nondefault_connection(
     worker.execute_repair(restarted, RepairStore(tmp_path))
 
     assert restarted.github_connection_id == selected_connection
+    assert resolution_requests == [{"github_connection_id": selected_connection}]
     assert client_tokens == ["secondary-token"]
     assert clone_tokens == ["secondary-token"]
     assert repair_tokens == ["secondary-token"]
@@ -688,6 +710,7 @@ def test_restarted_worker_never_falls_back_when_the_selected_connection_is_gone(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Removing a selected grant must not silently authorize the default account."""
+    import infrastructure.harness_providers as harness_providers
     from integrations.github.tools.ci_repair_loop import credentials, worker
 
     selected_connection = "github-secondary"
@@ -695,14 +718,12 @@ def test_restarted_worker_never_falls_back_when_the_selected_connection_is_gone(
     store.save(_run().model_copy(update={"github_connection_id": selected_connection}))
     restarted = RepairStore(tmp_path).get("a" * 12)
     monkeypatch.setattr(
-        credentials,
-        "resolve_effective_integrations",
-        lambda: {
+        harness_providers,
+        "resolve_integrations",
+        lambda _state: {
             "github": {
-                "config": {
-                    "auth_token": "default-token",
-                    "connection_id": "github-default",
-                }
+                "connection_id": selected_connection,
+                "connection_selection_error": "github_connection_required",
             }
         },
     )
@@ -718,34 +739,120 @@ def test_restarted_worker_never_falls_back_when_the_selected_connection_is_gone(
         worker.execute_repair(restarted, RepairStore(tmp_path))
 
 
-def test_exact_resolution_keeps_a_sole_default_named_nondefault_connection(
+def test_selected_connection_uses_the_host_resolver_and_ignores_an_injected_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Connection identity stays resolvable even when its display name is ``default``."""
-    from integrations.catalog import resolve_effective_integrations
+    import infrastructure.harness_providers as harness_providers
     from integrations.github.tools.ci_repair_loop import credentials
 
     connection_id = "github-secondary"
-    records = [
+    requests: list[dict[str, str]] = []
+
+    def resolve_integrations(state: dict[str, str]) -> dict[str, dict[str, str]]:
+        requests.append(state)
+        return {
+            "github": {
+                "auth_token": "fresh-secondary-token",
+                "connection_id": connection_id,
+            }
+        }
+
+    monkeypatch.setattr(harness_providers, "resolve_integrations", resolve_integrations)
+
+    assert (
+        credentials.configured_token("stale-injected-token", connection_id=connection_id)
+        == "fresh-secondary-token"
+    )
+    assert requests == [{"github_connection_id": connection_id}]
+
+
+def test_selected_connection_is_reloaded_from_the_live_webapp_vault(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infrastructure.harness_providers import (
+        IntegrationResolutionAdapters,
+        integration_resolution,
+    )
+    from integrations.catalog import classify_integrations, merge_integrations_by_service
+    from integrations.github.connections import select_github_connection
+    from integrations.github.tools.ci_repair_loop import credentials
+
+    selected_connection = "vault-secondary"
+    vault_records = [
+        {
+            "id": "vault-default",
+            "service": "github",
+            "status": "active",
+            "credentials": {"auth_token": "default-token", "is_default": "true"},
+        },
+        {
+            "id": selected_connection,
+            "service": "github",
+            "status": "active",
+            "credentials": {"auth_token": "secondary-token", "is_default": "false"},
+        },
+    ]
+    adapters = IntegrationResolutionAdapters(
+        select_github_connection=select_github_connection,
+        load_integrations=lambda: [],
+        load_env_integrations=lambda: [],
+        classify_integrations=classify_integrations,
+        merge_integrations_by_service=merge_integrations_by_service,
+        fetch_webapp_vault=lambda: vault_records,
+    )
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(integration_resolution, "_installed_adapters", adapters)
+        token = credentials.configured_token(
+            "stale-injected-token",
+            connection_id=selected_connection,
+        )
+
+    assert token == "secondary-token"
+
+
+def test_ambiguous_multi_instance_connection_id_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from infrastructure.harness_providers import (
+        IntegrationResolutionAdapters,
+        integration_resolution,
+    )
+    from integrations.catalog import (
+        classify_integrations,
+        merge_integrations_by_service,
+        merge_local_integrations,
+    )
+    from integrations.github.connections import select_github_connection
+    from integrations.github.tools.ci_repair_loop import credentials
+
+    connection_id = "github-local"
+    local_records = [
         {
             "id": connection_id,
             "service": "github",
             "status": "active",
-            "name": "default",
-            "credentials": {
-                "auth_token": "secondary-token",
-                "is_default": "false",
-            },
+            "instances": [
+                {"name": "work", "credentials": {"auth_token": "work-token"}},
+                {"name": "personal", "credentials": {"auth_token": "personal-token"}},
+            ],
         }
     ]
-    effective = resolve_effective_integrations(
-        store_integrations=records,
-        env_integrations=[],
-        remote_integrations=[],
+    adapters = IntegrationResolutionAdapters(
+        select_github_connection=select_github_connection,
+        load_integrations=lambda: local_records,
+        load_env_integrations=lambda: [],
+        classify_integrations=classify_integrations,
+        merge_local_integrations=merge_local_integrations,
+        merge_integrations_by_service=merge_integrations_by_service,
+        fetch_webapp_vault=lambda: None,
+        fetch_account_integrations=lambda: [],
     )
-    monkeypatch.setattr(credentials, "resolve_effective_integrations", lambda: effective)
 
-    assert credentials.configured_token(connection_id=connection_id) == "secondary-token"
+    with monkeypatch.context() as scoped:
+        scoped.setattr(integration_resolution, "_installed_adapters", adapters)
+        with pytest.raises(ValueError, match="selected GitHub connection is unavailable"):
+            credentials.configured_token("work-token", connection_id=connection_id)
 
 
 def test_real_cron_tick_saves_terminal_report_before_stopping_schedule(

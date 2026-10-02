@@ -121,7 +121,7 @@ def schedule_repair(
     commit, is repaired as the demo even when the caller does not pass ``fast_checks``.
     """
     started = time.time()
-    connection_id = str(github_connection_id or "").strip() or None
+    connection_id = str(github_connection_id) if github_connection_id else None
     token = (
         configured_token(github_token, connection_id=connection_id)
         if connection_id
