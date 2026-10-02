@@ -333,6 +333,45 @@ def test_schedule_reuses_active_run_instead_of_resetting_deadline(
     assert len(tasks) == 1 and next(iter(tasks.values())).cron == CI_REPAIR_CRON
 
 
+def test_scheduling_persists_the_selected_github_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A non-default connection survives the tool-to-background handoff."""
+    from integrations.github.tools.ci_repair_loop import tool as repair_tool
+
+    store = RepairStore(tmp_path)
+    api = _GitHub()
+    selected_connection = "github-secondary"
+    token_requests: list[tuple[str | None, str | None]] = []
+
+    def configured_token(explicit: str | None, *, connection_id: str | None = None) -> str:
+        token_requests.append((explicit, connection_id))
+        return "secondary-token"
+
+    monkeypatch.setattr(schedule, "configured_token", configured_token)
+    monkeypatch.setattr(schedule, "GitHubRestClient", lambda _token: api)
+    monkeypatch.setattr(schedule, "get_task", lambda _run_id: None)
+    monkeypatch.setattr(schedule, "add_task", lambda task: task)
+    monkeypatch.setattr(schedule.telemetry, "monitoring_started", lambda _run: None)
+    monkeypatch.setattr(repair_tool, "RepairStore", lambda: store)
+    monkeypatch.setattr(repair_tool, "_scheduler_in_process", lambda _context: True)
+
+    result = repair_tool.schedule_ci_repair_loop(
+        demo=True,
+        owner="alice",
+        github_token="secondary-token",
+        github_connection_id=selected_connection,
+    )
+
+    persisted = RepairStore(tmp_path).get(result["task_id"])
+    assert result["ok"] is True
+    assert persisted.github_connection_id == selected_connection
+    assert token_requests == [("secondary-token", selected_connection)]
+    persisted_json = store.path.read_text(encoding="utf-8")
+    assert selected_connection in persisted_json
+    assert "secondary-token" not in persisted_json
+
+
 def test_schedule_refuses_when_owner_is_omitted(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -490,6 +529,134 @@ def test_account_change_stops_before_any_remote_write(
     with pytest.raises(ValueError, match="account changed"):
         worker.execute_repair(run, RepairStore(tmp_path))
     assert [(method, path) for method, path, _ in api.calls] == [("GET", "user")]
+
+
+def test_restarted_worker_resolves_the_persisted_nondefault_connection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh worker uses the selected grant rather than the current default."""
+    from integrations.github.tools.ci_repair_loop import credentials, worker
+
+    selected_connection = "github-secondary"
+    store = RepairStore(tmp_path)
+    store.save(_run().model_copy(update={"github_connection_id": selected_connection}))
+    restarted = RepairStore(tmp_path).get("a" * 12)
+    effective = {
+        "github": {
+            "config": {
+                "auth_token": "default-token",
+                "connection_id": "github-default",
+            },
+            "instances": [
+                {
+                    "connection_id": "github-default",
+                    "available": True,
+                    "config": {
+                        "auth_token": "default-token",
+                        "connection_id": "github-default",
+                    },
+                },
+                {
+                    "connection_id": selected_connection,
+                    "available": True,
+                    "config": {
+                        "auth_token": "secondary-token",
+                        "connection_id": selected_connection,
+                    },
+                },
+            ],
+        }
+    }
+    monkeypatch.setattr(credentials, "resolve_effective_integrations", lambda: effective)
+    monkeypatch.setattr(worker, "verify_coding_agent", lambda: (True, "ready"))
+    api = _GitHub()
+    client_tokens: list[str] = []
+
+    def client(token: str) -> _GitHub:
+        client_tokens.append(token)
+        return api
+
+    monkeypatch.setattr(worker, "GitHubRestClient", client)
+    clone_tokens: list[str] = []
+
+    def clone(_url: str, workspace: str, *, token: str) -> None:
+        clone_tokens.append(token)
+        Path(workspace).mkdir()
+
+    monkeypatch.setattr(worker, "clone_repository", clone)
+    repair_tokens: list[str] = []
+    monkeypatch.setattr(worker, "_repair", lambda _run, _store, token: repair_tokens.append(token))
+
+    worker.execute_repair(restarted, RepairStore(tmp_path))
+
+    assert restarted.github_connection_id == selected_connection
+    assert client_tokens == ["secondary-token"]
+    assert clone_tokens == ["secondary-token"]
+    assert repair_tokens == ["secondary-token"]
+
+
+def test_restarted_worker_never_falls_back_when_the_selected_connection_is_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing a selected grant must not silently authorize the default account."""
+    from integrations.github.tools.ci_repair_loop import credentials, worker
+
+    selected_connection = "github-secondary"
+    store = RepairStore(tmp_path)
+    store.save(_run().model_copy(update={"github_connection_id": selected_connection}))
+    restarted = RepairStore(tmp_path).get("a" * 12)
+    monkeypatch.setattr(
+        credentials,
+        "resolve_effective_integrations",
+        lambda: {
+            "github": {
+                "config": {
+                    "auth_token": "default-token",
+                    "connection_id": "github-default",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(credentials, "resolve_env_credential", lambda _name: "env-token")
+    monkeypatch.setattr(worker, "verify_coding_agent", lambda: (True, "ready"))
+
+    def client(_token: str) -> None:
+        pytest.fail("The worker fell back to another GitHub connection.")
+
+    monkeypatch.setattr(worker, "GitHubRestClient", client)
+
+    with pytest.raises(ValueError, match="selected GitHub connection is unavailable"):
+        worker.execute_repair(restarted, RepairStore(tmp_path))
+
+
+def test_exact_resolution_keeps_a_sole_default_named_nondefault_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connection identity stays resolvable even when its display name is ``default``."""
+    from integrations.catalog import resolve_effective_integrations
+    from integrations.github.tools.ci_repair_loop import credentials
+
+    connection_id = "github-secondary"
+    records = [
+        {
+            "id": connection_id,
+            "service": "github",
+            "status": "active",
+            "name": "default",
+            "credentials": {
+                "auth_token": "secondary-token",
+                "is_default": "false",
+            },
+        }
+    ]
+    effective = resolve_effective_integrations(
+        store_integrations=records,
+        env_integrations=[],
+        remote_integrations=[],
+    )
+    monkeypatch.setattr(credentials, "resolve_effective_integrations", lambda: effective)
+
+    assert credentials.configured_token(connection_id=connection_id) == "secondary-token"
 
 
 def test_real_cron_tick_saves_terminal_report_before_stopping_schedule(
