@@ -407,6 +407,8 @@ def _should_publish_instance_siblings(instances: object) -> bool:
     """Return whether an effective integration should expose its ``instances`` list."""
     if not isinstance(instances, list) or not instances:
         return False
+    if any(isinstance(instance, dict) and instance.get("connection_id") for instance in instances):
+        return True
     if len(instances) > 1:
         return True
     return str(instances[0].get("name", "default")) != "default"

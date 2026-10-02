@@ -337,7 +337,11 @@ def _execute_repair(run: RepairRun, store: RepairStore, phases: PhaseTimer) -> N
     if backend is None:
         raise ValueError("Configure and authenticate a coding agent before starting the repair.")
     run.coding_agent = backend
-    token = configured_token()
+    token = (
+        configured_token(connection_id=run.github_connection_id)
+        if run.github_connection_id
+        else configured_token()
+    )
     with phases.phase("github_user"):
         user = object_response(GitHubRestClient(token).request("GET", "user"))
     if not run.actor_id or account_id(user) != run.actor_id:
