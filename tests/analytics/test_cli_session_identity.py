@@ -144,10 +144,21 @@ def test_shell_turns_join_the_cli_invoked_session_until_new(
             await run_agent_turn(self._resources, "What changed since then?")
             session_ids.append(session.session_id)
 
-    monkeypatch.setattr(main_entrypoint, "identify_saved_github_username", lambda: None)
-    monkeypatch.setattr(main_entrypoint, "create_repl_runtime", _runtime)
-    monkeypatch.setattr(main_entrypoint, "offer_demo", _offer_demo)
-    monkeypatch.setattr(main_entrypoint, "InteractiveShellController", _Controller)
+    monkeypatch.setattr(
+        "infrastructure.analytics.github_identity.identify_saved_github_username",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        main_entrypoint,
+        "_create_repl_runtime",
+        lambda session: _runtime(session=session),
+    )
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.runtime.startup.demo_picker.offer_demo", _offer_demo
+    )
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.controller.InteractiveShellController", _Controller
+    )
 
     capture_cli_invoked({"entrypoint": "opensre"})
     assert asyncio.run(main_entrypoint.run_repl_async(console=console)) == 0

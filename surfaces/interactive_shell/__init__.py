@@ -25,12 +25,12 @@ def run_repl(
 ) -> int:
     """Run the interactive shell and return its exit code.
 
-    Mirrors :func:`surfaces.interactive_shell.main.run_repl`. Importing that
-    module pulls in the whole terminal stack, so the import stays inside the
-    call — the signature is repeated here rather than erased to ``*args`` so
-    callers keep type checking. Repeating it means every runtime parameter has
-    to be repeated too: one omitted here is unreachable through this facade,
-    which is the seam embedding callers import.
+    Mirrors :func:`surfaces.interactive_shell.main.run_repl`. The import stays
+    inside the call so CLI commands that never launch the shell avoid even its
+    lightweight process-entrypoint dependencies. The signature is repeated
+    here rather than erased to ``*args`` so callers keep type checking. Repeating
+    it means every runtime parameter has to be repeated too: one omitted here is
+    unreachable through this facade, which is the seam embedding callers import.
     """
     from surfaces.interactive_shell.main import run_repl as runtime_run_repl
 

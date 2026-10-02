@@ -6,31 +6,18 @@ import asyncio
 import sys
 import threading
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import click
 from rich.console import Console
 
 from config.repl_config import ReplConfig
-from core.agent_harness import SessionManager
-from core.agent_harness.spi.session_goal import pause_active_session_goal
-from infrastructure.analytics.capture import capture_interactive_shell_rendered
-from infrastructure.analytics.github_identity import identify_saved_github_username
-from infrastructure.analytics.usage_context import claim_process_session_id
-from infrastructure.logging import install_shell_log_handler, quiet_noisy_third_party_loggers
-from infrastructure.terminal.theme import set_active_theme
-from infrastructure.turn_host.session_lock import session_execution_lock
-from surfaces.interactive_shell.controller import InteractiveShellController
-from surfaces.interactive_shell.runtime.context import create_repl_runtime
-from surfaces.interactive_shell.runtime.core.state import ReplState
-from surfaces.interactive_shell.runtime.startup.account_gate import (
-    pass_sign_in_gate,
-)
-from surfaces.interactive_shell.runtime.startup.demo_picker import offer_demo
-from surfaces.interactive_shell.runtime.startup.initial_input import run_initial_input
-from surfaces.interactive_shell.session import Session
-from surfaces.interactive_shell.ui.terminal_ui import render_terminal_ui
-from surfaces.shared.terminal.banner import animate_launch_wordmark
-from surfaces.shared.terminal.components.rendering import repl_clear_screen
+
+if TYPE_CHECKING:
+    from surfaces.interactive_shell.controller import InteractiveShellController
+    from surfaces.interactive_shell.runtime.context import ReplRuntime
+    from surfaces.interactive_shell.runtime.core.state import ReplState
+    from surfaces.interactive_shell.session import Session
 
 # Fallback when a caller does not supply one. Forces a terminal because the
 # shell owns the screen; an embedding caller passes its own instead.
@@ -45,12 +32,38 @@ def _new_shell_session() -> Session:
     Sharing it keeps ``cli_invoked``, startup onboarding and the shell's turns
     in one analytics session; ``/new`` and ``/resume`` still change the id.
     """
+    from infrastructure.analytics.usage_context import claim_process_session_id
+    from surfaces.interactive_shell.session import Session
+
     session_id = claim_process_session_id()
     return Session(session_id=session_id) if session_id else Session()
 
 
+def _create_repl_runtime(session: Session) -> ReplRuntime:
+    """Build the full REPL runtime after startup feedback is visible."""
+    from surfaces.interactive_shell.runtime.context import create_repl_runtime
+
+    return create_repl_runtime(session=session)
+
+
+def _build_interactive_shell_controller(
+    runtime_context: ReplRuntime,
+    *,
+    config: ReplConfig,
+    console: Console,
+) -> InteractiveShellController:
+    """Build the controller without importing its stack during entrypoint import."""
+    from surfaces.interactive_shell.controller import InteractiveShellController
+
+    return InteractiveShellController(runtime_context, config=config, console=console)
+
+
 def _close_repl_session(session: Session, state: ReplState) -> None:
     """Persist final session state, including an interrupted goal-pause boundary."""
+    from core.agent_harness import SessionManager
+    from core.agent_harness.spi.session_goal import pause_active_session_goal
+    from infrastructure.turn_host.session_lock import session_execution_lock
+
     pause_requested = state.is_goal_pause_requested()
     manager = SessionManager.for_session(session)
     with session_execution_lock(session.session_id):
@@ -76,6 +89,16 @@ async def run_repl_async(
     ``after_banner`` is launch work the CLI held back until the banner is on
     screen (error-reporting start); it runs once the runtime is booted.
     """
+    from core.agent_harness import SessionManager
+    from infrastructure.analytics.github_identity import identify_saved_github_username
+    from infrastructure.logging import (
+        install_shell_log_handler,
+        quiet_noisy_third_party_loggers,
+    )
+    from infrastructure.terminal.theme import set_active_theme
+    from surfaces.interactive_shell.runtime.startup.demo_picker import offer_demo
+    from surfaces.interactive_shell.runtime.startup.initial_input import run_initial_input
+
     # Keep MCP schema-cache warnings / httpx chatter off the transcript —
     # progress is soft status lines, not library WARNINGs.
     quiet_noisy_third_party_loggers()
@@ -90,7 +113,7 @@ async def run_repl_async(
     install_shell_log_handler(lambda: out)
     # Let PromptBuilder build the prompt session so it can wire the
     # composer-hide (needs the session + REPL state, which do not exist yet).
-    runtime_context = create_repl_runtime(session=_new_shell_session())
+    runtime_context = _create_repl_runtime(_new_shell_session())
     session = runtime_context.session
     session.terminal.cli_command_group = cli_command_group
 
@@ -106,16 +129,23 @@ async def run_repl_async(
 
     # Open the session file now that we know this is an interactive REPL run.
     SessionManager.for_session(session).open_store(session)
-    # The runtime is booted; nothing has printed yet. Stop the launch spin and
-    # paint the static banner before anything below can write to the screen.
-    if finish_banner is not None:
-        finish_banner()
-    # The launch has nothing left to load: held-back work no longer competes
-    # with it for the interpreter.
-    if after_banner is not None:
-        after_banner()
-
     try:
+        # Controller construction imports the remaining prompt and turn stack.
+        # Keep that work behind the launch animation; it retains this live
+        # Session object, which startup resume may rebind below.
+        controller = _build_interactive_shell_controller(
+            runtime_context,
+            config=cfg,
+            console=out,
+        )
+        # The runtime is booted; nothing has printed yet. Stop the launch spin
+        # and paint the static banner before anything below can write.
+        if finish_banner is not None:
+            finish_banner()
+        # Held-back work no longer competes with launch imports.
+        if after_banner is not None:
+            after_banner()
+
         if resume_session_id:
             from surfaces.interactive_shell.command_registry.session_cmds.resume import (
                 resume_session_by_prefix,
@@ -133,11 +163,7 @@ async def run_repl_async(
             # Entering the master skill queues its menu; the first model turn is the answer.
             offer_demo(session, out)
 
-        await InteractiveShellController(
-            runtime_context,
-            config=cfg,
-            console=out,
-        ).start_interactive_shell()
+        await controller.start_interactive_shell()
         return 0
     finally:
         # True end-of-run teardown: persist and release the session's resources.
@@ -154,16 +180,22 @@ def _start_launch_banner(
     screen. Off a TTY the spin is a no-op and only the static banner prints.
     """
     stop = threading.Event()
+
+    def animate() -> None:
+        from surfaces.shared.terminal.banner import animate_launch_wordmark
+
+        animate_launch_wordmark(console, stop=stop)
+
     spinner = threading.Thread(
-        target=animate_launch_wordmark,
-        args=(console,),
-        kwargs={"stop": stop},
+        target=animate,
         name="launch-banner-spin",
         daemon=True,
     )
     spinner.start()
 
     def finish() -> None:
+        from surfaces.interactive_shell.ui.terminal_ui import render_terminal_ui
+
         stop.set()
         spinner.join()
         render_terminal_ui(console, animate=False)
@@ -189,6 +221,11 @@ def run_repl(
     painted, or at first banner paint when the user is already signed in.
     ``--resume`` and an auto-launch after ``opensre onboard`` do not record it.
     """
+    from infrastructure.analytics.capture import capture_interactive_shell_rendered
+    from infrastructure.terminal.theme import set_active_theme
+    from surfaces.interactive_shell.runtime.startup.account_gate import pass_sign_in_gate
+    from surfaces.shared.terminal.components.rendering import repl_clear_screen
+
     cfg = config or ReplConfig.load()
     set_active_theme(cfg.theme)
     out = console or _DEFAULT_CONSOLE

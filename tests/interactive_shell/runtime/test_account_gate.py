@@ -205,7 +205,7 @@ def test_gate_emits_nothing_without_a_rendered_menu(monkeypatch: Any, interactiv
 def test_run_repl_stops_before_runtime_when_sign_in_is_declined(monkeypatch: Any) -> None:
     started: list[bool] = []
     monkeypatch.setattr(main_entrypoint.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(main_entrypoint, "pass_sign_in_gate", lambda _console, **_kwargs: False)
+    monkeypatch.setattr(account_gate, "pass_sign_in_gate", lambda _console, **_kwargs: False)
 
     async def _run_async(**_kwargs: Any) -> int:
         started.append(True)
@@ -220,8 +220,11 @@ def test_run_repl_stops_before_runtime_when_sign_in_is_declined(monkeypatch: Any
 def test_run_repl_clears_sign_in_screen_then_starts_banner(monkeypatch: Any) -> None:
     events: list[str] = []
     monkeypatch.setattr(main_entrypoint.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(main_entrypoint, "pass_sign_in_gate", lambda _console, **_kwargs: True)
-    monkeypatch.setattr(main_entrypoint, "repl_clear_screen", lambda: events.append("clear"))
+    monkeypatch.setattr(account_gate, "pass_sign_in_gate", lambda _console, **_kwargs: True)
+    monkeypatch.setattr(
+        "surfaces.shared.terminal.components.rendering.repl_clear_screen",
+        lambda: events.append("clear"),
+    )
 
     def _start_banner(_console: Console, **_kwargs: Any) -> Any:
         events.append("banner")
@@ -251,19 +254,27 @@ def test_run_repl_async_is_the_already_gated_shell_body(monkeypatch: Any) -> Non
         async def start_interactive_shell(self) -> None:
             started.append(True)
 
-    monkeypatch.setattr(main_entrypoint, "identify_saved_github_username", lambda: None)
     monkeypatch.setattr(
-        main_entrypoint,
-        "create_repl_runtime",
-        lambda **_kwargs: SimpleNamespace(session=Session(), state=ReplState(), inbox=None),
+        "infrastructure.analytics.github_identity.identify_saved_github_username",
+        lambda: None,
     )
     monkeypatch.setattr(
         main_entrypoint,
+        "_create_repl_runtime",
+        lambda _session: SimpleNamespace(session=Session(), state=ReplState(), inbox=None),
+    )
+    monkeypatch.setattr(
+        account_gate,
         "pass_sign_in_gate",
         lambda _console, **_kwargs: gated.append(True) or False,
     )
-    monkeypatch.setattr(main_entrypoint, "offer_demo", lambda *_a, **_k: None)
-    monkeypatch.setattr(main_entrypoint, "InteractiveShellController", _Controller)
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.runtime.startup.demo_picker.offer_demo",
+        lambda *_a, **_k: None,
+    )
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.controller.InteractiveShellController", _Controller
+    )
 
     class _SessionStore:
         def open_store(self, _session: object) -> None:
@@ -275,7 +286,7 @@ def test_run_repl_async_is_the_already_gated_shell_body(monkeypatch: Any) -> Non
         def close(self, _session: object) -> None:
             return
 
-    monkeypatch.setattr(main_entrypoint.SessionManager, "for_session", lambda _s: _SessionStore())
+    monkeypatch.setattr("core.agent_harness.SessionManager.for_session", lambda _s: _SessionStore())
 
     assert asyncio.run(main_entrypoint.run_repl_async()) == 0
     assert gated == []
@@ -300,21 +311,27 @@ def _boot_repl_without_prompt(monkeypatch: Any) -> None:
         def close(self, _session: object) -> None:
             return
 
-    monkeypatch.setattr(main_entrypoint, "identify_saved_github_username", lambda: None)
+    monkeypatch.setattr(
+        "infrastructure.analytics.github_identity.identify_saved_github_username",
+        lambda: None,
+    )
     monkeypatch.setattr(
         main_entrypoint,
-        "create_repl_runtime",
-        lambda **_kwargs: SimpleNamespace(session=Session(), state=ReplState(), inbox=None),
+        "_create_repl_runtime",
+        lambda _session: SimpleNamespace(session=Session(), state=ReplState(), inbox=None),
     )
-    monkeypatch.setattr(main_entrypoint, "InteractiveShellController", _Controller)
-    monkeypatch.setattr(main_entrypoint.SessionManager, "for_session", lambda _s: _SessionStore())
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.controller.InteractiveShellController", _Controller
+    )
+    monkeypatch.setattr("core.agent_harness.SessionManager.for_session", lambda _s: _SessionStore())
 
 
 def test_run_repl_async_always_offers_the_demo(monkeypatch: Any) -> None:
     offered: list[bool] = []
     _boot_repl_without_prompt(monkeypatch)
     monkeypatch.setattr(
-        main_entrypoint, "offer_demo", lambda *_a, **_k: offered.append(True) or False
+        "surfaces.interactive_shell.runtime.startup.demo_picker.offer_demo",
+        lambda *_a, **_k: offered.append(True) or False,
     )
 
     assert asyncio.run(main_entrypoint.run_repl_async()) == 0
@@ -328,7 +345,7 @@ def test_run_repl_records_shell_render_when_the_sign_in_screen_is_shown(
     _gate_with_choices(monkeypatch, [SignInChoice.EXIT])
     monkeypatch.setattr(main_entrypoint.sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr(
-        main_entrypoint,
+        capture,
         "capture_interactive_shell_rendered",
         lambda **_kwargs: painted.append("captured"),
     )
@@ -347,10 +364,12 @@ def test_run_repl_does_not_record_shell_render_for_resume_or_onboard(
 ) -> None:
     painted: list[str] = []
     monkeypatch.setattr(main_entrypoint.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(main_entrypoint, "pass_sign_in_gate", lambda _console, **_kwargs: True)
-    monkeypatch.setattr(main_entrypoint, "repl_clear_screen", lambda: None)
+    monkeypatch.setattr(account_gate, "pass_sign_in_gate", lambda _console, **_kwargs: True)
     monkeypatch.setattr(
-        main_entrypoint,
+        "surfaces.shared.terminal.components.rendering.repl_clear_screen", lambda: None
+    )
+    monkeypatch.setattr(
+        capture,
         "capture_interactive_shell_rendered",
         lambda **_kwargs: painted.append("captured"),
     )
@@ -389,10 +408,12 @@ def test_run_repl_records_shell_render_on_banner_when_already_signed_in(
 ) -> None:
     painted: list[str] = []
     monkeypatch.setattr(main_entrypoint.sys.stdin, "isatty", lambda: True)
-    monkeypatch.setattr(main_entrypoint, "pass_sign_in_gate", lambda _console, **_kwargs: True)
-    monkeypatch.setattr(main_entrypoint, "repl_clear_screen", lambda: None)
+    monkeypatch.setattr(account_gate, "pass_sign_in_gate", lambda _console, **_kwargs: True)
     monkeypatch.setattr(
-        main_entrypoint,
+        "surfaces.shared.terminal.components.rendering.repl_clear_screen", lambda: None
+    )
+    monkeypatch.setattr(
+        capture,
         "capture_interactive_shell_rendered",
         lambda **_kwargs: painted.append("captured"),
     )

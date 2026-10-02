@@ -82,16 +82,26 @@ def test_repl_shutdown_refreshes_before_closing(
         async def start_interactive_shell(self) -> None:
             return
 
-    monkeypatch.setattr(main_entrypoint, "identify_saved_github_username", lambda: None)
-    monkeypatch.setattr(main_entrypoint, "offer_demo", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "infrastructure.analytics.github_identity.identify_saved_github_username",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.runtime.startup.demo_picker.offer_demo",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         main_entrypoint,
-        "create_repl_runtime",
-        lambda **_kwargs: SimpleNamespace(session=session, state=ReplState(), inbox=None),
+        "_create_repl_runtime",
+        lambda _session: SimpleNamespace(session=session, state=ReplState(), inbox=None),
     )
-    monkeypatch.setattr(main_entrypoint, "InteractiveShellController", _Controller)
-    monkeypatch.setattr(main_entrypoint.SessionManager, "for_session", lambda _session: _Manager())
-    monkeypatch.setattr(main_entrypoint, "session_execution_lock", _lease)
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.controller.InteractiveShellController", _Controller
+    )
+    monkeypatch.setattr(
+        "core.agent_harness.SessionManager.for_session", lambda _session: _Manager()
+    )
+    monkeypatch.setattr("infrastructure.turn_host.session_lock.session_execution_lock", _lease)
 
     assert asyncio.run(main_entrypoint.run_repl_async()) == 0
     assert events == ["lock", "refresh", "close"]
