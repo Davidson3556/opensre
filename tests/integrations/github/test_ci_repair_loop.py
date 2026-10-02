@@ -400,6 +400,7 @@ def test_worker_retries_then_cleans_only_the_verified_head(
         nonlocal calls
         calls += 1
         assert kwargs["allowed_paths"] == frozenset({"calculator.py"})
+        assert kwargs["expected_source_head_sha"] == run.initial_sha
         if calls < CI_REPAIR_MAX_ATTEMPTS:
             return {"success": False, "error_kind": "checks_failed"}
         return {"success": True, "checks_state": "passed", "fix_head_sha": "fixed"}
@@ -408,7 +409,13 @@ def test_worker_retries_then_cleans_only_the_verified_head(
         finished = calls == CI_REPAIR_MAX_ATTEMPTS
         return {
             "state": "OPEN",
-            "headRefOid": "someone-else" if finished and changed_head else "fixed",
+            "headRefOid": (
+                "someone-else"
+                if finished and changed_head
+                else "fixed"
+                if finished
+                else run.initial_sha
+            ),
             "statusCheckRollup": [
                 {
                     "conclusion": "SUCCESS" if finished else "FAILURE",
@@ -782,11 +789,6 @@ def test_a_green_head_pushed_by_someone_else_is_not_credited(
                 "headRefOid": "theirs",
                 "statusCheckRollup": [{"conclusion": "FAILURE"}],
             },
-            {
-                "state": "OPEN",
-                "headRefOid": "theirs",
-                "statusCheckRollup": [{"conclusion": "SUCCESS"}],
-            },
         ]
     )
     monkeypatch.setattr(worker, "_read_pr", lambda *_args: next(reads))
@@ -799,10 +801,157 @@ def test_a_green_head_pushed_by_someone_else_is_not_credited(
     # Act
     worker._repair(run, store, "test-token")
 
-    # Assert: no credit taken; the attempt is recorded as it was
+    # Assert: no credit or edit is taken once the demo head leaves the owned chain.
     assert run.fixed_sha == "" and run.checks_passed is False
     assert run.status is RepairStatus.FAILED
-    assert run.attempt_errors[-1] == "no_failing_checks"
+    assert run.attempt_errors == []
+    assert "changed outside this repair run" in run.reason
+
+
+@pytest.mark.parametrize(
+    ("prepared_source", "pushed_shas", "repair_head", "checks_state", "result_head"),
+    [
+        ("source-head", [], "first-repair", "", "first-repair"),
+        ("first-repair", ["first-repair"], "second-repair", "failed", "third-repair"),
+    ],
+)
+def test_a_prepared_demo_push_is_resumed_after_the_worker_restarts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prepared_source: str,
+    pushed_shas: list[str],
+    repair_head: str,
+    checks_state: str,
+    result_head: str,
+) -> None:
+    """Each durable push intent owns its remote head before ``pushed_shas`` is saved."""
+    from integrations.github.tools.ci_fix.storage import database
+    from integrations.github.tools.ci_fix.storage.attempts import (
+        PreparedPush,
+        repair_key,
+        save_prepared_push,
+    )
+    from integrations.github.tools.ci_repair_loop import worker
+
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "repairs.db")
+    run = _run(pr_number=7).model_copy(
+        update={"initial_sha": "source-head", "attempts": 1, "pushed_shas": list(pushed_shas)}
+    )
+    save_prepared_push(
+        repair_key(run.owner, run.repo, str(run.pr_number)),
+        PreparedPush(
+            prepared_source,
+            repair_head,
+            run.branch,
+            ["calculator.py"],
+            checks_state=checks_state,
+        ),
+    )
+    store = RepairStore(tmp_path / "runs")
+    store.directory(run.id).mkdir(parents=True)
+    reads = iter(
+        [
+            {
+                "state": "OPEN",
+                "headRefOid": repair_head,
+                "statusCheckRollup": [{"conclusion": "FAILURE"}],
+            },
+            {
+                "state": "OPEN",
+                "headRefOid": result_head,
+                "statusCheckRollup": [{"conclusion": "SUCCESS"}],
+            },
+        ]
+    )
+    calls: list[dict[str, Any]] = []
+
+    def resume(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return {"success": True, "checks_state": "passed", "fix_head_sha": result_head}
+
+    monkeypatch.setattr(worker, "_read_pr", lambda *_args: next(reads))
+    monkeypatch.setattr(worker, "run_ci_fix", resume)
+    monkeypatch.setattr(worker, "record_ci_fix_outcome", lambda _output: None)
+
+    worker._repair(run, store, "test-token")
+
+    assert len(calls) == 1
+    assert calls[0]["expected_source_head_sha"] == repair_head
+    assert run.pushed_shas == list(dict.fromkeys((*pushed_shas, repair_head, result_head)))
+    assert run.checks_passed is True and run.fixed_sha == result_head
+
+
+@pytest.mark.parametrize(
+    ("prepared_source", "pushed_shas"),
+    [("source-head", []), ("first-repair", ["first-repair"])],
+)
+def test_a_verified_prepared_demo_push_is_credited_after_the_worker_restarts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prepared_source: str,
+    pushed_shas: list[str],
+) -> None:
+    """A crash after durable verification does not lose a successful repair."""
+    from integrations.github.tools.ci_fix.storage import database
+    from integrations.github.tools.ci_fix.storage.attempts import (
+        PreparedPush,
+        repair_key,
+        save_prepared_push,
+    )
+    from integrations.github.tools.ci_fix.verification import CheckState, CheckVerification
+    from integrations.github.tools.ci_repair_loop import worker
+
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "repairs.db")
+    run = _run(pr_number=7).model_copy(
+        update={"initial_sha": "source-head", "attempts": 1, "pushed_shas": list(pushed_shas)}
+    )
+    save_prepared_push(
+        repair_key(run.owner, run.repo, str(run.pr_number)),
+        PreparedPush(
+            prepared_source,
+            "repair-head",
+            run.branch,
+            ["calculator.py"],
+            checks_state=CheckState.PASSED.value,
+        ),
+    )
+    store = RepairStore(tmp_path / "runs")
+    store.directory(run.id).mkdir(parents=True)
+    current = {
+        "state": "OPEN",
+        "headRefOid": "repair-head",
+        "statusCheckRollup": [
+            {
+                "conclusion": "SUCCESS",
+                "detailsUrl": run.repository_url + "/actions/runs/456",
+            }
+        ],
+    }
+    recorded: list[dict[str, Any]] = []
+
+    def no_repair(**_kwargs: Any) -> dict[str, Any]:
+        pytest.fail("A verified prepared push launched another repair")
+
+    monkeypatch.setattr(worker, "_read_pr", lambda *_args: current)
+    monkeypatch.setattr(worker, "run_ci_fix", no_repair)
+    monkeypatch.setattr(
+        worker,
+        "wait_for_pr_checks",
+        lambda *_args, **_kwargs: CheckVerification(
+            state=CheckState.PASSED, check_names=("quality",)
+        ),
+    )
+    monkeypatch.setattr(worker, "record_ci_fix_outcome", recorded.append)
+
+    worker._repair(run, store, "test-token")
+
+    assert run.status is RepairStatus.SUCCEEDED
+    assert run.pushed_shas == [*pushed_shas, "repair-head"]
+    assert run.checks_passed is True and run.fixed_sha == "repair-head"
+    assert run.reason == "The repair commit passed CI."
+    assert run.passed_run_url.endswith("/actions/runs/456")
+    assert recorded[-1]["source_head_sha"] == prepared_source
+    assert store.get(run.id).checks_passed is True
 
 
 class _PullRequestApi:
@@ -1187,7 +1336,7 @@ def _repair_the_demo_on_the_second_attempt(
         link = run.repository_url + "/actions/runs/1"
         return {
             "state": "OPEN",
-            "headRefOid": "fixed",
+            "headRefOid": "fixed" if attempts == 2 else run.initial_sha,
             "statusCheckRollup": [{"conclusion": conclusion, "detailsUrl": link}],
         }
 
