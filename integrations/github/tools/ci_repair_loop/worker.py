@@ -16,7 +16,11 @@ from integrations.coding_agent import verify_coding_agent
 from integrations.git import clone_repository
 from integrations.github.client import GitHubApiError, GitHubRestClient
 from integrations.github.tools.ci_fix.context import CiFixContext
-from integrations.github.tools.ci_fix.errors import ERR_NO_FAILING_CHECKS, GitHubCiFixError
+from integrations.github.tools.ci_fix.errors import (
+    ERR_CHECKS_SUPERSEDED,
+    ERR_NO_FAILING_CHECKS,
+    GitHubCiFixError,
+)
 from integrations.github.tools.ci_fix.gh import run_gh_json
 from integrations.github.tools.ci_fix.ledger import record_ci_fix_outcome
 from integrations.github.tools.ci_fix.runner import run_ci_fix
@@ -216,7 +220,11 @@ def _repair(run: RepairRun, store: RepairStore, token: str) -> None:
         run.attempt_errors.append(error)
         run.reason = f"Repair attempt {run.attempts}: {_reason_for(error, run)}"
         store.save(run)
-        if error not in {"checks_failed", "execution_error", "timeout", "no_changes"}:
+        # A head that moved before any push left nothing to undo: read it again. A
+        # demo run then stops at the ownership check above.
+        moved_before_push = error == ERR_CHECKS_SUPERSEDED and not pushed
+        retryable = {"checks_failed", "execution_error", "timeout", "no_changes"}
+        if error not in retryable and not moved_before_push:
             run.status = RepairStatus.FAILED
             return
         if run.attempts >= CI_REPAIR_MAX_ATTEMPTS:
@@ -238,6 +246,7 @@ _REASON_TEXT = {
     "no_changes": "The coding agent made no change to the checkout.",
     "timeout": "The coding agent ran out of time.",
     "execution_error": "The coding agent could not run.",
+    "checks_superseded": "Another commit changed the PR head during the repair.",
 }
 
 

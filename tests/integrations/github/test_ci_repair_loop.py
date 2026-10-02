@@ -809,6 +809,63 @@ def test_a_green_head_pushed_by_someone_else_is_not_credited(
 
 
 @pytest.mark.parametrize(
+    ("demo", "fix_head_sha", "expected_calls", "expected_status"),
+    [
+        (False, "", 2, RepairStatus.QUEUED),
+        (True, "", 1, RepairStatus.FAILED),
+        (False, "pushed", 1, RepairStatus.FAILED),
+    ],
+    ids=["follows-new-head", "demo-stops", "replaced-push-stops"],
+)
+def test_a_head_that_moves_before_the_push_is_read_again(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    demo: bool,
+    fix_head_sha: str,
+    expected_calls: int,
+    expected_status: RepairStatus,
+) -> None:
+    """Only a superseded attempt that pushed nothing may repair the head that replaced it."""
+    from integrations.github.tools.ci_fix.storage import database
+    from integrations.github.tools.ci_repair_loop import worker
+
+    monkeypatch.setattr(database, "database_path", lambda: tmp_path / "repairs.db")
+    run = _run().model_copy(update={"demo": demo, "initial_sha": "source-head" if demo else ""})
+    store = RepairStore(tmp_path / "runs")
+    store.directory(run.id).mkdir(parents=True)
+    heads = iter(["source-head", "moved-head", "fixed"])
+    calls: list[str] = []
+
+    def pr(_run: RepairRun, _token: str) -> dict[str, Any]:
+        return {
+            "state": "OPEN",
+            "headRefOid": next(heads),
+            "statusCheckRollup": [{"conclusion": "FAILURE"}],
+        }
+
+    def repair(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs["expected_source_head_sha"])
+        if len(calls) == 1:
+            return {
+                "success": False,
+                "error_kind": "checks_superseded",
+                "fix_head_sha": fix_head_sha,
+            }
+        return {"success": True, "checks_state": "passed", "fix_head_sha": "fixed"}
+
+    monkeypatch.setattr(worker, "_read_pr", pr)
+    monkeypatch.setattr(worker, "run_ci_fix", repair)
+    monkeypatch.setattr(worker, "record_ci_fix_outcome", lambda _output: None)
+    monkeypatch.setattr(worker.time, "sleep", lambda _seconds: None)
+
+    worker._repair(run, store, "test-token")
+
+    assert calls == ["source-head", "moved-head"][:expected_calls]
+    assert run.status is expected_status
+    assert run.checks_passed is (expected_calls == 2)
+
+
+@pytest.mark.parametrize(
     ("prepared_source", "pushed_shas", "repair_head", "checks_state", "result_head"),
     [
         ("source-head", [], "first-repair", "", "first-repair"),
