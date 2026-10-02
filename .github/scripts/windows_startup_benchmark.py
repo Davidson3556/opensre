@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 _STARTUP_ARGS = ("--skip-onboarding", "--no-interactive")
+_INITIAL_RUNS = 2
 _MIN_WARM_RUNS = 20
 _BENCHMARK_ENV = {
     "DO_NOT_TRACK": "1",
@@ -154,7 +155,7 @@ def measure_targets(
     timeout_seconds: float,
     home_root: Path,
 ) -> list[Measurement]:
-    """Measure one first launch and interleaved warm launches for each target."""
+    """Measure order-balanced initial and warm launches for each target."""
     if not targets:
         raise ValueError("at least one binary target is required")
     if warm_runs < _MIN_WARM_RUNS:
@@ -163,32 +164,38 @@ def measure_targets(
         raise ValueError("warm_runs must be even so launch order is balanced")
 
     seen_modes: set[str] = set()
-    homes: dict[str, Path] = {}
     for target in targets:
         if target.mode in seen_modes:
             raise ValueError(f"duplicate packaging mode: {target.mode}")
         seen_modes.add(target.mode)
         if not target.path.is_file():
             raise FileNotFoundError(target.path)
-        home = home_root / target.mode
-        home.mkdir(parents=True, exist_ok=True)
-        homes[target.mode] = home
-
     measurements: list[Measurement] = []
-    for target in targets:
-        measurements.append(
-            Measurement(
-                mode=target.mode,
-                phase="first",
-                iteration=0,
-                elapsed_ms=_run_once(
-                    target,
-                    home=homes[target.mode],
-                    timeout_seconds=timeout_seconds,
-                ),
+    for iteration in range(1, _INITIAL_RUNS + 1):
+        # Each mode occupies each position once. A fresh application home keeps
+        # these diagnostic samples independent of state written by prior runs.
+        round_targets = targets if iteration % 2 else list(reversed(targets))
+        for target in round_targets:
+            home = home_root / "initial" / str(iteration) / target.mode
+            home.mkdir(parents=True, exist_ok=True)
+            measurements.append(
+                Measurement(
+                    mode=target.mode,
+                    phase="initial",
+                    iteration=iteration,
+                    elapsed_ms=_run_once(
+                        target,
+                        home=home,
+                        timeout_seconds=timeout_seconds,
+                    ),
+                )
             )
-        )
 
+    # Reuse the final initial home so every recorded warm sample follows a
+    # completed launch against that exact application state.
+    warm_homes = {
+        target.mode: home_root / "initial" / str(_INITIAL_RUNS) / target.mode for target in targets
+    }
     for iteration in range(1, warm_runs + 1):
         # Reverse every other round so runner drift does not always favor the
         # mode measured second.
@@ -201,7 +208,7 @@ def measure_targets(
                     iteration=iteration,
                     elapsed_ms=_run_once(
                         target,
-                        home=homes[target.mode],
+                        home=warm_homes[target.mode],
                         timeout_seconds=timeout_seconds,
                     ),
                 )
@@ -210,24 +217,25 @@ def measure_targets(
 
 
 def summarize_measurements(measurements: list[Measurement]) -> dict[str, dict[str, Any]]:
-    """Summarize first launch and warm distributions by packaging mode."""
+    """Summarize initial and warm distributions by packaging mode."""
     modes = list(dict.fromkeys(measurement.mode for measurement in measurements))
     summary: dict[str, dict[str, Any]] = {}
     for mode in modes:
-        first = [
+        initial = [
             measurement.elapsed_ms
             for measurement in measurements
-            if measurement.mode == mode and measurement.phase == "first"
+            if measurement.mode == mode and measurement.phase == "initial"
         ]
         warm = [
             measurement.elapsed_ms
             for measurement in measurements
             if measurement.mode == mode and measurement.phase == "warm"
         ]
-        if len(first) != 1 or not warm:
+        if len(initial) != _INITIAL_RUNS or not warm:
             raise ValueError(f"incomplete measurements for {mode}")
         summary[mode] = {
-            "first_ms": round(first[0], 3),
+            "initial_median_ms": round(statistics.median(initial), 3),
+            "initial_samples_ms": [round(value, 3) for value in initial],
             "warm_median_ms": round(statistics.median(warm), 3),
             "warm_p95_ms": round(nearest_rank_percentile(warm, 95), 3),
             "warm_samples_ms": [round(value, 3) for value in warm],
@@ -252,21 +260,25 @@ def comparison_for(summary: dict[str, dict[str, Any]]) -> dict[str, float] | Non
 def render_markdown(
     summary: dict[str, dict[str, Any]],
     comparison: dict[str, float] | None,
+    binaries: dict[str, dict[str, Any]],
     runner: dict[str, Any] | None = None,
 ) -> str:
     """Render a concise GitHub step summary."""
     lines = [
         "# Windows frozen startup benchmark",
         "",
-        "| Packaging | First launch (ms) | Warm median (ms) | Warm p95 (ms) | Warm samples (ms) |",
-        "| --- | ---: | ---: | ---: | --- |",
+        "| Packaging | Initial median (ms) | Warm median (ms) | Warm p95 (ms) | Files | Bundle (MiB) | Warm samples (ms) |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for mode, values in summary.items():
+        inventory = binaries[mode]
         samples = ", ".join(f"{float(value):.1f}" for value in values["warm_samples_ms"])
         lines.append(
-            f"| {mode} | {float(values['first_ms']):.1f} | "
+            f"| {mode} | {float(values['initial_median_ms']):.1f} | "
             f"{float(values['warm_median_ms']):.1f} | "
-            f"{float(values['warm_p95_ms']):.1f} | {samples} |"
+            f"{float(values['warm_p95_ms']):.1f} | "
+            f"{int(inventory['file_count'])} | "
+            f"{int(inventory['size_bytes']) / (1024 * 1024):.1f} | {samples} |"
         )
     if comparison is not None:
         saved_ms = comparison["onedir_saved_ms"]
@@ -293,9 +305,10 @@ def render_markdown(
         [
             "",
             "> This is a same-runner packaging comparison of `opensre --skip-onboarding "
-            "--no-interactive`. The first sample is the first process launch after the build; "
-            "it is not a reboot-cold measurement. It is also a startup proxy, not a ConPTY "
-            "time-to-prompt result. Hosted-runner timings must not be used as a release gate.",
+            "--no-interactive`. Initial samples use fresh application homes and balanced "
+            "launch order; they are not reboot-cold measurements. This is also a startup "
+            "proxy, not a ConPTY time-to-prompt result. Hosted-runner timings must not be "
+            "used as a release gate.",
             "",
         ]
     )
@@ -337,14 +350,16 @@ def main() -> None:
     summary = summarize_measurements(measurements)
     comparison = comparison_for(summary)
     runner = _windows_facts()
+    binaries = {target.mode: _binary_inventory(target) for target in targets}
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(UTC).isoformat(),
         "commit": os.getenv("GITHUB_SHA", ""),
         "runner": runner,
         "command": list(_STARTUP_ARGS),
+        "initial_runs": _INITIAL_RUNS,
         "warm_runs": args.warm_runs,
-        "binaries": {target.mode: _binary_inventory(target) for target in targets},
+        "binaries": binaries,
         "measurements": [asdict(measurement) for measurement in measurements],
         "summary": summary,
         "comparison": comparison,
@@ -353,7 +368,7 @@ def main() -> None:
     args.output_json.parent.mkdir(parents=True, exist_ok=True)
     args.output_markdown.parent.mkdir(parents=True, exist_ok=True)
     args.output_json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    markdown = render_markdown(summary, comparison, runner)
+    markdown = render_markdown(summary, comparison, binaries, runner)
     args.output_markdown.write_text(markdown, encoding="utf-8")
     print(markdown)
 

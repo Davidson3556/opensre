@@ -48,10 +48,12 @@ def test_nearest_rank_percentile_rejects_empty_sample() -> None:
         nearest_rank_percentile([], 95)
 
 
-def test_summary_keeps_first_launch_separate_from_warm_distribution() -> None:
+def test_summary_keeps_initial_launches_separate_from_warm_distribution() -> None:
     measurements = [
-        Measurement("onefile", "first", 0, 40.0),
-        Measurement("onedir", "first", 0, 12.0),
+        Measurement("onefile", "initial", 1, 40.0),
+        Measurement("onedir", "initial", 1, 12.0),
+        Measurement("onedir", "initial", 2, 10.0),
+        Measurement("onefile", "initial", 2, 38.0),
         Measurement("onefile", "warm", 1, 38.0),
         Measurement("onedir", "warm", 1, 8.0),
         Measurement("onefile", "warm", 2, 36.0),
@@ -64,7 +66,8 @@ def test_summary_keeps_first_launch_separate_from_warm_distribution() -> None:
     comparison = comparison_for(summary)
 
     assert summary["onefile"] == {
-        "first_ms": 40.0,
+        "initial_median_ms": 39.0,
+        "initial_samples_ms": [40.0, 38.0],
         "warm_median_ms": 37.0,
         "warm_p95_ms": 38.0,
         "warm_samples_ms": [38.0, 36.0, 37.0],
@@ -99,17 +102,30 @@ def test_measure_targets_balances_order_and_isolates_homes(
         home_root=tmp_path / "homes",
     )
 
-    assert [measurement.mode for measurement in measurements[:2]] == ["onefile", "onedir"]
-    assert [measurement.mode for measurement in measurements[2:]] == [
+    assert [measurement.mode for measurement in measurements[:4]] == [
+        "onefile",
+        "onedir",
+        "onedir",
+        "onefile",
+    ]
+    assert [measurement.mode for measurement in measurements[4:]] == [
         "onefile",
         "onedir",
         "onedir",
         "onefile",
     ] * 10
-    assert dict(calls) == {
-        "onefile": tmp_path / "homes" / "onefile",
-        "onedir": tmp_path / "homes" / "onedir",
+    assert calls[:4] == [
+        ("onefile", tmp_path / "homes" / "initial" / "1" / "onefile"),
+        ("onedir", tmp_path / "homes" / "initial" / "1" / "onedir"),
+        ("onedir", tmp_path / "homes" / "initial" / "2" / "onedir"),
+        ("onefile", tmp_path / "homes" / "initial" / "2" / "onefile"),
+    ]
+    warm_homes = {
+        "onefile": tmp_path / "homes" / "initial" / "2" / "onefile",
+        "onedir": tmp_path / "homes" / "initial" / "2" / "onedir",
     }
+    assert dict(calls[4:]) == warm_homes
+    assert all((mode, home) in calls[:4] for mode, home in warm_homes.items())
 
 
 @pytest.mark.parametrize(
@@ -135,13 +151,15 @@ def test_measure_targets_rejects_unrepresentative_sample_counts(
 def test_markdown_does_not_overstate_the_measurement() -> None:
     summary = {
         "onefile": {
-            "first_ms": 40.0,
+            "initial_median_ms": 39.0,
+            "initial_samples_ms": [40.0, 38.0],
             "warm_median_ms": 37.0,
             "warm_p95_ms": 38.0,
             "warm_samples_ms": [36.0, 37.0, 38.0],
         },
         "onedir": {
-            "first_ms": 12.0,
+            "initial_median_ms": 11.0,
+            "initial_samples_ms": [12.0, 10.0],
             "warm_median_ms": 7.0,
             "warm_p95_ms": 8.0,
             "warm_samples_ms": [6.0, 7.0, 8.0],
@@ -152,34 +170,49 @@ def test_markdown_does_not_overstate_the_measurement() -> None:
         summary,
         comparison_for(summary),
         {
+            "onefile": {"file_count": 1, "size_bytes": 100 * 1024 * 1024},
+            "onedir": {"file_count": 4_900, "size_bytes": 180 * 1024 * 1024},
+        },
+        {
             "platform": "Windows-11",
             "defender_realtime_enabled": True,
         },
     )
 
-    assert "not a reboot-cold measurement" in markdown
+    assert "not reboot-cold measurements" in markdown
     assert "not a ConPTY time-to-prompt result" in markdown
     assert "must not be used as a release gate" in markdown
     assert "Defender real-time protection: `True`" in markdown
+    assert "| onefile | 39.0 | 37.0 | 38.0 | 1 | 100.0 |" in markdown
+    assert "| onedir | 11.0 | 7.0 | 8.0 | 4900 | 180.0 |" in markdown
 
 
 def test_markdown_reports_onedir_regression_without_calling_it_a_saving() -> None:
     summary = {
         "onefile": {
-            "first_ms": 6.0,
+            "initial_median_ms": 6.0,
+            "initial_samples_ms": [6.0, 6.0],
             "warm_median_ms": 5.0,
             "warm_p95_ms": 6.0,
             "warm_samples_ms": [4.0, 5.0, 6.0],
         },
         "onedir": {
-            "first_ms": 12.0,
+            "initial_median_ms": 12.0,
+            "initial_samples_ms": [12.0, 12.0],
             "warm_median_ms": 10.0,
             "warm_p95_ms": 12.0,
             "warm_samples_ms": [8.0, 10.0, 12.0],
         },
     }
 
-    markdown = render_markdown(summary, comparison_for(summary))
+    markdown = render_markdown(
+        summary,
+        comparison_for(summary),
+        {
+            "onefile": {"file_count": 1, "size_bytes": 1},
+            "onedir": {"file_count": 2, "size_bytes": 2},
+        },
+    )
 
     assert "Onedir was **5.0 ms slower**" in markdown
     assert "Onedir saved" not in markdown
@@ -201,4 +234,7 @@ def test_workflow_builds_both_modes_on_one_windows_runner_without_a_timing_gate(
     assert "if: always()" not in raw
     assert "continue-on-error" not in raw
     assert "threshold" not in raw.lower()
-    assert "actions/upload-artifact@v4" in raw
+    assert "actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5" in raw
+    assert "astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d" in raw
+    assert "actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1" in raw
+    assert "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02" in raw
