@@ -328,7 +328,7 @@ def test_scheduling_persists_the_selected_github_connection(
     from integrations.github.tools.ci_repair_loop import tool as repair_tool
 
     store = RepairStore(tmp_path)
-    api = _GitHub()
+    api = _RepairApi()
     selected_connection = "github-secondary"
     token_requests: list[tuple[str | None, str | None]] = []
 
@@ -345,8 +345,10 @@ def test_scheduling_persists_the_selected_github_connection(
     monkeypatch.setattr(repair_tool, "_scheduler_in_process", lambda _context: True)
 
     result = repair_tool.schedule_ci_repair_loop(
-        demo=True,
         owner="alice",
+        repo="service",
+        pr_number=7,
+        fast_checks=True,
         github_token="secondary-token",
         github_connection_id=selected_connection,
     )
@@ -354,6 +356,8 @@ def test_scheduling_persists_the_selected_github_connection(
     persisted = RepairStore(tmp_path).get(result["task_id"])
     assert result["ok"] is True
     assert persisted.github_connection_id == selected_connection
+    assert persisted.fast_checks is True
+    assert persisted.seeded_head == "head-sha"
     assert token_requests == [("secondary-token", selected_connection)]
     persisted_json = store.path.read_text(encoding="utf-8")
     assert selected_connection in persisted_json
@@ -385,8 +389,9 @@ def test_scheduling_rejects_a_removed_selection_even_with_an_injected_token(
 
     with pytest.raises(ValueError, match="selected GitHub connection is unavailable"):
         schedule.schedule_repair(
-            demo=True,
             owner="alice",
+            repo="service",
+            pr_number=7,
             github_token="stale-injected-token",
             github_connection_id=selected_connection,
             store=store,
@@ -678,11 +683,11 @@ def test_restarted_worker_resolves_the_persisted_nondefault_connection(
         }
 
     monkeypatch.setattr(harness_providers, "resolve_integrations", resolve_integrations)
-    monkeypatch.setattr(worker, "verify_coding_agent", lambda: (True, "ready"))
-    api = _GitHub()
+    monkeypatch.setattr(worker, "select_coding_agent", lambda: ("codex", "ready"))
+    api = _RepairApi()
     client_tokens: list[str] = []
 
-    def client(token: str) -> _GitHub:
+    def client(token: str) -> _RepairApi:
         client_tokens.append(token)
         return api
 
@@ -695,7 +700,11 @@ def test_restarted_worker_resolves_the_persisted_nondefault_connection(
 
     monkeypatch.setattr(worker, "clone_repository", clone)
     repair_tokens: list[str] = []
-    monkeypatch.setattr(worker, "_repair", lambda _run, _store, token: repair_tokens.append(token))
+
+    def repair(_run: RepairRun, _store: RepairStore, token: str, _phases: Any) -> None:
+        repair_tokens.append(token)
+
+    monkeypatch.setattr(worker, "_repair", repair)
 
     worker.execute_repair(restarted, RepairStore(tmp_path))
 
@@ -728,7 +737,7 @@ def test_restarted_worker_never_falls_back_when_the_selected_connection_is_gone(
         },
     )
     monkeypatch.setattr(credentials, "resolve_env_credential", lambda _name: "env-token")
-    monkeypatch.setattr(worker, "verify_coding_agent", lambda: (True, "ready"))
+    monkeypatch.setattr(worker, "select_coding_agent", lambda: ("codex", "ready"))
 
     def client(_token: str) -> None:
         pytest.fail("The worker fell back to another GitHub connection.")
